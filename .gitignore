@@ -1,0 +1,14 @@
+cat << 'EOF' > .gitignore
+# Build directory
+build/
+
+# Compiled executables and objects
+*.out
+*.o
+*.a
+spinphony_run
+
+# IDE folders (optional, for later)
+.vscode/
+.idea/
+EOF
