@@ -900,12 +900,12 @@ def init_bose_einstein(w_distribution, temperature_K):
 if __name__ == "__main__":
     slc_files = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
-    mesh_bccFe = "Inputs/bccFe/combined_band_12x12x12.yaml"
+    mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.yaml"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
 
     lattice_constant = 4.103
 
-    smearing = 0.5
+    smearing = 1.0
     
     crystal_data = CrystalDataSoA(
         mesh_bccFe,
@@ -986,7 +986,7 @@ if __name__ == "__main__":
 
 
     # 4. Setup Phase 2 memory
-    T_mag_init = 500.0  
+    T_mag_init = 300.0  
     T_phon_init = 300.0
     
     print(f"\nInitializing populations at thermal equilibrium:")
