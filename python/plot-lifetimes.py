@@ -7,8 +7,9 @@ filename = "Outputs/equilibrium_lifetimes.csv"
 # header of file: "q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps"
 
 
-# plot energy of magnons vs lifetime
+# plot energy of magnons vs lifetime. Only lines with particle="magnon" should be plotted. Use log-log scale for better visualization.
 df = pd.read_csv(filename)
+df = df[df["particle"] == "magnon"]
 plt.figure(figsize=(8, 6))
 plt.scatter(df["energy_meV"], df["tau_ps"], s=10, alpha=0.7)
 plt.xscale("log")
