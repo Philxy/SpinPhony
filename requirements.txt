@@ -1,0 +1,4 @@
+numpy
+pyyaml
+numba
+matplotlib
