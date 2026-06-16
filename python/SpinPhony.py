@@ -219,73 +219,78 @@ class CrystalDataSoA:
     
 
     def _compute_magnon_dispersions(self, K_anisotropy=0.01, lattice_constant=1.0):
-            """
-            Calculates exact magnon energies matching the Ferromagnetic C++ implementation.
-            """
-            self.eig_mag = np.zeros((self.N, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+        """
+        Calculates exact magnon energies matching the Ferromagnetic C++ implementation.
+        """
+        self.eig_mag = np.zeros((self.N, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+        
+        atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
+        for i, m_idx in enumerate(self.mag_indices):
+            atom_to_mag[m_idx] = i
             
-            atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
-            for i, m_idx in enumerate(self.mag_indices):
-                atom_to_mag[m_idx] = i
+        # VASP outputs magnetic_moment = 2 * S. 
+        # We divide by 2 to get the true physical spin S.
+        S_eff = np.abs(self.mag_moments[self.mag_indices]) / 2.0
+        
+        # Precompute real J(0)
+        J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
+        for row in self.jij_interactions:
+            i, j = int(row[4]) - 1, int(row[5]) - 1
+            mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
+            if mag_i != -1 and mag_j != -1:
+                J_0[mag_i, mag_j] += row[3]
                 
-            # VASP outputs magnetic_moment = 2 * S. 
-            # We divide by 2 to get the true physical spin S.
-            S_eff = np.abs(self.mag_moments[self.mag_indices]) / 2.0
+        for q_idx in range(self.N):
+            # 1. Recover fractional coordinates from integer grid
+            q_frac = self.q_grid[q_idx] / self.mesh
             
-            # Precompute real J(0)
-            J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
+            # 2. Convert to Cartesian wavevector (includes 2*pi factor)
+            # Units: 1 / Angstrom (assuming reciprocal_lattice is in 1/A)
+            q_cart = np.dot(q_frac, self.reciprocal_lattice * 2.0 * np.pi)
+            
+            J_q = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
             for row in self.jij_interactions:
                 i, j = int(row[4]) - 1, int(row[5]) - 1
                 mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
-                if mag_i != -1 and mag_j != -1:
-                    J_0[mag_i, mag_j] += row[3]
-                    
-            for q_idx in range(self.N):
-                # Use q_frac directly since the CSV input vectors are fractional
-                q_frac = self.q_grid[q_idx] / self.mesh
+                if mag_i == -1 or mag_j == -1: 
+                    continue
                 
-                J_q = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
-                for row in self.jij_interactions:
-                    i, j = int(row[4]) - 1, int(row[5]) - 1
-                    mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
-                    if mag_i == -1 or mag_j == -1: 
-                        continue
-                    
-                    # Fractional connection vector from CSV
-                    r_frac = np.array([row[0], row[1], row[2]])
-                    
-                    # In a fractional basis: phase = 2 * pi * (q_frac dot r_frac)
-                    phase = 2.0 * np.pi * np.dot(q_frac, r_frac)
-                    J_q[mag_i, mag_j] += row[3] * cmath.exp(1j * phase)
-                    
-                # Ferromagnetic Hamiltonian: Omega = S * (J_k - sum(J_0))
-                Omega_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
-                for n in range(self.n_mag_branches):
-                    sum_J_0 = np.sum(J_0[n, :])
-                    for m in range(self.n_mag_branches):
-                        if n == m:
-                            Omega_k[n, n] = S_eff[n] * (J_q[n, n] - sum_J_0)
-                        else:
-                            Omega_k[n, m] = S_eff[n] * J_q[n, m]
-                        
-                # Build Bogoliubov-de Gennes Matrix 
-                H_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
-                for n in range(self.n_mag_branches):
-                    for m in range(self.n_mag_branches):
-                        # Applying the -1 flip for ferromagnets as done in C++
-                        val = -Omega_k[n, m] 
-                        if n == m:
-                            val += K_anisotropy
-                        H_BdG[n, m] = val
-                        H_BdG[n + self.n_mag_branches, m + self.n_mag_branches] = np.conj(val)
+                # 3. Extract Cartesian connection vector and scale by lattice constant
+                # Units: Angstroms
+                r_cart = np.array([row[0], row[1], row[2]]) * lattice_constant
                 
-                try:
-                    energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
-                    self.w_mag[q_idx] = energies
-                    self.eig_mag[q_idx] = para_unitary
-                except RuntimeError as e:
-                    print(f"Warning at q_idx {q_idx}: {e}")
-                    self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
+                # 4. Cartesian dot product yields a dimensionless phase
+                phase = np.dot(q_cart, r_cart)
+                J_q[mag_i, mag_j] += row[3] * cmath.exp(1j * phase)
+                
+            # Ferromagnetic Hamiltonian: Omega = S * (J_k - sum(J_0))
+            Omega_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            for n in range(self.n_mag_branches):
+                sum_J_0 = np.sum(J_0[n, :])
+                for m in range(self.n_mag_branches):
+                    if n == m:
+                        Omega_k[n, n] = S_eff[n] * (J_q[n, n] - sum_J_0)
+                    else:
+                        Omega_k[n, m] = S_eff[n] * J_q[n, m]
+                    
+            # Build Bogoliubov-de Gennes Matrix 
+            H_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+            for n in range(self.n_mag_branches):
+                for m in range(self.n_mag_branches):
+                    # Applying the -1 flip for ferromagnets as done in C++
+                    val = -Omega_k[n, m] 
+                    if n == m:
+                        val += K_anisotropy
+                    H_BdG[n, m] = val
+                    H_BdG[n + self.n_mag_branches, m + self.n_mag_branches] = np.conj(val)
+            
+            try:
+                energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
+                self.w_mag[q_idx] = energies
+                self.eig_mag[q_idx] = para_unitary
+            except RuntimeError as e:
+                print(f"Warning at q_idx {q_idx}: {e}")
+                self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
 
     def plot_dispersions(self):
         """
@@ -525,7 +530,7 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_map, slc_
         
         # Calculate quantum displacement amplitude: \sqrt{\hbar / (2 M_l \omega)}
         mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
-        disp_amp = math.sqrt(hbar / (2.0 * mass_l * omega))
+        disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * omega))
         
         # Sum over Cartesian directions \mu \in {x=0, y=1, z=2}
         for mu in range(3):
@@ -905,7 +910,7 @@ if __name__ == "__main__":
 
     lattice_constant = 4.103
 
-    smearing = 1.0
+    smearing = 0.02
     
     crystal_data = CrystalDataSoA(
         mesh_bccFe,
