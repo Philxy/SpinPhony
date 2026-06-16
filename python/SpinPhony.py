@@ -443,10 +443,8 @@ def diagonalize_bosonic_hamiltonian(H_matrix):
 # ==========================================
 # 1. GPU Kernels: Math Helpers
 # ==========================================
-
 @cuda.jit(device=True)
-@cuda.jit(device=True)
-def calc_fourier_transform(k_idx, kp_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
+def calc_fourier_transform(kp_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
     """
     Computes the FT of the SLC tensor for specific atom types (n, m, l).
     Mutates J_tilde_out in-place to comply with Numba device memory rules.
@@ -456,11 +454,6 @@ def calc_fourier_transform(k_idx, kp_idx, q_idx, q_grid, mesh, slc_axis, slc_rij
         for b in range(3):
             J_tilde_out[a, b] = 0.0 + 0.0j
 
-    # Get fractional coordinates (normalized to 0-1 range)
-    k_vec_x = q_grid[k_idx, 0] / mesh[0]
-    k_vec_y = q_grid[k_idx, 1] / mesh[1]
-    k_vec_z = q_grid[k_idx, 2] / mesh[2]
-    
     kp_vec_x = q_grid[kp_idx, 0] / mesh[0]
     kp_vec_y = q_grid[kp_idx, 1] / mesh[1]
     kp_vec_z = q_grid[kp_idx, 2] / mesh[2]
@@ -492,23 +485,24 @@ def calc_fourier_transform(k_idx, kp_idx, q_idx, q_grid, mesh, slc_axis, slc_rij
 
 
 @cuda.jit(device=True)
-def calc_vertex_V(k_idx, kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
+def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
     """
     Calculates the full scattering vertex V^{+-} combining the FT tensor and phonon eigenvectors.
     """
 
-    # Guard against acoustic singularity at Gamma
-    omega = w_phon[q_idx, lambda_phon]
-    if omega < 1e-5: 
-        return 0.0 
+    # Find the Gamma point (0,0,0) index
+    gamma_idx = grid_map[0, 0, 0]
 
+    if kp_idx == gamma_idx or q_idx == gamma_idx: #maybe this is not necessary as we skip it when calling the kernel
+        return 0.0
+    
+
+    omega = w_phon[q_idx, lambda_phon]
 
     # --- Physical Constants & Spin Factors ---
     hbar = 0.6582119569 # meV * ps
     DALTON_TO_meV_PS2_PER_A2 = 0.10364269 # Equivalent to 1.0 / 9.6485
     
-    # We map branch indices (n, m) directly back to the physical magnetic moments.
-    # In bcc Fe, mag_moments[0] holds the moment. S is the absolute spin.
     S_n = math.fabs(mag_moments[n] / 2.0 ) 
     S_m = math.fabs(mag_moments[m] / 2.0 )
     
@@ -521,10 +515,6 @@ def calc_vertex_V(k_idx, kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_ma
     # J_tilde_stat holds \tilde{J}(0, q) for the delta term
     J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
     J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
-    
-    # Find the Gamma point (0,0,0) index for the static sum rule evaluation
-    gamma_idx = grid_map[0, 0, 0]
-
     
     V_complex = 0.0 + 0.0j
     num_atoms = atom_masses.shape[0]
@@ -546,7 +536,7 @@ def calc_vertex_V(k_idx, kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_ma
             
             # A) The Dynamic Term: \tilde{J}(k-q, q)
             # Pass (n+1, m+1, l+1) to respect the 1-based indexing in the CSVs.
-            calc_fourier_transform(k_idx, kp_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+            calc_fourier_transform(kp_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
 
             # Extract components for W^{+-} dynamic part
             J_xx = J_tilde_dyn[0, 0]
@@ -566,7 +556,7 @@ def calc_vertex_V(k_idx, kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_ma
                 for mp in range(num_mag_branches):
                     if math.fabs(mag_moments[mp]) > 1e-2:
                         sigma_mp = math.copysign(1.0, mag_moments[mp])
-                        calc_fourier_transform(gamma_idx, gamma_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        calc_fourier_transform(gamma_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                         
                         W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] # J^{zz}
             
@@ -576,8 +566,7 @@ def calc_vertex_V(k_idx, kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_ma
             # D) Add to total Vertex
             V_complex += disp_amp * e_mu * W_tot
 
-    # Note: The 1/\sqrt{N} prefactor is typically squared and handled macroscopically 
-    # in the FGR collision integral loop, so we don't apply it directly to V_complex here.
+    # Note: The 1/\sqrt{N} prefactor is handled elsewhere 
     
     # Return |V|^2
     return (V_complex.real**2 + V_complex.imag**2)
@@ -628,7 +617,7 @@ def phase_1_scan(mesh, q_grid, grid_map, w_phon, w_mag, eig_phon, slc_axis, slc_
                 dE_mag_emit = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
                 if abs(dE_mag_emit) < cutoff:
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE_mag_emit * dE_mag_emit) / (smearing * smearing))
-                    V_sq = calc_vertex_V(q_idx, k_idx, idx_qmink, lam, n, m, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq = calc_vertex_V(q_idx, idx_qmink, lam, n, m, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -648,7 +637,7 @@ def phase_1_scan(mesh, q_grid, grid_map, w_phon, w_mag, eig_phon, slc_axis, slc_
                 dE_mag_abs = w_mag[q_idx, n] - w_mag[k_idx, m] + w_phon[idx_kminq, lam]
                 if abs(dE_mag_abs) < cutoff:
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE_mag_abs * dE_mag_abs) / (smearing * smearing))
-                    V_sq = calc_vertex_V(k_idx, q_idx, idx_kminq, lam, m, n, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq = calc_vertex_V(q_idx, idx_kminq, lam, m, n, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -668,7 +657,14 @@ def phase_1_scan(mesh, q_grid, grid_map, w_phon, w_mag, eig_phon, slc_axis, slc_
                 dE_phon_emit = w_phon[q_idx, lam] + w_mag[idx_kminq, m] - w_mag[k_idx, n]
                 if abs(dE_phon_emit) < cutoff:
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE_phon_emit * dE_phon_emit) / (smearing * smearing))
-                    V_sq = calc_vertex_V(k_idx, idx_kminq, q_idx, lam, n, m, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+
+                    # Find the index of -q for the vertex calculation
+                    qx_minq = (-q_grid[q_idx, 0] + mesh[0]) % mesh[0]
+                    qy_minq = (-q_grid[q_idx, 1] + mesh[1]) % mesh[1]
+                    qz_minq = (-q_grid[q_idx, 2] + mesh[2]) % mesh[2]
+                    idx_minus_q = grid_map[qx_minq, qy_minq, qz_minq]
+
+                    V_sq = calc_vertex_V(k_idx, idx_minus_q, lam, n, m, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
