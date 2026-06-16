@@ -744,6 +744,67 @@ def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, d
         cuda.atomic.add(dn_phon, idx_update, rate)
 
 
+@cuda.jit
+def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamma_mag, gamma_phon, N_points):
+    idx = cuda.grid(1)
+    if idx >= num_channels[0] or idx >= chan_weights.shape[0]: 
+        return
+        
+    c_type = chan_indices[0, idx]
+    q_idx  = chan_indices[1, idx] 
+    k_idx  = chan_indices[2, idx] 
+    p_idx  = chan_indices[3, idx] 
+    n      = chan_indices[4, idx]
+    m      = chan_indices[5, idx]
+    lam    = chan_indices[6, idx]
+    V_sq   = chan_weights[idx]
+    
+    num_mag_branches = n_mag.shape[1]
+    num_phon_branches = n_phon.shape[1]
+    
+    hbar = 0.6582119569 # meV * ps
+    fgr_prefactor = (2.0 * math.pi / hbar) / N_points
+    
+    if c_type == 0: 
+        # ---------------------------------------------------------
+        # Magnon Emission: q_idx = q, k_idx = k, p_idx = q-k
+        # Term: [1 + n_ph(q-k) + n_mag(k)]
+        # ---------------------------------------------------------
+        nk_mag = n_mag[k_idx, m]
+        n_qmink_ph = n_phon[p_idx, lam]
+        
+        scattering_rate = fgr_prefactor * V_sq * (1.0 + n_qmink_ph + nk_mag)
+
+        idx_update = q_idx * num_mag_branches + n
+        cuda.atomic.add(gamma_mag, idx_update, scattering_rate)
+        
+    elif c_type == 1:
+        # ---------------------------------------------------------
+        # Magnon Absorption: q_idx = q, k_idx = k, p_idx = k-q
+        # Term: [n_ph(k-q) - n_mag(k)]
+        # ---------------------------------------------------------
+        nk_mag = n_mag[k_idx, m]
+        n_kminq_ph = n_phon[p_idx, lam]
+        
+        scattering_rate = fgr_prefactor * V_sq * (n_kminq_ph - nk_mag)
+
+        idx_update = q_idx * num_mag_branches + n
+        cuda.atomic.add(gamma_mag, idx_update, scattering_rate)
+        
+    elif c_type == 2:
+        # ---------------------------------------------------------
+        # Phonon Scattering: q_idx = q (phonon), k_idx = k, p_idx = k-q
+        # ---------------------------------------------------------
+        nk_mag = n_mag[k_idx, n]
+        n_kminq_mag = n_mag[p_idx, m]
+        
+        scattering_rate = fgr_prefactor * V_sq * (n_kminq_mag - nk_mag)
+
+        idx_update = q_idx * num_phon_branches + lam
+        cuda.atomic.add(gamma_phon, idx_update, scattering_rate)
+
+
+
 def compute_and_write_observables(step, current_time, n_mag, n_phon, w_mag, w_phon, file_handle):
     """
     Calculates macroscopic observables (Energy, Particles, T_eff) 
@@ -948,7 +1009,66 @@ if __name__ == "__main__":
     d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
     d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
 
-    # 5. Execute Phase 2
+    # ====== Lifetime and scattering rate phase ======
+
+    # Allocate dedicated arrays for the scattering rates
+    # Shape flattened to match the atomic add logic: (N_points * branches)
+    d_gamma_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
+    d_gamma_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
+
+    # Evaluate grid geometry
+    blocks_eval = math.ceil(num_channels / threads_per_block)
+
+    # Launch Kernel
+    print("\nCalculating equilibrium scattering rates and lifetimes...")
+    phase_lifetime[blocks_eval, threads_per_block](
+        d_chan_indices_active,
+        d_chan_weights_active,
+        d_channel_count, 
+        d_n_mag,     # Evaluated at thermal equilibrium T_0
+        d_n_phon,    # Evaluated at thermal equilibrium T_0
+        d_gamma_mag, 
+        d_gamma_phon, 
+        N_points
+    )
+    cuda.synchronize()
+
+    # 1. Pull back and reshape
+    gamma_mag_cpu = d_gamma_mag.copy_to_host().reshape((N_points, crystal_data.n_mag_branches))
+    gamma_phon_cpu = d_gamma_phon.copy_to_host().reshape((N_points, crystal_data.phon_branches))
+
+    # 2. Write to CSV
+    os.makedirs("Outputs", exist_ok=True)
+    with open("Outputs/equilibrium_lifetimes.csv", "w") as f:
+        f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps\n")
+        
+        # Write Magnon Lifetimes
+        for q_idx in range(N_points):
+            qx, qy, qz = crystal_data.q_grid[q_idx]
+            for branch in range(crystal_data.n_mag_branches):
+                energy = crystal_data.w_mag[q_idx, branch]
+                gamma = gamma_mag_cpu[q_idx, branch]
+                
+                # Protect against divide-by-zero for non-scattering modes (or Gamma point)
+                tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
+                
+                f.write(f"{q_idx},{qx},{qy},{qz},magnon,{branch},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
+                
+        # Write Phonon Lifetimes
+        for q_idx in range(N_points):
+            qx, qy, qz = crystal_data.q_grid[q_idx]
+            for branch in range(crystal_data.phon_branches):
+                energy = crystal_data.w_phon[q_idx, branch]
+                gamma = gamma_phon_cpu[q_idx, branch]
+                
+                tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
+                
+                f.write(f"{q_idx},{qx},{qy},{qz},phonon,{branch},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
+
+    print("-> Saved lifetimes to Outputs/equilibrium_lifetimes.csv")
+
+
+    # ========================== Time-evolution Phase ==========================
     steps = 10000000
     dt = 1E-4  # ps
     
