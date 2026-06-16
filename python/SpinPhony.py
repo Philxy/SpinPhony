@@ -948,7 +948,7 @@ if __name__ == "__main__":
 
     # 5. Execute Phase 2
     steps = 10000000
-    dt = 1E-5  # ps
+    dt = 1E-4  # ps
     
     # Grid sizes for both kernels
     blocks_eval = math.ceil(num_channels / threads_per_block)
