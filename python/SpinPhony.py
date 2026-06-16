@@ -503,8 +503,6 @@ def calc_vertex_V(k_idx, kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_ma
         return 0.0 
 
 
-    return 50.0
-
     # --- Physical Constants & Spin Factors ---
     hbar = 0.6582119569 # meV * ps
     DALTON_TO_meV_PS2_PER_A2 = 0.10364269 # Equivalent to 1.0 / 9.6485
@@ -607,7 +605,7 @@ def phase_1_scan(mesh, q_grid, grid_map, w_phon, w_mag, eig_phon, slc_axis, slc_
     n_phon = w_phon.shape[1]
     
     gaussian_norm = 1.0 / (smearing * 2.50662827463)
-    cutoff = 3.0 * smearing
+    cutoff = 4.0 * smearing
     
     # --- Kinematic Mappings ---
     qx_qmink = (q_grid[q_idx, 0] - q_grid[k_idx, 0] + mesh[0]) % mesh[0]
@@ -841,14 +839,14 @@ def init_bose_einstein(w_distribution, temperature_K):
 
 
 if __name__ == "__main__":
-    slc_files = ['CrSb/transformed_SLC_tensor_x_scaled.csv', 'CrSb/transformed_SLC_tensor_y_scaled.csv', 'CrSb/transformed_SLC_tensor_z_scaled.csv']
-    slc_files_bccFe = ['bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
-    mesh_bccFe = "bccFe/combined_band_20x20x20.yaml"
-    Jijs_bccFe = "bccFe/Fe_Jij_scaled.csv"
+    slc_files = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
+    slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
+    mesh_bccFe = "Inputs/bccFe/combined_band_12x12x12.yaml"
+    Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
 
     lattice_constant = 4.103
 
-    smearing = 1.0
+    smearing = 2.0
     
     crystal_data = CrystalDataSoA(
         mesh_bccFe,
@@ -868,7 +866,7 @@ if __name__ == "__main__":
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
     
-    anticipated_fraction = 0.05 
+    anticipated_fraction = 0.06
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
@@ -954,14 +952,14 @@ if __name__ == "__main__":
 
     # 5. Execute Phase 2
     steps = 10000000
-    dt = 1E-4  # ps
+    dt = 1E-7  # ps
     
     # Grid sizes for both kernels
     blocks_eval = math.ceil(num_channels / threads_per_block)
     max_elements = max(N_points * crystal_data.n_mag_branches, N_points * crystal_data.phon_branches)
     blocks_euler = math.ceil(max_elements / threads_per_block)
     
-    obs_file = open("observables_dynamics.txt", "w")
+    obs_file = open("Outputs/observables_dynamics.txt", "w")
     obs_file.write("Step\tTime_ps\tE_tot_meV\tE_mag_meV\tE_phon_meV\tN_mag\tN_phon\tT_eff_mag_K\tT_eff_phon_K\n")
     
     print(f"\nStarting Phase 2: Time Integration ({steps} steps)...")
@@ -969,7 +967,7 @@ if __name__ == "__main__":
     for step in range(steps):
         
         # CPU Interaction: Only pull data across the PCIe bus every 100 steps
-        if step % 1000 == 0:
+        if step % 100000 == 0:
             compute_and_write_observables(
                 step=step,
                 current_time=step * dt,
