@@ -475,7 +475,6 @@ def calc_fourier_transform(kp_idx, q_idx, grid_cart, slc_axis, slc_rij, slc_rik,
             t_l = slc_types[i, 2]
             
             if t_i == n_type and t_j == m_type and t_l == l_type:
-                # Cartesian dot product: (1/Angstrom) * (Angstrom) = Dimensionless Phase
                 phase_val = (kp_vec_x * slc_rij[i, 0] + kp_vec_y * slc_rij[i, 1] + kp_vec_z * slc_rij[i, 2]) + \
                             (q_vec_x * slc_rik[i, 0] + q_vec_y * slc_rik[i, 1] + q_vec_z * slc_rik[i, 2])
                             
@@ -598,7 +597,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon, s
     n_phon = w_phon.shape[1]
     
     gaussian_norm = 1.0 / (smearing * 2.50662827463)
-    cutoff = 4.0 * smearing
+    cutoff = 3.0 * smearing
     
     # --- Kinematic Mappings ---
     qx_qmink = (q_grid[q_idx, 0] - q_grid[k_idx, 0] + mesh[0]) % mesh[0]
@@ -900,12 +899,12 @@ def init_bose_einstein(w_distribution, temperature_K):
 if __name__ == "__main__":
     slc_files = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
-    mesh_bccFe = "Inputs/bccFe/combined_band_12x12x12.yaml"
+    mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.yaml"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
 
     lattice_constant = 4.103
 
-    smearing = 0.5
+    smearing = 1.0
     
     crystal_data = CrystalDataSoA(
         mesh_bccFe,
@@ -925,7 +924,7 @@ if __name__ == "__main__":
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
     
-    anticipated_fraction = 0.06
+    anticipated_fraction = 0.1
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
@@ -987,7 +986,7 @@ if __name__ == "__main__":
 
 
     # 4. Setup Phase 2 memory
-    T_mag_init = 300.0  
+    T_mag_init = 600.0  
     T_phon_init = 300.0
     
     print(f"\nInitializing populations at thermal equilibrium:")
@@ -1071,7 +1070,7 @@ if __name__ == "__main__":
 
     # ========================== Time-evolution Phase ==========================
     steps = 10000000
-    dt = 1E-4  # ps
+    dt = 5E-4  # ps
     
     # Grid sizes for both kernels
     blocks_eval = math.ceil(num_channels / threads_per_block)
@@ -1086,7 +1085,7 @@ if __name__ == "__main__":
     for step in range(steps):
         
         # CPU Interaction: Only pull data across the PCIe bus every 100 steps
-        if step % 1000 == 0:
+        if step % 10000 == 0:
             compute_and_write_observables(
                 step=step,
                 current_time=step * dt,
