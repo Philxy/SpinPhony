@@ -47,8 +47,11 @@ class CrystalDataSoA:
         # 4. Populate Data
         self._parse_phonons(config['phonon'])
         self._compute_magnon_dispersions(K_anisotropy=0.01, lattice_constant=lattice_constant)
+
+        q_frac_array = self.q_grid / self.mesh
+        self.q_grid_cart = np.dot(q_frac_array, self.reciprocal_lattice * 2.0 * math.pi)
         
-        # 5. Parse SLC Tensors (if provided)
+        # 5. Parse SLC Tensors
         if slc_files and len(slc_files) == 3:
             self._parse_slc_tensors(slc_files[0], slc_files[1], slc_files[2], lattice_constant)
 
@@ -195,6 +198,7 @@ class CrystalDataSoA:
 
         gpu_buffers["mesh"] = track_and_push("mesh", self.mesh)
         gpu_buffers["q_grid"] = track_and_push("q_grid", self.q_grid)
+        gpu_buffers["q_grid_cart"] = track_and_push("q_grid_cart", self.q_grid_cart)
         gpu_buffers["grid_map"] = track_and_push("grid_map", self.grid_map)
         gpu_buffers["w_phon"] = track_and_push("w_phon", self.w_phon)
         gpu_buffers["eig_phon"] = track_and_push("eig_phon", self.eig_phon)
@@ -227,9 +231,7 @@ class CrystalDataSoA:
         atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
         for i, m_idx in enumerate(self.mag_indices):
             atom_to_mag[m_idx] = i
-            
-        # VASP outputs magnetic_moment = 2 * S. 
-        # We divide by 2 to get the true physical spin S.
+
         S_eff = np.abs(self.mag_moments[self.mag_indices]) / 2.0
         
         # Precompute real J(0)
@@ -449,25 +451,23 @@ def diagonalize_bosonic_hamiltonian(H_matrix):
 # 1. GPU Kernels: Math Helpers
 # ==========================================
 @cuda.jit(device=True)
-def calc_fourier_transform(kp_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
+def calc_fourier_transform(kp_idx, q_idx, grid_cart, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
     """
-    Computes the FT of the SLC tensor for specific atom types (n, m, l).
-    Mutates J_tilde_out in-place to comply with Numba device memory rules.
+    Computes the FT of the SLC tensor using Cartesian coordinate dot products.
     """
-    # Zero out the array passed in from the parent function
     for a in range(3):
         for b in range(3):
             J_tilde_out[a, b] = 0.0 + 0.0j
 
-    kp_vec_x = q_grid[kp_idx, 0] / mesh[0]
-    kp_vec_y = q_grid[kp_idx, 1] / mesh[1]
-    kp_vec_z = q_grid[kp_idx, 2] / mesh[2]
+    # Pull directly from the precomputed Cartesian grid
+    kp_vec_x = grid_cart[kp_idx, 0]
+    kp_vec_y = grid_cart[kp_idx, 1]
+    kp_vec_z = grid_cart[kp_idx, 2]
     
-    q_vec_x = q_grid[q_idx, 0] / mesh[0]
-    q_vec_y = q_grid[q_idx, 1] / mesh[1]
-    q_vec_z = q_grid[q_idx, 2] / mesh[2]
+    q_vec_x = grid_cart[q_idx, 0]
+    q_vec_y = grid_cart[q_idx, 1]
+    q_vec_z = grid_cart[q_idx, 2]
 
-    # Iterate over all SLC interactions
     for i in range(slc_axis.shape[0]):
         if slc_axis[i] == mu_type:
             t_i = slc_types[i, 0]
@@ -475,14 +475,13 @@ def calc_fourier_transform(kp_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_r
             t_l = slc_types[i, 2]
             
             if t_i == n_type and t_j == m_type and t_l == l_type:
-            
+                # Cartesian dot product: (1/Angstrom) * (Angstrom) = Dimensionless Phase
                 phase_val = (kp_vec_x * slc_rij[i, 0] + kp_vec_y * slc_rij[i, 1] + kp_vec_z * slc_rij[i, 2]) + \
                             (q_vec_x * slc_rik[i, 0] + q_vec_y * slc_rik[i, 1] + q_vec_z * slc_rik[i, 2])
                             
-                # e^(i * 2pi * phase)
-                phase_factor = cmath.exp(1j * 2.0 * math.pi * phase_val)
+                # The 2*pi is omitted here because it was multiplied into q_grid_cart
+                phase_factor = cmath.exp(1j * phase_val)
                 
-                # Accumulate into the 3x3 tensor
                 for a in range(3):
                     for b in range(3):
                         J_tilde_out[a, b] += slc_J[i, a, b] * phase_factor
@@ -490,7 +489,7 @@ def calc_fourier_transform(kp_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_r
 
 
 @cuda.jit(device=True)
-def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
+def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
     """
     Calculates the full scattering vertex V^{+-} combining the FT tensor and phonon eigenvectors.
     """
@@ -541,7 +540,7 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_map, slc_
             
             # A) The Dynamic Term: \tilde{J}(k-q, q)
             # Pass (n+1, m+1, l+1) to respect the 1-based indexing in the CSVs.
-            calc_fourier_transform(kp_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+            calc_fourier_transform(kp_idx, q_idx, q_grid_cart, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
 
             # Extract components for W^{+-} dynamic part
             J_xx = J_tilde_dyn[0, 0]
@@ -561,7 +560,7 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_map, slc_
                 for mp in range(num_mag_branches):
                     if math.fabs(mag_moments[mp]) > 1e-2:
                         sigma_mp = math.copysign(1.0, mag_moments[mp])
-                        calc_fourier_transform(gamma_idx, q_idx, q_grid, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        calc_fourier_transform(gamma_idx, q_idx, q_grid_cart, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                         
                         W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] # J^{zz}
             
@@ -581,7 +580,7 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid, mesh, grid_map, slc_
 # 2. GPU Kernels: The Main Phases
 # ==========================================
 @cuda.jit
-def phase_1_scan(mesh, q_grid, grid_map, w_phon, w_mag, eig_phon, slc_axis, slc_rij, slc_rik, slc_J, slc_types, smearing, chan_indices, chan_weights, channel_count, atom_masses, mag_moments, gamma_idx):
+def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon, slc_axis, slc_rij, slc_rik, slc_J, slc_types, smearing, chan_indices, chan_weights, channel_count, atom_masses, mag_moments, gamma_idx):
     """
     Scans phase space for energy conservation using a Gaussian delta function.
     """
@@ -622,7 +621,7 @@ def phase_1_scan(mesh, q_grid, grid_map, w_phon, w_mag, eig_phon, slc_axis, slc_
                 dE_mag_emit = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
                 if abs(dE_mag_emit) < cutoff:
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE_mag_emit * dE_mag_emit) / (smearing * smearing))
-                    V_sq = calc_vertex_V(q_idx, idx_qmink, lam, n, m, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq = calc_vertex_V(q_idx, idx_qmink, lam, n, m, q_grid_cart, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -642,7 +641,7 @@ def phase_1_scan(mesh, q_grid, grid_map, w_phon, w_mag, eig_phon, slc_axis, slc_
                 dE_mag_abs = w_mag[q_idx, n] - w_mag[k_idx, m] + w_phon[idx_kminq, lam]
                 if abs(dE_mag_abs) < cutoff:
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE_mag_abs * dE_mag_abs) / (smearing * smearing))
-                    V_sq = calc_vertex_V(q_idx, idx_kminq, lam, m, n, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq = calc_vertex_V(q_idx, idx_kminq, lam, m, n, q_grid_cart, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -669,7 +668,7 @@ def phase_1_scan(mesh, q_grid, grid_map, w_phon, w_mag, eig_phon, slc_axis, slc_
                     qz_minq = (-q_grid[q_idx, 2] + mesh[2]) % mesh[2]
                     idx_minus_q = grid_map[qx_minq, qy_minq, qz_minq]
 
-                    V_sq = calc_vertex_V(k_idx, idx_minus_q, lam, n, m, q_grid, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq = calc_vertex_V(k_idx, idx_minus_q, lam, n, m, q_grid_cart, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -956,6 +955,7 @@ if __name__ == "__main__":
     phase_1_scan[blocks_per_grid_2d, threads_per_block_2d](
         gpu_data["mesh"], 
         gpu_data["q_grid"], 
+        gpu_data["q_grid_cart"],
         gpu_data["grid_map"], 
         gpu_data["w_phon"], 
         gpu_data["w_mag"], 
@@ -966,8 +966,8 @@ if __name__ == "__main__":
         gpu_data["slc_J"], 
         gpu_data["slc_types"], 
         smearing, 
-        d_chan_indices,   # <-- Pass new SoA array
-        d_chan_weights,   # <-- Pass new SoA array
+        d_chan_indices,   
+        d_chan_weights, 
         d_channel_count,
         gpu_data["atom_masses"], 
         gpu_data["mag_moments"],
