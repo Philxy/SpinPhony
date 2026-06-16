@@ -489,7 +489,7 @@ def calc_fourier_transform(kp_idx, q_idx, grid_cart, slc_axis, slc_rij, slc_rik,
 
 
 @cuda.jit(device=True)
-def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
+def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
     """
     Calculates the full scattering vertex V^{+-} combining the FT tensor and phonon eigenvectors.
     """
@@ -540,7 +540,7 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, mesh, grid_map,
             
             # A) The Dynamic Term: \tilde{J}(k-q, q)
             # Pass (n+1, m+1, l+1) to respect the 1-based indexing in the CSVs.
-            calc_fourier_transform(kp_idx, q_idx, q_grid_cart, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+            calc_fourier_transform(kp_idx, q_idx, q_grid_cart, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
 
             # Extract components for W^{+-} dynamic part
             J_xx = J_tilde_dyn[0, 0]
@@ -560,7 +560,7 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, mesh, grid_map,
                 for mp in range(num_mag_branches):
                     if math.fabs(mag_moments[mp]) > 1e-2:
                         sigma_mp = math.copysign(1.0, mag_moments[mp])
-                        calc_fourier_transform(gamma_idx, q_idx, q_grid_cart, mesh, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        calc_fourier_transform(gamma_idx, q_idx, q_grid_cart, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                         
                         W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] # J^{zz}
             
@@ -621,7 +621,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon, s
                 dE_mag_emit = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
                 if abs(dE_mag_emit) < cutoff:
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE_mag_emit * dE_mag_emit) / (smearing * smearing))
-                    V_sq = calc_vertex_V(q_idx, idx_qmink, lam, n, m, q_grid_cart, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq = calc_vertex_V(q_idx, idx_qmink, lam, n, m, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -641,7 +641,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon, s
                 dE_mag_abs = w_mag[q_idx, n] - w_mag[k_idx, m] + w_phon[idx_kminq, lam]
                 if abs(dE_mag_abs) < cutoff:
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE_mag_abs * dE_mag_abs) / (smearing * smearing))
-                    V_sq = calc_vertex_V(q_idx, idx_kminq, lam, m, n, q_grid_cart, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq = calc_vertex_V(q_idx, idx_kminq, lam, m, n, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -668,7 +668,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon, s
                     qz_minq = (-q_grid[q_idx, 2] + mesh[2]) % mesh[2]
                     idx_minus_q = grid_map[qx_minq, qy_minq, qz_minq]
 
-                    V_sq = calc_vertex_V(k_idx, idx_minus_q, lam, n, m, q_grid_cart, mesh, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq = calc_vertex_V(k_idx, idx_minus_q, lam, n, m, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -712,7 +712,6 @@ def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, d
         nq_mag = n_mag[q_idx, n]
         n_qmink_ph = n_phon[p_idx, lam]
         
-        #rate = fgr_prefactor * V_sq * ((nq_mag + 1.0) * nk_mag * (n_qmink_ph + 1.0) - nq_mag * (nk_mag + 1.0) * n_qmink_ph)
         rate = fgr_prefactor * V_sq * ((nq_mag + 1.0) * nk_mag * n_qmink_ph - nq_mag * (nk_mag + 1.0) * (n_qmink_ph + 1.0))
 
         idx_update = q_idx * num_mag_branches + n
@@ -726,7 +725,6 @@ def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, d
         nq_mag = n_mag[q_idx, n]
         n_kminq_ph = n_phon[p_idx, lam]
         
-        #rate = fgr_prefactor * V_sq * ((nq_mag + 1.0) * nk_mag * n_kminq_ph - nq_mag * (nk_mag + 1.0) * (n_kminq_ph + 1.0))
         rate = fgr_prefactor * V_sq * ((nq_mag + 1.0) * nk_mag * (n_kminq_ph + 1.0) - nq_mag * (nk_mag + 1.0) * n_kminq_ph)
 
         idx_update = q_idx * num_mag_branches + n
@@ -741,8 +739,6 @@ def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, d
         nq_ph = n_phon[q_idx, lam]
         
         rate = fgr_prefactor * V_sq * ((nq_ph + 1.0) * (n_kminq_mag + 1.0) * nk_mag - nq_ph * n_kminq_mag * (nk_mag + 1.0))
-
-        rate = 0
 
         idx_update = q_idx * num_phon_branches + lam
         cuda.atomic.add(dn_phon, idx_update, rate)
