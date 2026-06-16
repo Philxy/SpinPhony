@@ -842,7 +842,7 @@ if __name__ == "__main__":
 
     lattice_constant = 4.103
 
-    smearing = 2.0
+    smearing = 0.5
     
     crystal_data = CrystalDataSoA(
         mesh_bccFe,
@@ -948,7 +948,7 @@ if __name__ == "__main__":
 
     # 5. Execute Phase 2
     steps = 10000000
-    dt = 1E-7  # ps
+    dt = 1E-5  # ps
     
     # Grid sizes for both kernels
     blocks_eval = math.ceil(num_channels / threads_per_block)
@@ -963,7 +963,7 @@ if __name__ == "__main__":
     for step in range(steps):
         
         # CPU Interaction: Only pull data across the PCIe bus every 100 steps
-        if step % 100000 == 0:
+        if step % 1000 == 0:
             compute_and_write_observables(
                 step=step,
                 current_time=step * dt,
