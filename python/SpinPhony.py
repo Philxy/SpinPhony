@@ -738,6 +738,8 @@ def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, d
         
         rate = fgr_prefactor * V_sq * ((nq_ph + 1.0) * (n_kminq_mag + 1.0) * nk_mag - nq_ph * n_kminq_mag * (nk_mag + 1.0))
 
+        rate = 0
+
         idx_update = q_idx * num_phon_branches + lam
         cuda.atomic.add(dn_phon, idx_update, rate)
 
