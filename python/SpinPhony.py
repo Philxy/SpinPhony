@@ -286,6 +286,9 @@ class CrystalDataSoA:
                     H_BdG[n, m] = val
                     H_BdG[n + self.n_mag_branches, m + self.n_mag_branches] = np.conj(val)
             
+            # Revert sign of H (temporary hack!!!)
+            H_BdG = -H_BdG
+
             try:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
                 self.w_mag[q_idx] = energies
@@ -917,12 +920,15 @@ if __name__ == "__main__":
     lattice_constant_bccFe = 2.8665  # in Angstroms
     lattice_constant_CrI3 = 7.006660421592247  # in Angstroms
 
-    anisotropy = 0.01 #0.49
+    anisotropy_bccFe = 0.01 
+    anisotropy_CrI3 = 0.49
 
-    lattice_constant = lattice_constant_bccFe
-    mesh = mesh_bccFe
-    Jijs = Jijs_bccFe
-    slc_files = slc_files_bccFe
+    anisotropy = anisotropy_CrI3
+
+    lattice_constant = lattice_constant_CrI3
+    mesh = mesh_CrI3
+    Jijs = Jijs_CrI3
+    slc_files = slc_files_CrI3
 
     smearing = 0.1
     
@@ -1007,8 +1013,8 @@ if __name__ == "__main__":
 
 
     # 4. Setup Phase 2 memory
-    T_mag_init = 600 
-    T_phon_init = 300
+    T_mag_init = 20 
+    T_phon_init = 10
     
     print(f"\nInitializing populations at thermal equilibrium:")
     print(f" -> Magnons: {T_mag_init} K")
