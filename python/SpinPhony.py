@@ -1006,12 +1006,12 @@ if __name__ == "__main__":
     anisotropy_bccFe = 0.01 
     anisotropy_CrI3 = 0.49
 
-    anisotropy = anisotropy_bccFe
+    anisotropy = anisotropy_CrI3    
 
-    lattice_constant = lattice_constant_bccFe
-    mesh = mesh_bccFe
-    Jijs = Jijs_bccFe
-    slc_files = slc_files_bccFe
+    lattice_constant = lattice_constant_CrI3
+    mesh = mesh_CrI3
+    Jijs = Jijs_CrI3
+    slc_files = slc_files_CrI3
 
     smearing = 0.1
     
