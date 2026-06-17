@@ -909,7 +909,7 @@ if __name__ == "__main__":
     slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x.csv', 'Inputs/CrI3/transformed_SLC_tensor_y.csv', 'Inputs/CrI3/transformed_SLC_tensor_z.csv']
-    mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.yaml"
+    mesh_bccFe = "Inputs/bccFe/combined_band_12x12x12.yaml"
     mesh_CrI3 = "Inputs/CrI3/mesh12_CrI3_new_basis.yaml"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
     Jijs_CrI3 = "Inputs/CrI3/JijCrI3.dat"
@@ -917,7 +917,7 @@ if __name__ == "__main__":
     lattice_constant_bccFe = 2.8665  # in Angstroms
     lattice_constant_CrI3 = 7.006660421592247  # in Angstroms
 
-    anisotropy = 0.49
+    anisotropy = 0.01 #0.49
 
     lattice_constant = lattice_constant_bccFe
     mesh = mesh_bccFe
