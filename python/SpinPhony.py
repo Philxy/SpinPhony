@@ -46,7 +46,7 @@ class CrystalDataSoA:
         
         # 4. Populate Data
         self._parse_phonons(config['phonon'])
-        self._compute_magnon_dispersions(K_anisotropy=anisotropy, lattice_constant=lattice_constant)
+        self._compute_magnon_dispersions_test(K_anisotropy=anisotropy, lattice_constant=lattice_constant)
 
         q_frac_array = self.q_grid / self.mesh
         self.q_grid_cart = np.dot(q_frac_array, self.reciprocal_lattice * 2.0 * math.pi)
@@ -286,8 +286,90 @@ class CrystalDataSoA:
                     H_BdG[n, m] = val
                     H_BdG[n + self.n_mag_branches, m + self.n_mag_branches] = np.conj(val)
             
-            # Revert sign of H (temporary hack!!!)
-            H_BdG = -H_BdG
+            try:
+                energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
+                self.w_mag[q_idx] = energies
+                self.eig_mag[q_idx] = para_unitary
+            except RuntimeError as e:
+                print(f"Warning at q_idx {q_idx}: {e}")
+                self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
+
+
+    def _compute_magnon_dispersions_test(self, K_anisotropy=0.5, lattice_constant=1.0):
+        """
+        Calculates generalized magnon energies for any collinear magnetic structure 
+        (FM, AFM, Ferrimagnetic, Altermagnetic).
+        """
+        self.eig_mag = np.zeros((self.N, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+        
+        atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
+        for i, m_idx in enumerate(self.mag_indices):
+            atom_to_mag[m_idx] = i
+
+        # Extract spin magnitudes and local collinear directions (+1 or -1)
+        moments = self.mag_moments[self.mag_indices]
+        S_eff = np.abs(moments) / 2.0
+        sigma = np.sign(moments) 
+        
+        # Precompute real J(0) symmetrically
+        J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
+        for row in self.jij_interactions:
+            i, j = int(row[4]) - 1, int(row[5]) - 1
+            mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
+            if mag_i != -1 and mag_j != -1:
+                J_0[mag_i, mag_j] += row[3]
+                if mag_i != mag_j:
+                    J_0[mag_j, mag_i] += row[3] # Force symmetry
+                
+        for q_idx in range(self.N):
+            q_frac = self.q_grid[q_idx] / self.mesh
+            q_cart = np.dot(q_frac, self.reciprocal_lattice * 2.0 * np.pi)
+            
+            # Calculate q-dependent exchange
+            J_q = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            for row in self.jij_interactions:
+                i, j = int(row[4]) - 1, int(row[5]) - 1
+                mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
+                if mag_i == -1 or mag_j == -1: 
+                    continue
+                
+                r_cart = np.array([row[0], row[1], row[2]]) * lattice_constant
+                phase = np.dot(q_cart, r_cart)
+                
+                J_q[mag_i, mag_j] += row[3] * cmath.exp(1j * phase)
+                if mag_i != mag_j:
+                    J_q[mag_j, mag_i] += row[3] * cmath.exp(-1j * phase) 
+                
+            A_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            B_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            
+            for n in range(self.n_mag_branches):
+                # The local effective field depends on the relative spin orientations
+                sum_J_0 = np.sum([J_0[n, m] * S_eff[m] * (sigma[n] * sigma[m]) 
+                                for m in range(self.n_mag_branches)])
+                
+                for m in range(self.n_mag_branches):
+                    if n == m:
+                        # Diagonal elements (local field + self-interaction + anisotropy)
+                        A_mat[n, n] = sum_J_0 - S_eff[n] * J_q[n, n] + K_anisotropy
+                    else:
+                        if sigma[n] == sigma[m]:
+                            # Parallel spins -> Hopping terms -> A Block
+                            A_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
+                        else:
+                            # Antiparallel spins -> Anomalous terms -> B Block
+                            B_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
+                            
+            # Assemble the full generalized BdG Matrix
+            H_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+            
+            # A and A* on the diagonals
+            H_BdG[:self.n_mag_branches, :self.n_mag_branches] = A_mat
+            H_BdG[self.n_mag_branches:, self.n_mag_branches:] = np.conj(A_mat)
+            
+            # B and B^dagger on the off-diagonals
+            H_BdG[:self.n_mag_branches, self.n_mag_branches:] = B_mat
+            H_BdG[self.n_mag_branches:, :self.n_mag_branches] = np.conj(B_mat.T)
 
             try:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
@@ -296,6 +378,7 @@ class CrystalDataSoA:
             except RuntimeError as e:
                 print(f"Warning at q_idx {q_idx}: {e}")
                 self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
+
 
     def plot_dispersions(self):
         """
@@ -923,12 +1006,12 @@ if __name__ == "__main__":
     anisotropy_bccFe = 0.01 
     anisotropy_CrI3 = 0.49
 
-    anisotropy = anisotropy_CrI3
+    anisotropy = anisotropy_bccFe
 
-    lattice_constant = lattice_constant_CrI3
-    mesh = mesh_CrI3
-    Jijs = Jijs_CrI3
-    slc_files = slc_files_CrI3
+    lattice_constant = lattice_constant_bccFe
+    mesh = mesh_bccFe
+    Jijs = Jijs_bccFe
+    slc_files = slc_files_bccFe
 
     smearing = 0.1
     
