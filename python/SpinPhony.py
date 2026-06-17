@@ -914,7 +914,7 @@ if __name__ == "__main__":
     Jijs = Jijs_CrI3
     slc_files = slc_files_CrI3
 
-    smearing = 1.0
+    smearing = 0.1
     
     crystal_data = CrystalDataSoA(
         mesh,
@@ -996,7 +996,7 @@ if __name__ == "__main__":
 
 
     # 4. Setup Phase 2 memory
-    T_mag_init = 600.0  
+    T_mag_init = 500.0  
     T_phon_init = 300.0
     
     print(f"\nInitializing populations at thermal equilibrium:")
