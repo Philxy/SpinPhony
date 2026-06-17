@@ -7,7 +7,7 @@ import math
 
 
 class CrystalDataSoA:
-    def __init__(self, yaml_filename, exchange_filename, slc_files=None, lattice_constant=1.0):
+    def __init__(self, yaml_filename, exchange_filename, slc_files=None, lattice_constant=1.0, anisotropy=0.01):
         # 1. Parse Jij Data
         self.jij_interactions = np.loadtxt(exchange_filename, delimiter=',', skiprows=1)
 
@@ -46,7 +46,7 @@ class CrystalDataSoA:
         
         # 4. Populate Data
         self._parse_phonons(config['phonon'])
-        self._compute_magnon_dispersions(K_anisotropy=0.01, lattice_constant=lattice_constant)
+        self._compute_magnon_dispersions(K_anisotropy=anisotropy, lattice_constant=lattice_constant) # anisotropy for CrI3 curretly!!!
 
         q_frac_array = self.q_grid / self.mesh
         self.q_grid_cart = np.dot(q_frac_array, self.reciprocal_lattice * 2.0 * math.pi)
@@ -897,7 +897,7 @@ def init_bose_einstein(w_distribution, temperature_K):
 
 
 if __name__ == "__main__":
-    slc_files = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
+    slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x.csv', 'Inputs/CrI3/transformed_SLC_tensor_y.csv', 'Inputs/CrI3/transformed_SLC_tensor_z.csv']
     mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.yaml"
@@ -905,11 +905,12 @@ if __name__ == "__main__":
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
     Jijs_CrI3 = "Inputs/CrI3/JijCrI3.dat"
 
+    lattice_constant_bccFe = 2.8665  # in Angstroms
     lattice_constant_CrI3 = 7.006660421592247  # in Angstroms
 
+    anisotropy = 0.49
+
     lattice_constant = lattice_constant_CrI3
-
-
     mesh = mesh_CrI3
     Jijs = Jijs_CrI3
     slc_files = slc_files_CrI3
@@ -920,7 +921,8 @@ if __name__ == "__main__":
         mesh,
         Jijs,
         slc_files=slc_files,
-        lattice_constant=lattice_constant
+        lattice_constant=lattice_constant,
+        anisotropy_field=anisotropy,  # Set to zero for CrI3 to match the DFT inputs
     )
     
     crystal_data.print_summary()
