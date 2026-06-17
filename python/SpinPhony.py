@@ -264,8 +264,6 @@ class CrystalDataSoA:
                 # 4. Cartesian dot product yields a dimensionless phase
                 phase = np.dot(q_cart, r_cart)
                 J_q[mag_i, mag_j] += row[3] * cmath.exp(1j * phase)
-                if mag_i != mag_j:
-                    J_q[mag_j, mag_i] += row[3] * cmath.exp(-1j * phase) # Forced symmetry
                 
             # Ferromagnetic Hamiltonian: Omega = S * (J_k - sum(J_0))
             Omega_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
@@ -314,20 +312,19 @@ class CrystalDataSoA:
         sigma = np.sign(moments) 
         
         # Precompute real J(0) symmetrically
+        # Precompute real J(0) directly from the full list
         J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
         for row in self.jij_interactions:
             i, j = int(row[4]) - 1, int(row[5]) - 1
             mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
             if mag_i != -1 and mag_j != -1:
                 J_0[mag_i, mag_j] += row[3]
-                if mag_i != mag_j:
-                    J_0[mag_j, mag_i] += row[3] # Force symmetry
                 
         for q_idx in range(self.N):
             q_frac = self.q_grid[q_idx] / self.mesh
             q_cart = np.dot(q_frac, self.reciprocal_lattice * 2.0 * np.pi)
             
-            # Calculate q-dependent exchange
+            # Calculate q-dependent exchange directly from the full list
             J_q = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
             for row in self.jij_interactions:
                 i, j = int(row[4]) - 1, int(row[5]) - 1
@@ -339,12 +336,14 @@ class CrystalDataSoA:
                 phase = np.dot(q_cart, r_cart)
                 
                 J_q[mag_i, mag_j] += row[3] * cmath.exp(1j * phase)
-                if mag_i != mag_j:
-                    J_q[mag_j, mag_i] += row[3] * cmath.exp(-1j * phase) 
                 
+            # Clean up floating point noise to ensure strict Hermiticity for Colpa's algorithm
+            J_q = (J_q + J_q.conj().T) / 2.0
+            J_0 = (J_0 + J_0.T) / 2.0
+            
             A_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
             B_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
-            
+                
             for n in range(self.n_mag_branches):
                 # The local effective field depends on the relative spin orientations
                 sum_J_0 = np.sum([J_0[n, m] * S_eff[m] * (sigma[n] * sigma[m]) 
