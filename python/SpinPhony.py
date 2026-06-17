@@ -496,8 +496,16 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, grid_map, slc_a
     # Find the Gamma point (0,0,0) index
     gamma_idx = grid_map[0, 0, 0]
 
-    if kp_idx == gamma_idx or q_idx == gamma_idx: #maybe this is not necessary as we skip it when calling the kernel
+
+
+    omega = w_phon[q_idx, lambda_phon]
+    
+    if omega < 1e-1:
         return 0.0
+
+    # this is crucian. Now we check for the energy instead
+    #if kp_idx == gamma_idx or q_idx == gamma_idx: #maybe this is not necessary as we skip it when calling the kernel
+    #    return 0.0
     
 
     omega = w_phon[q_idx, lambda_phon]
@@ -590,8 +598,9 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon, s
     if q_idx >= N or k_idx >= N: 
         return
 
-    if q_idx == k_idx or q_idx == gamma_idx or k_idx == gamma_idx:
-        return
+    # We allow this for now:
+    #if q_idx == k_idx or q_idx == gamma_idx or k_idx == gamma_idx:
+    #    return
         
     n_mag = w_mag.shape[1]
     n_phon = w_phon.shape[1]
@@ -910,10 +919,10 @@ if __name__ == "__main__":
 
     anisotropy = 0.49
 
-    lattice_constant = lattice_constant_CrI3
-    mesh = mesh_CrI3
-    Jijs = Jijs_CrI3
-    slc_files = slc_files_CrI3
+    lattice_constant = lattice_constant_bccFe
+    mesh = mesh_bccFe
+    Jijs = Jijs_bccFe
+    slc_files = slc_files_bccFe
 
     smearing = 0.1
     
