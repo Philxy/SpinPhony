@@ -922,7 +922,7 @@ if __name__ == "__main__":
         Jijs,
         slc_files=slc_files,
         lattice_constant=lattice_constant,
-        anisotropy_field=anisotropy,  # Set to zero for CrI3 to match the DFT inputs
+        anisotropy=anisotropy,  # Set to zero for CrI3 to match the DFT inputs
     )
     
     crystal_data.print_summary()
