@@ -1007,8 +1007,8 @@ if __name__ == "__main__":
 
 
     # 4. Setup Phase 2 memory
-    T_mag_init = 20 
-    T_phon_init = 10
+    T_mag_init = 600 
+    T_phon_init = 300
     
     print(f"\nInitializing populations at thermal equilibrium:")
     print(f" -> Magnons: {T_mag_init} K")
