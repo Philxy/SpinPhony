@@ -264,6 +264,8 @@ class CrystalDataSoA:
                 # 4. Cartesian dot product yields a dimensionless phase
                 phase = np.dot(q_cart, r_cart)
                 J_q[mag_i, mag_j] += row[3] * cmath.exp(1j * phase)
+                if mag_i != mag_j:
+                    J_q[mag_j, mag_i] += row[3] * cmath.exp(-1j * phase) # Forced symmetry
                 
             # Ferromagnetic Hamiltonian: Omega = S * (J_k - sum(J_0))
             Omega_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
