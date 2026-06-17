@@ -899,17 +899,27 @@ def init_bose_einstein(w_distribution, temperature_K):
 if __name__ == "__main__":
     slc_files = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
+    slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x.csv', 'Inputs/CrI3/transformed_SLC_tensor_y.csv', 'Inputs/CrI3/transformed_SLC_tensor_z.csv']
     mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.yaml"
+    mesh_CrI3 = "Inputs/CrI3/mesh12_CrI3_new_basis.yaml"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
+    Jijs_CrI3 = "Inputs/CrI3/JijCrI3.dat"
 
-    lattice_constant = 4.103
+    lattice_constant_CrI3 = 7.006660421592247  # in Angstroms
+
+    lattice_constant = lattice_constant_CrI3
+
+
+    mesh = mesh_CrI3
+    Jijs = Jijs_CrI3
+    slc_files = slc_files_CrI3
 
     smearing = 1.0
     
     crystal_data = CrystalDataSoA(
-        mesh_bccFe,
-        Jijs_bccFe,
-        slc_files=slc_files_bccFe,
+        mesh,
+        Jijs,
+        slc_files=slc_files,
         lattice_constant=lattice_constant
     )
     
