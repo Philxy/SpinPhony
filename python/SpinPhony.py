@@ -46,7 +46,7 @@ class CrystalDataSoA:
         
         # 4. Populate Data
         self._parse_phonons(config['phonon'])
-        self._compute_magnon_dispersions(K_anisotropy=anisotropy, lattice_constant=lattice_constant) # anisotropy for CrI3 curretly!!!
+        self._compute_magnon_dispersions(K_anisotropy=anisotropy, lattice_constant=lattice_constant)
 
         q_frac_array = self.q_grid / self.mesh
         self.q_grid_cart = np.dot(q_frac_array, self.reciprocal_lattice * 2.0 * math.pi)
@@ -998,8 +998,8 @@ if __name__ == "__main__":
 
 
     # 4. Setup Phase 2 memory
-    T_mag_init = 500.0  
-    T_phon_init = 300.0
+    T_mag_init = 20 
+    T_phon_init = 10
     
     print(f"\nInitializing populations at thermal equilibrium:")
     print(f" -> Magnons: {T_mag_init} K")
