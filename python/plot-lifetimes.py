@@ -59,7 +59,7 @@ df = df[df["particle"] == "magnon"]
 plt.figure(figsize=(8, 6))
 
 plt.scatter(
-    df["energy_meV"], 2 * df["tau_ps"], s=10, alpha=0.7, label="Current Work ($2\\tau$)"
+    df["energy_meV"], df["tau_ps"], s=10, alpha=0.7, label="Current work"
 )
 
 

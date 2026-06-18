@@ -4,54 +4,66 @@ import os
 from numba import cuda
 import cmath
 import math
+import h5py
 
 
 class CrystalDataSoA:
-    def __init__(self, yaml_filename, exchange_filename, slc_files=None, lattice_constant=1.0, anisotropy=0.01):
+    def __init__(self, hdf5_filename, exchange_filename, slc_files=None, lattice_constant=1.0, anisotropy=0.01):
         # 1. Parse Jij Data
         self.jij_interactions = np.loadtxt(exchange_filename, delimiter=',', skiprows=1)
 
-        # 2. Parse YAML
-        with open(yaml_filename, 'r') as f:
-            config = yaml.safe_load(f)
-            
-        self.mesh = np.array(config['mesh'], dtype=np.int32)
-        self.N = config['nqpoint']
-        self.l_atoms = config['natom']
+        # 2. Instant Binary Load via HDF5
+        with h5py.File(hdf5_filename, 'r') as f:
+            self.mesh = f['mesh'][:]
+            self.N = f['nqpoint'][()]
+            self.l_atoms = f['natom'][()]
+            self.reciprocal_lattice = f['reciprocal_lattice'][:]
+            self.atom_masses = f['atom_masses'][:]
+            self.mag_moments = f['mag_moments'][:]
+            q_frac_positions = f['q_positions'][:]
+            self.dyn_mat_phon = f['dynamical_matrices'][:]
+
         self.phon_branches = 3 * self.l_atoms
-        self.reciprocal_lattice = np.array(config['reciprocal_lattice'], dtype=np.float64)
-        
-        self.atom_masses = np.zeros(self.l_atoms, dtype=np.float64)
-        self.mag_moments = np.zeros(self.l_atoms, dtype=np.float64)
-        
-        for idx, point in enumerate(config['points']):
-            self.atom_masses[idx] = point['mass']
-            mag = point['magnetic_moment']
-            if isinstance(mag, list):
-                self.mag_moments[idx] = np.linalg.norm(mag)
-            else:
-                self.mag_moments[idx] = float(mag)
-                
         self.mag_indices = np.where(np.abs(self.mag_moments) > 1e-2)[0]
         self.n_mag_branches = len(self.mag_indices)
-        
-        # 3. Allocate GPU-Ready NumPy Arrays
+
+        # 3. Reconstruct Grid Maps and Phonon Eigendecomposition
         self.q_grid = np.zeros((self.N, 3), dtype=np.int32)
         self.grid_map = np.full((self.mesh[0], self.mesh[1], self.mesh[2]), -1, dtype=np.int32)
         
         self.w_phon = np.zeros((self.N, self.phon_branches), dtype=np.float64)
         self.eig_phon = np.zeros((self.N, self.phon_branches, self.l_atoms, 3), dtype=np.complex128)
-        self.dyn_mat_phon = np.zeros((self.N, self.phon_branches, self.phon_branches), dtype=np.complex128)
+
+        # Process the q-grid mapping
+        for q_idx in range(self.N):
+            grid_pos = np.round(q_frac_positions[q_idx] * self.mesh).astype(np.int32) % self.mesh
+            self.q_grid[q_idx] = grid_pos
+            self.grid_map[grid_pos[0], grid_pos[1], grid_pos[2]] = q_idx
+            
+            # Diagonalize the pre-sliced complex dynamical matrix
+            dm_complex = self.dyn_mat_phon[q_idx]
+            eigenvalues, eigenvectors = np.linalg.eigh(dm_complex)
+            
+            for b in range(self.phon_branches):
+                ev = eigenvalues[b]
+                self.w_phon[q_idx, b] = (np.sqrt(ev) if ev > 0 else -np.sqrt(-ev)) * 4.135667696 * 15.633302
+                for atom in range(self.l_atoms):
+                    self.eig_phon[q_idx, b, atom, 0] = eigenvectors[3*atom + 0, b]
+                    self.eig_phon[q_idx, b, atom, 1] = eigenvectors[3*atom + 1, b]
+                    self.eig_phon[q_idx, b, atom, 2] = eigenvectors[3*atom + 2, b]
+
+        if np.any(self.grid_map == -1):
+            raise ValueError("Grid map initialization failed: Incomplete q-point mesh.")
+
+        # Allocate and Compute Magnons
         self.w_mag = np.zeros((self.N, self.n_mag_branches), dtype=np.float64)
-        
-        # 4. Populate Data
-        self._parse_phonons(config['phonon'])
         self._compute_magnon_dispersions_test(K_anisotropy=anisotropy, lattice_constant=lattice_constant)
 
+        # Cartesian conversion
         q_frac_array = self.q_grid / self.mesh
-        self.q_grid_cart = np.dot(q_frac_array, self.reciprocal_lattice * 2.0 * math.pi)
+        self.q_grid_cart = np.dot(q_frac_array, self.reciprocal_lattice * 2.0 * np.pi)
         
-        # 5. Parse SLC Tensors
+        # 4. Parse SLC Tensors
         if slc_files and len(slc_files) == 3:
             self._parse_slc_tensors(slc_files[0], slc_files[1], slc_files[2], lattice_constant)
 
@@ -296,177 +308,182 @@ class CrystalDataSoA:
 
 
     def _compute_magnon_dispersions_test(self, K_anisotropy=0.5, lattice_constant=1.0):
-        """
-        Calculates generalized magnon energies for any collinear magnetic structure 
-        (FM, AFM, Ferrimagnetic, Altermagnetic).
-        """
-        self.eig_mag = np.zeros((self.N, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
-        
-        atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
-        for i, m_idx in enumerate(self.mag_indices):
-            atom_to_mag[m_idx] = i
-
-        # Extract spin magnitudes and local collinear directions (+1 or -1)
-        moments = self.mag_moments[self.mag_indices]
-        S_eff = np.abs(moments) / 2.0
-        sigma = np.sign(moments) 
-        
-        # Precompute real J(0) symmetrically
-        # Precompute real J(0) directly from the full list
-        J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
-        for row in self.jij_interactions:
-            i, j = int(row[4]) - 1, int(row[5]) - 1
-            mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
-            if mag_i != -1 and mag_j != -1:
-                J_0[mag_i, mag_j] += row[3]
-                
-        for q_idx in range(self.N):
-            q_frac = self.q_grid[q_idx] / self.mesh
-            q_cart = np.dot(q_frac, self.reciprocal_lattice * 2.0 * np.pi)
+            self.eig_mag = np.zeros((self.N, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
             
-            # Calculate q-dependent exchange directly from the full list
-            J_q = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
+            for i, m_idx in enumerate(self.mag_indices):
+                atom_to_mag[m_idx] = i
+
+            moments = self.mag_moments[self.mag_indices]
+            S_eff = np.abs(moments) / 2.0
+            sigma = np.sign(moments) 
+            
+            # 1. Pre-extract all valid Jij connections
+            valid_bonds = []
+            J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
             for row in self.jij_interactions:
                 i, j = int(row[4]) - 1, int(row[5]) - 1
                 mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
-                if mag_i == -1 or mag_j == -1: 
-                    continue
-                
-                r_cart = np.array([row[0], row[1], row[2]]) * lattice_constant
-                phase = np.dot(q_cart, r_cart)
-                
-                J_q[mag_i, mag_j] += row[3] * cmath.exp(1j * phase)
-                
-            # Clean up floating point noise to ensure strict Hermiticity for Colpa's algorithm
-            J_q = (J_q + J_q.conj().T) / 2.0
-            J_0 = (J_0 + J_0.T) / 2.0
-            
-            A_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
-            B_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
-                
-            for n in range(self.n_mag_branches):
-                # The local effective field depends on the relative spin orientations
-                sum_J_0 = np.sum([J_0[n, m] * S_eff[m] * (sigma[n] * sigma[m]) 
-                                for m in range(self.n_mag_branches)])
-                
-                for m in range(self.n_mag_branches):
-                    if n == m:
-                        # Diagonal elements (local field + self-interaction + anisotropy)
-                        A_mat[n, n] = sum_J_0 - S_eff[n] * J_q[n, n] + K_anisotropy
-                    else:
-                        if sigma[n] == sigma[m]:
-                            # Parallel spins -> Hopping terms -> A Block
-                            A_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
-                        else:
-                            # Antiparallel spins -> Anomalous terms -> B Block
-                            B_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
-                            
-            # Assemble the full generalized BdG Matrix
-            H_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
-            
-            # A and A* on the diagonals
-            H_BdG[:self.n_mag_branches, :self.n_mag_branches] = A_mat
-            H_BdG[self.n_mag_branches:, self.n_mag_branches:] = np.conj(A_mat)
-            
-            # B and B^dagger on the off-diagonals
-            H_BdG[:self.n_mag_branches, self.n_mag_branches:] = B_mat
-            H_BdG[self.n_mag_branches:, :self.n_mag_branches] = np.conj(B_mat.T)
+                if mag_i != -1 and mag_j != -1:
+                    J_0[mag_i, mag_j] += row[3]
+                    valid_bonds.append((mag_i, mag_j, row[0], row[1], row[2], row[3]))
 
-            try:
-                energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
-                self.w_mag[q_idx] = energies
-                self.eig_mag[q_idx] = para_unitary
-            except RuntimeError as e:
-                print(f"Warning at q_idx {q_idx}: {e}")
-                self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
+            J_0 = (J_0 + J_0.T) / 2.0 # Force strict symmetry
+            
+            # Convert to fast NumPy arrays
+            mag_i_arr = np.array([b[0] for b in valid_bonds])
+            mag_j_arr = np.array([b[1] for b in valid_bonds])
+            r_cart_arr = np.array([b[2:5] for b in valid_bonds]) * lattice_constant
+            J_val_arr = np.array([b[5] for b in valid_bonds])
+
+            # 2. Compute q_cart for ALL q-points at once (Shape: N_points x 3)
+            q_frac = self.q_grid / self.mesh
+            q_cart_all = np.dot(q_frac, self.reciprocal_lattice * 2.0 * np.pi)
+
+            # 3. Vectorized Phase Calculation
+            # np.dot( (N x 3), (3 x N_bonds) ) -> phases is (N x N_bonds)
+            phases = np.dot(q_cart_all, r_cart_arr.T)
+            
+            # Compute exp(i * phase) * J for all q-points and bonds simultaneously
+            exp_phases = np.exp(1j * phases) * J_val_arr
+
+            # 4. Accumulate J_q for all q-points
+            J_q_all = np.zeros((self.N, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            for b_idx in range(len(valid_bonds)):
+                mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
+                J_q_all[:, mi, mj] += exp_phases[:, b_idx]
+                
+            # Symmetrize all J_q matrices simultaneously to kill floating point noise
+            J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
+
+            # 5. Build BdG and Diagonalize (Now the loop only handles small 4x4 matrices)
+            for q_idx in range(self.N):
+                J_q = J_q_all[q_idx]
+                
+                A_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+                B_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+                    
+                for n in range(self.n_mag_branches):
+                    sum_J_0 = np.sum([J_0[n, m] * S_eff[m] * (sigma[n] * sigma[m]) for m in range(self.n_mag_branches)])
+                    for m in range(self.n_mag_branches):
+                        if n == m:
+                            A_mat[n, n] = sum_J_0 - S_eff[n] * J_q[n, n] + K_anisotropy
+                        else:
+                            if sigma[n] == sigma[m]:
+                                A_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
+                            else:
+                                B_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
+                                
+                H_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+                H_BdG[:self.n_mag_branches, :self.n_mag_branches] = A_mat
+                H_BdG[self.n_mag_branches:, self.n_mag_branches:] = np.conj(A_mat)
+                H_BdG[:self.n_mag_branches, self.n_mag_branches:] = B_mat
+                H_BdG[self.n_mag_branches:, :self.n_mag_branches] = np.conj(B_mat.T)
+
+                # Positive Definiteness Enforcement
+                min_eig = np.min(np.linalg.eigvalsh(H_BdG))
+                if min_eig <= 1e-8:
+                    np.fill_diagonal(H_BdG, H_BdG.diagonal() + np.abs(min_eig) + 1e-5)
+
+                try:
+                    energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
+                    self.w_mag[q_idx] = energies
+                    self.eig_mag[q_idx] = para_unitary
+                except RuntimeError as e:
+                    print(f"Warning at q_idx {q_idx}: {e}")
+                    self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
 
 
     def plot_dispersions(self):
-        """
-        Extracts high-symmetry lines from the random SoA q-grid and plots 
-        the Magnon and Phonon dispersions to verify energy scales.
-        """
-        import matplotlib.pyplot as plt
-        
-        # 1. Define high-symmetry path for bcc lattice
-        # Fractional coordinates [x, y, z]
-        sym_points = {
-            'Γ': [0.0, 0.0, 0.0],
-            'H': [0.5, -0.5, 0.5],
-            'N': [0.0, 0.0, 0.5],
-            'P': [0.25, 0.25, 0.25]
-        }
-        path = ['Γ', 'H', 'N', 'Γ', 'P', 'N']
-        
-        # 2. Reconstruct path matching the grid
-        k_path_indices = []
-        k_distances = []
-        tick_locs = []
-        tick_labels = []
-        
-        current_dist = 0.0
-        
-        for i in range(len(path) - 1):
-            p1 = np.array(sym_points[path[i]])
-            p2 = np.array(sym_points[path[i+1]])
+            """
+            Extracts high-symmetry lines from the random SoA q-grid and plots 
+            the Magnon and Phonon dispersions to verify energy scales.
+            """
+            import matplotlib.pyplot as plt
             
-            # Number of steps based on grid resolution
-            steps = np.max(self.mesh) 
+            # 1. Define high-symmetry path for Hexagonal lattice (CrI3)
+            # Fractional coordinates [x, y, z]
+            sym_points = {
+                'Γ': [0.0, 0.0, 0.0],
+                'M': [0.5, 0.0, 0.0],
+                'K': [1/3, 1/3, 0.0],
+                'A': [0.0, 0.0, 0.5],
+                'L': [0.5, 0.0, 0.5],
+                'H': [1/3, 1/3, 0.5]
+            }
             
-            tick_locs.append(current_dist)
-            tick_labels.append(path[i])
+            # Standard path for 3D hexagonal systems
+            path = ['Γ', 'M', 'K', 'Γ', 'A', 'L', 'H', 'A']
             
-            for step in range(steps):
-                frac = p1 + (p2 - p1) * (step / steps)
-                # Map to grid integers
-                grid_pos = np.round(frac * self.mesh).astype(np.int32) % self.mesh
-                q_idx = self.grid_map[grid_pos[0], grid_pos[1], grid_pos[2]]
+            # 2. Reconstruct path matching the grid
+            k_path_indices = []
+            k_distances = []
+            tick_locs = []
+            tick_labels = []
+            
+            current_dist = 0.0
+            
+            for i in range(len(path) - 1):
+                p1 = np.array(sym_points[path[i]])
+                p2 = np.array(sym_points[path[i+1]])
                 
-                if q_idx != -1 and (len(k_path_indices) == 0 or q_idx != k_path_indices[-1]):
-                    k_path_indices.append(q_idx)
-                    k_distances.append(current_dist)
+                # Number of steps based on grid resolution
+                steps = np.max(self.mesh) 
+                
+                tick_locs.append(current_dist)
+                tick_labels.append(path[i])
+                
+                for step in range(steps):
+                    frac = p1 + (p2 - p1) * (step / steps)
+                    # Map to grid integers
+                    grid_pos = np.round(frac * self.mesh).astype(np.int32) % self.mesh
+                    q_idx = self.grid_map[grid_pos[0], grid_pos[1], grid_pos[2]]
                     
-                    if step > 0:
-                        dp = (p2 - p1) / steps
-                        # Dist in Cartesian space
-                        cart_dp = np.dot(dp, self.reciprocal_lattice * 2.0 * np.pi)
-                        current_dist += np.linalg.norm(cart_dp)
+                    if q_idx != -1 and (len(k_path_indices) == 0 or q_idx != k_path_indices[-1]):
+                        k_path_indices.append(q_idx)
+                        k_distances.append(current_dist)
+                        
+                        if step > 0:
+                            dp = (p2 - p1) / steps
+                            # Dist in Cartesian space
+                            cart_dp = np.dot(dp, self.reciprocal_lattice * 2.0 * np.pi)
+                            current_dist += np.linalg.norm(cart_dp)
 
-        # Append final point
-        tick_locs.append(current_dist)
-        tick_labels.append(path[-1])
-        
-        # 3. Extract energies along the path
-        w_mag_path = self.w_mag[k_path_indices]
-        w_phon_path = self.w_phon[k_path_indices]
-        
-        # 4. Plot
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        # Plot Phonons
-        for b in range(self.phon_branches):
-            label = 'Phonons' if b == 0 else ""
-            ax.plot(k_distances, w_phon_path[:, b], color='#1f77b4', lw=2, label=label)
+            # Append final point
+            tick_locs.append(current_dist)
+            tick_labels.append(path[-1])
             
-        # Plot Magnons
-        for b in range(self.n_mag_branches):
-            label = 'Magnons' if b == 0 else ""
-            ax.plot(k_distances, w_mag_path[:, b], color='#d62728', lw=2, linestyle='--', label=label)
+            # 3. Extract energies along the path
+            w_mag_path = self.w_mag[k_path_indices]
+            w_phon_path = self.w_phon[k_path_indices]
+            
+            # 4. Plot
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            # Plot Phonons
+            for b in range(self.phon_branches):
+                label = 'Phonons' if b == 0 else ""
+                ax.plot(k_distances, w_phon_path[:, b], color='#1f77b4', lw=2, label=label)
+                
+            # Plot Magnons
+            for b in range(self.n_mag_branches):
+                label = 'Magnons' if b == 0 else ""
+                ax.plot(k_distances, w_mag_path[:, b], color='#d62728', lw=2, linestyle='--', label=label)
 
-        # Formatting
-        ax.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
-        ax.set_xlim(0, current_dist)
-        ax.set_ylim(bottom=0)
-        ax.set_xticks(tick_locs)
-        ax.set_xticklabels(tick_labels, fontsize=14)
-        ax.grid(True, axis='x', linestyle='-', color='gray', alpha=0.5)
-        ax.grid(True, axis='y', linestyle=':', color='gray', alpha=0.5)
-        ax.legend(loc='upper right', fontsize=12, framealpha=1.0)
-        ax.set_title('BCC Fe Dispersion Verification', fontsize=16, fontweight='bold')
-        
-        plt.tight_layout()
-        plt.savefig('dispersion_verification.png', dpi=300)
-        print("-> Saved dispersion plot to 'dispersion_verification.png'")
+            # Formatting
+            ax.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
+            ax.set_xlim(0, current_dist)
+            ax.set_ylim(bottom=0)
+            ax.set_xticks(tick_locs)
+            ax.set_xticklabels(tick_labels, fontsize=14)
+            ax.grid(True, axis='x', linestyle='-', color='gray', alpha=0.5)
+            ax.grid(True, axis='y', linestyle=':', color='gray', alpha=0.5)
+            ax.legend(loc='upper right', fontsize=12, framealpha=1.0)
+            ax.set_title('CrI3 Hexagonal Dispersion Verification', fontsize=16, fontweight='bold')
+            
+            plt.tight_layout()
+            plt.savefig('dispersion_verification.png', dpi=300)
+            print("-> Saved dispersion plot to 'dispersion_verification.png'")
 
 
 
@@ -995,9 +1012,9 @@ def init_bose_einstein(w_distribution, temperature_K):
 if __name__ == "__main__":
     slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
-    slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x.csv', 'Inputs/CrI3/transformed_SLC_tensor_y.csv', 'Inputs/CrI3/transformed_SLC_tensor_z.csv']
-    mesh_bccFe = "Inputs/bccFe/combined_band_12x12x12.yaml"
-    mesh_CrI3 = "Inputs/CrI3/mesh12_CrI3_new_basis.yaml"
+    slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
+    mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.h5"
+    mesh_CrI3 = "Inputs/CrI3/combined_band_20x20x20.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
     Jijs_CrI3 = "Inputs/CrI3/JijCrI3.dat"
 
@@ -1007,9 +1024,9 @@ if __name__ == "__main__":
     anisotropy_bccFe = 0.01 
     anisotropy_CrI3 = 0.49
 
-    anisotropy = anisotropy_CrI3    
+    anisotropy = anisotropy_CrI3     
 
-    lattice_constant = lattice_constant_CrI3
+    lattice_constant = lattice_constant_CrI3    
     mesh = mesh_CrI3
     Jijs = Jijs_CrI3
     slc_files = slc_files_CrI3
@@ -1017,7 +1034,7 @@ if __name__ == "__main__":
     smearing = 0.1
     
     crystal_data = CrystalDataSoA(
-        mesh,
+        mesh, 
         Jijs,
         slc_files=slc_files,
         lattice_constant=lattice_constant,
@@ -1035,7 +1052,7 @@ if __name__ == "__main__":
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
     
-    anticipated_fraction = 0.1
+    anticipated_fraction = 0.01
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
@@ -1097,8 +1114,8 @@ if __name__ == "__main__":
 
 
     # 4. Setup Phase 2 memory
-    T_mag_init = 20 
-    T_phon_init = 10
+    T_mag_init = 25
+    T_phon_init = 20
     
     print(f"\nInitializing populations at thermal equilibrium:")
     print(f" -> Magnons: {T_mag_init} K")
@@ -1181,7 +1198,7 @@ if __name__ == "__main__":
 
     # ========================== Time-evolution Phase ==========================
     steps = 10000000
-    dt = 5E-4  # ps
+    dt = 5E-5  # ps
     
     # Grid sizes for both kernels
     blocks_eval = math.ceil(num_channels / threads_per_block)
@@ -1196,7 +1213,7 @@ if __name__ == "__main__":
     for step in range(steps):
         
         # CPU Interaction: Only pull data across the PCIe bus every 100 steps
-        if step % 10000 == 0:
+        if step % 1000 == 0:
             compute_and_write_observables(
                 step=step,
                 current_time=step * dt,
