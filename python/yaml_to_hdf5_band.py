@@ -52,7 +52,7 @@ def convert_band_yaml_to_hdf5(yaml_file, hdf5_file):
         else:
             mag_moments[idx] = float(mag)
 
-    print("Extracting phonon bands, frequencies, and eigenvectors...")
+    print("Extracting phonon bands, frequencies, eigenvectors, and dynamical matrices...")
     # Dynamically determine number of bands from the first q-point
     phon_bands = len(config['phonon'][0]['band'])
     
@@ -62,15 +62,23 @@ def convert_band_yaml_to_hdf5(yaml_file, hdf5_file):
     # Check what optional band data is available
     has_gv = 'group_velocity' in config['phonon'][0]['band'][0]
     has_evec = 'eigenvector' in config['phonon'][0]['band'][0]
+    has_dm = 'dynamical_matrix' in config['phonon'][0]
 
     if has_gv:
         group_velocities = np.zeros((nqpoint, phon_bands, 3), dtype=np.float64)
     if has_evec:
         eigenvectors = np.zeros((nqpoint, phon_bands, natom, 3), dtype=np.complex128)
+    if has_dm:
+        dynamical_matrices = np.zeros((nqpoint, phon_bands, phon_bands), dtype=np.complex128)
 
     for q_idx, p_node in enumerate(config['phonon']):
         if 'q-position' in p_node:
             q_positions[q_idx] = p_node['q-position']
+            
+        # Fast extraction of the dynamical matrix
+        if has_dm and 'dynamical_matrix' in p_node:
+            dm_raw = np.array(p_node['dynamical_matrix'], dtype=np.float64)
+            dynamical_matrices[q_idx] = dm_raw[:, 0::2] + 1j * dm_raw[:, 1::2]
             
         for b_idx, band in enumerate(p_node['band']):
             frequencies[q_idx, b_idx] = band['frequency']
@@ -115,6 +123,8 @@ def convert_band_yaml_to_hdf5(yaml_file, hdf5_file):
             f.create_dataset('group_velocities', data=group_velocities, compression="gzip")
         if has_evec:
             f.create_dataset('eigenvectors', data=eigenvectors, compression="gzip")
+        if has_dm:
+            f.create_dataset('dynamical_matrices', data=dynamical_matrices, compression="gzip")
 
     print(f"Success! HDF5 file saved in {time.time() - t0:.2f} seconds total.")
 
