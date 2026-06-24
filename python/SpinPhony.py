@@ -483,6 +483,8 @@ class CrystalDataSoA:
             # ==========================================
             # 3. SLC Blocks
             # ==========================================
+
+            """
             vp = V_plus_all[q_idx]
             vm = V_minus_all[q_idx]
 
@@ -506,6 +508,8 @@ class CrystalDataSoA:
             min_eig = np.min(np.linalg.eigvalsh(H_BdG))
             if min_eig <= 1e-8:
                 np.fill_diagonal(H_BdG, H_BdG.diagonal() + np.abs(min_eig) + 1e-5)
+
+            """
 
             try:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
