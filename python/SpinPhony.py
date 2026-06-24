@@ -1232,7 +1232,7 @@ if __name__ == "__main__":
 
 
     # Load the high-symmetry path from the HDF5 band file
-    crystal_data.load_and_evaluate_path_hdf5("Inputs/CrI3/band.h5", anisotropy=anisotropy, lattice_constant=lattice_constant)
+    crystal_data.load_and_evaluate_path_hdf5("Inputs/CrI3/band.h5", K_anisotropy=anisotropy, lattice_constant=lattice_constant)
     # Save the exact path energies to a CSV
     crystal_data.save_path_dispersions("Outputs/path_dispersions.csv")
     # Plot the exact path
