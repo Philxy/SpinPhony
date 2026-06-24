@@ -486,192 +486,6 @@ class CrystalDataSoA:
         print(f"-> Evaluated {self.N_path} exact path points.")
 
 
-    @cuda.jit(device=True)
-    def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
-        """Computes the FT tensor explicitly passing scalar Cartesian coordinates."""
-        for a in range(3):
-            for b in range(3):
-                J_tilde_out[a, b] = 0.0 + 0.0j
-
-        for i in range(slc_axis.shape[0]):
-            if slc_axis[i] == mu_type:
-                if slc_types[i, 0] == n_type and slc_types[i, 1] == m_type and slc_types[i, 2] == l_type:
-                    phase_val = (kpx * slc_rij[i, 0] + kpy * slc_rij[i, 1] + kpz * slc_rij[i, 2]) + \
-                                (qx * slc_rik[i, 0] + qy * slc_rik[i, 1] + qz * slc_rik[i, 2])
-                    phase_factor = cmath.exp(1j * phase_val)
-                    for a in range(3):
-                        for b in range(3):
-                            J_tilde_out[a, b] += slc_J[i, a, b] * phase_factor
-
-    @cuda.jit(device=True)
-    def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m, 
-                        slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                        eig_phon_q, omega, atom_masses, mag_moments):
-        """Calculates the scattering vertex specifically for explicitly projected wavevectors."""
-        if omega < 1e-1: return 0.0
-        
-        hbar = 0.6582119569 # meV * ps
-        DALTON_TO_meV_PS2_PER_A2 = 0.10364269
-        
-        S_n = math.fabs(mag_moments[n] / 2.0 ) 
-        S_m = math.fabs(mag_moments[m] / 2.0 )
-        sigma_n = math.copysign(1.0, mag_moments[n]) if S_n > 0 else 0.0
-        sigma_m = math.copysign(1.0, mag_moments[m]) if S_m > 0 else 0.0
-
-        J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
-        J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
-        V_complex = 0.0 + 0.0j
-        
-        num_atoms = atom_masses.shape[0]
-        num_mag_branches = mag_moments.shape[0]
-
-        for l in range(num_atoms):
-            mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
-            disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * omega))
-            
-            for mu in range(3):
-                e_mu = eig_phon_q[lambda_phon, l, mu]
-                
-                calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
-                W_dynamic = (J_tilde_dyn[0, 0] + (sigma_n * sigma_m) * J_tilde_dyn[1, 1] - 1j * sigma_m * J_tilde_dyn[0, 1] + 1j * sigma_n * J_tilde_dyn[1, 0]) / math.sqrt(S_n * S_m)
-                
-                W_static = 0.0 + 0.0j
-                if n == m: 
-                    for mp in range(num_mag_branches):
-                        if math.fabs(mag_moments[mp]) > 1e-2:
-                            sigma_mp = math.copysign(1.0, mag_moments[mp])
-                            calc_fourier_transform_vec(gammax, gammay, gammaz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
-                            W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2]
-                            
-                V_complex += disp_amp * e_mu * (W_dynamic - W_static)
-                
-        return (V_complex.real**2 + V_complex.imag**2)
-
-    @cuda.jit
-    def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map, 
-                        path_q_frac, path_q_cart, path_w_phon, path_w_mag, path_eig_phon,
-                        w_phon_grid, w_mag_grid, eig_phon_grid,
-                        slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                        smearing, chan_indices, chan_weights, channel_count, 
-                        atom_masses, mag_moments, gamma_idx):
-        """Scans phase space integrating exact path points against the BZ grid."""
-        path_idx, k_idx = cuda.grid(2)
-        
-        if path_idx >= path_q_frac.shape[0] or k_idx >= grid_q_frac.shape[0]: 
-            return
-            
-        n_mag = path_w_mag.shape[1]
-        n_phon = path_w_phon.shape[1]
-        gaussian_norm = 1.0 / (smearing * 2.50662827463)
-        cutoff = 3.0 * smearing
-        
-        # 1. Kinematics mapping: q(path) - k(grid) -> p(grid nearest neighbor)
-        px_int = int(math.floor(((path_q_frac[path_idx, 0] - grid_q_frac[k_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
-        py_int = int(math.floor(((path_q_frac[path_idx, 1] - grid_q_frac[k_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
-        pz_int = int(math.floor(((path_q_frac[path_idx, 2] - grid_q_frac[k_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
-        idx_qmink = grid_map[px_int, py_int, pz_int]
-
-        # 2. Kinematics mapping: k(grid) - q(path) -> p(grid nearest neighbor)
-        px2_int = int(math.floor(((grid_q_frac[k_idx, 0] - path_q_frac[path_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
-        py2_int = int(math.floor(((grid_q_frac[k_idx, 1] - path_q_frac[path_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
-        pz2_int = int(math.floor(((grid_q_frac[k_idx, 2] - path_q_frac[path_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
-        idx_kminq = grid_map[px2_int, py2_int, pz2_int]
-
-        gammax, gammay, gammaz = grid_q_cart[gamma_idx, 0], grid_q_cart[gamma_idx, 1], grid_q_cart[gamma_idx, 2]
-
-        for n in range(n_mag):
-            for m in range(n_mag):
-                for lam in range(n_phon):
-                    
-                    # 0: Magnon Emission (Magnon on path -> Magnon + Phonon on grid)
-                    dE = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] - w_phon_grid[idx_qmink, lam]
-                    if abs(dE) < cutoff:
-                        weight = gaussian_norm * math.exp(-0.5 * (dE*dE) / (smearing*smearing))
-                        kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
-                        qx, qy, qz = grid_q_cart[idx_qmink, 0], grid_q_cart[idx_qmink, 1], grid_q_cart[idx_qmink, 2]
-                        
-                        V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m,
-                                                slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                                                eig_phon_grid[idx_qmink], w_phon_grid[idx_qmink, lam], atom_masses, mag_moments)
-                        c_idx = cuda.atomic.add(channel_count, 0, 1)
-                        if c_idx < chan_indices.shape[1]:
-                            chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
-                            chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
-                            chan_weights[c_idx] = V_sq * weight
-
-                    # 1: Magnon Absorption (Magnon on path + Phonon on grid -> Magnon on grid)
-                    dE = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] + w_phon_grid[idx_kminq, lam]
-                    if abs(dE) < cutoff:
-                        weight = gaussian_norm * math.exp(-0.5 * (dE*dE) / (smearing*smearing))
-                        kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
-                        qx, qy, qz = grid_q_cart[idx_kminq, 0], grid_q_cart[idx_kminq, 1], grid_q_cart[idx_kminq, 2]
-                        
-                        V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, m, n,
-                                                slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                                                eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
-                        c_idx = cuda.atomic.add(channel_count, 0, 1)
-                        if c_idx < chan_indices.shape[1]:
-                            chan_indices[0, c_idx] = 1; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
-                            chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
-                            chan_weights[c_idx] = V_sq * weight
-
-                    # 2: Phonon Scattering (Phonon on path + Magnon on grid -> Magnon on grid)
-                    dE = path_w_phon[path_idx, lam] + w_mag_grid[idx_kminq, m] - w_mag_grid[k_idx, n]
-                    if abs(dE) < cutoff:
-                        weight = gaussian_norm * math.exp(-0.5 * (dE*dE) / (smearing*smearing))
-                        kpx, kpy, kpz = grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2]
-                        qx, qy, qz = -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2]
-                        
-                        V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m,
-                                                slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                                                path_eig_phon[path_idx], path_w_phon[path_idx, lam], atom_masses, mag_moments)
-                        c_idx = cuda.atomic.add(channel_count, 0, 1)
-                        if c_idx < chan_indices.shape[1]:
-                            chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
-                            chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
-                            chan_weights[c_idx] = V_sq * weight
-
-    @cuda.jit
-    def phase_lifetime_path(chan_indices, chan_weights, num_channels, n_mag_grid, n_phon_grid, gamma_mag_path, gamma_phon_path, N_grid_points):
-        """Calculates lifetimes for the path array by evaluating the thermal distributions on the regular grid."""
-        idx = cuda.grid(1)
-        if idx >= num_channels[0] or idx >= chan_weights.shape[0]: 
-            return
-            
-        c_type = chan_indices[0, idx]
-        path_idx = chan_indices[1, idx] 
-        k_idx  = chan_indices[2, idx] 
-        p_idx  = chan_indices[3, idx] 
-        n      = chan_indices[4, idx]
-        m      = chan_indices[5, idx]
-        lam    = chan_indices[6, idx]
-        V_sq   = chan_weights[idx]
-        
-        hbar = 0.6582119569 # meV * ps
-        # Prefactor keeps the 1/N BZ normalization from the regular grid
-        fgr_prefactor = (2.0 * math.pi / hbar) / N_grid_points
-        
-        num_mag_branches = n_mag_grid.shape[1]
-        num_phon_branches = n_phon_grid.shape[1]
-        
-        if c_type == 0: 
-            nk_mag = n_mag_grid[k_idx, m]
-            n_qmink_ph = n_phon_grid[p_idx, lam]
-            rate = fgr_prefactor * V_sq * (1.0 + n_qmink_ph + nk_mag)
-            cuda.atomic.add(gamma_mag_path, path_idx * num_mag_branches + n, rate)
-            
-        elif c_type == 1:
-            nk_mag = n_mag_grid[k_idx, m]
-            n_kminq_ph = n_phon_grid[p_idx, lam]
-            rate = fgr_prefactor * V_sq * (n_kminq_ph - nk_mag)
-            cuda.atomic.add(gamma_mag_path, path_idx * num_mag_branches + n, rate)
-            
-        elif c_type == 2:
-            nk_mag = n_mag_grid[k_idx, n]
-            n_kminq_mag = n_mag_grid[p_idx, m]
-            rate = fgr_prefactor * V_sq * (n_kminq_mag - nk_mag)
-            cuda.atomic.add(gamma_phon_path, path_idx * num_phon_branches + lam, rate)
-
     def save_path_dispersions(self, output_filename="Outputs/path_dispersions.csv"):
         """
         Saves the exact high-symmetry path dispersions (magnons and phonons) to a CSV file.
@@ -851,7 +665,191 @@ class CrystalDataSoA:
             plt.savefig('dispersion_verification.png', dpi=300)
             print("-> Saved dispersion plot to 'dispersion_verification.png'")
 
+@cuda.jit(device=True)
+def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
+    """Computes the FT tensor explicitly passing scalar Cartesian coordinates."""
+    for a in range(3):
+        for b in range(3):
+            J_tilde_out[a, b] = 0.0 + 0.0j
 
+    for i in range(slc_axis.shape[0]):
+        if slc_axis[i] == mu_type:
+            if slc_types[i, 0] == n_type and slc_types[i, 1] == m_type and slc_types[i, 2] == l_type:
+                phase_val = (kpx * slc_rij[i, 0] + kpy * slc_rij[i, 1] + kpz * slc_rij[i, 2]) + \
+                            (qx * slc_rik[i, 0] + qy * slc_rik[i, 1] + qz * slc_rik[i, 2])
+                phase_factor = cmath.exp(1j * phase_val)
+                for a in range(3):
+                    for b in range(3):
+                        J_tilde_out[a, b] += slc_J[i, a, b] * phase_factor
+
+@cuda.jit(device=True)
+def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m, 
+                    slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                    eig_phon_q, omega, atom_masses, mag_moments):
+    """Calculates the scattering vertex specifically for explicitly projected wavevectors."""
+    if omega < 1e-1: return 0.0
+    
+    hbar = 0.6582119569 # meV * ps
+    DALTON_TO_meV_PS2_PER_A2 = 0.10364269
+    
+    S_n = math.fabs(mag_moments[n] / 2.0 ) 
+    S_m = math.fabs(mag_moments[m] / 2.0 )
+    sigma_n = math.copysign(1.0, mag_moments[n]) if S_n > 0 else 0.0
+    sigma_m = math.copysign(1.0, mag_moments[m]) if S_m > 0 else 0.0
+
+    J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
+    J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
+    V_complex = 0.0 + 0.0j
+    
+    num_atoms = atom_masses.shape[0]
+    num_mag_branches = mag_moments.shape[0]
+
+    for l in range(num_atoms):
+        mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
+        disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * omega))
+        
+        for mu in range(3):
+            e_mu = eig_phon_q[lambda_phon, l, mu]
+            
+            calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+            W_dynamic = (J_tilde_dyn[0, 0] + (sigma_n * sigma_m) * J_tilde_dyn[1, 1] - 1j * sigma_m * J_tilde_dyn[0, 1] + 1j * sigma_n * J_tilde_dyn[1, 0]) / math.sqrt(S_n * S_m)
+            
+            W_static = 0.0 + 0.0j
+            if n == m: 
+                for mp in range(num_mag_branches):
+                    if math.fabs(mag_moments[mp]) > 1e-2:
+                        sigma_mp = math.copysign(1.0, mag_moments[mp])
+                        calc_fourier_transform_vec(gammax, gammay, gammaz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2]
+                        
+            V_complex += disp_amp * e_mu * (W_dynamic - W_static)
+            
+    return (V_complex.real**2 + V_complex.imag**2)
+
+@cuda.jit
+def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map, 
+                    path_q_frac, path_q_cart, path_w_phon, path_w_mag, path_eig_phon,
+                    w_phon_grid, w_mag_grid, eig_phon_grid,
+                    slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                    smearing, chan_indices, chan_weights, channel_count, 
+                    atom_masses, mag_moments, gamma_idx):
+    """Scans phase space integrating exact path points against the BZ grid."""
+    path_idx, k_idx = cuda.grid(2)
+    
+    if path_idx >= path_q_frac.shape[0] or k_idx >= grid_q_frac.shape[0]: 
+        return
+        
+    n_mag = path_w_mag.shape[1]
+    n_phon = path_w_phon.shape[1]
+    gaussian_norm = 1.0 / (smearing * 2.50662827463)
+    cutoff = 3.0 * smearing
+    
+    # 1. Kinematics mapping: q(path) - k(grid) -> p(grid nearest neighbor)
+    px_int = int(math.floor(((path_q_frac[path_idx, 0] - grid_q_frac[k_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
+    py_int = int(math.floor(((path_q_frac[path_idx, 1] - grid_q_frac[k_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
+    pz_int = int(math.floor(((path_q_frac[path_idx, 2] - grid_q_frac[k_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
+    idx_qmink = grid_map[px_int, py_int, pz_int]
+
+    # 2. Kinematics mapping: k(grid) - q(path) -> p(grid nearest neighbor)
+    px2_int = int(math.floor(((grid_q_frac[k_idx, 0] - path_q_frac[path_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
+    py2_int = int(math.floor(((grid_q_frac[k_idx, 1] - path_q_frac[path_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
+    pz2_int = int(math.floor(((grid_q_frac[k_idx, 2] - path_q_frac[path_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
+    idx_kminq = grid_map[px2_int, py2_int, pz2_int]
+
+    gammax, gammay, gammaz = grid_q_cart[gamma_idx, 0], grid_q_cart[gamma_idx, 1], grid_q_cart[gamma_idx, 2]
+
+    for n in range(n_mag):
+        for m in range(n_mag):
+            for lam in range(n_phon):
+                
+                # 0: Magnon Emission (Magnon on path -> Magnon + Phonon on grid)
+                dE = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] - w_phon_grid[idx_qmink, lam]
+                if abs(dE) < cutoff:
+                    weight = gaussian_norm * math.exp(-0.5 * (dE*dE) / (smearing*smearing))
+                    kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
+                    qx, qy, qz = grid_q_cart[idx_qmink, 0], grid_q_cart[idx_qmink, 1], grid_q_cart[idx_qmink, 2]
+                    
+                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m,
+                                            slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                                            eig_phon_grid[idx_qmink], w_phon_grid[idx_qmink, lam], atom_masses, mag_moments)
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * weight
+
+                # 1: Magnon Absorption (Magnon on path + Phonon on grid -> Magnon on grid)
+                dE = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] + w_phon_grid[idx_kminq, lam]
+                if abs(dE) < cutoff:
+                    weight = gaussian_norm * math.exp(-0.5 * (dE*dE) / (smearing*smearing))
+                    kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
+                    qx, qy, qz = grid_q_cart[idx_kminq, 0], grid_q_cart[idx_kminq, 1], grid_q_cart[idx_kminq, 2]
+                    
+                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, m, n,
+                                            slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                                            eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 1; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * weight
+
+                # 2: Phonon Scattering (Phonon on path + Magnon on grid -> Magnon on grid)
+                dE = path_w_phon[path_idx, lam] + w_mag_grid[idx_kminq, m] - w_mag_grid[k_idx, n]
+                if abs(dE) < cutoff:
+                    weight = gaussian_norm * math.exp(-0.5 * (dE*dE) / (smearing*smearing))
+                    kpx, kpy, kpz = grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2]
+                    qx, qy, qz = -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2]
+                    
+                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m,
+                                            slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                                            path_eig_phon[path_idx], path_w_phon[path_idx, lam], atom_masses, mag_moments)
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * weight
+
+@cuda.jit
+def phase_lifetime_path(chan_indices, chan_weights, num_channels, n_mag_grid, n_phon_grid, gamma_mag_path, gamma_phon_path, N_grid_points):
+    """Calculates lifetimes for the path array by evaluating the thermal distributions on the regular grid."""
+    idx = cuda.grid(1)
+    if idx >= num_channels[0] or idx >= chan_weights.shape[0]: 
+        return
+        
+    c_type = chan_indices[0, idx]
+    path_idx = chan_indices[1, idx] 
+    k_idx  = chan_indices[2, idx] 
+    p_idx  = chan_indices[3, idx] 
+    n      = chan_indices[4, idx]
+    m      = chan_indices[5, idx]
+    lam    = chan_indices[6, idx]
+    V_sq   = chan_weights[idx]
+    
+    hbar = 0.6582119569 # meV * ps
+    # Prefactor keeps the 1/N BZ normalization from the regular grid
+    fgr_prefactor = (2.0 * math.pi / hbar) / N_grid_points
+    
+    num_mag_branches = n_mag_grid.shape[1]
+    num_phon_branches = n_phon_grid.shape[1]
+    
+    if c_type == 0: 
+        nk_mag = n_mag_grid[k_idx, m]
+        n_qmink_ph = n_phon_grid[p_idx, lam]
+        rate = fgr_prefactor * V_sq * (1.0 + n_qmink_ph + nk_mag)
+        cuda.atomic.add(gamma_mag_path, path_idx * num_mag_branches + n, rate)
+        
+    elif c_type == 1:
+        nk_mag = n_mag_grid[k_idx, m]
+        n_kminq_ph = n_phon_grid[p_idx, lam]
+        rate = fgr_prefactor * V_sq * (n_kminq_ph - nk_mag)
+        cuda.atomic.add(gamma_mag_path, path_idx * num_mag_branches + n, rate)
+        
+    elif c_type == 2:
+        nk_mag = n_mag_grid[k_idx, n]
+        n_kminq_mag = n_mag_grid[p_idx, m]
+        rate = fgr_prefactor * V_sq * (n_kminq_mag - nk_mag)
+        cuda.atomic.add(gamma_phon_path, path_idx * num_phon_branches + lam, rate)
 
 def diagonalize_bosonic_hamiltonian(H_matrix):
     """
