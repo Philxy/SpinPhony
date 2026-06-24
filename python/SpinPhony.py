@@ -1446,6 +1446,32 @@ if __name__ == "__main__":
     threads_per_block = 256
     blocks_per_grid = math.ceil(N_points / threads_per_block)
 
+    # Setup Phase 2 memory
+    T_mag_init = 25
+    T_phon_init = 20
+    
+    print(f"\nInitializing populations at thermal equilibrium:")
+    print(f" -> Magnons: {T_mag_init} K")
+    print(f" -> Phonons: {T_phon_init} K")
+
+    # Generate population profiles matching the actual branch dispersions
+    n_mag_cpu = init_bose_einstein(crystal_data.w_mag, T_mag_init)
+    n_phon_cpu = init_bose_einstein(crystal_data.w_phon, T_phon_init)
+    
+    # Set Gamma point occupations to zero to avoid singularities
+    n_mag_cpu[gamma_idx, :] = 0.0
+    n_phon_cpu[gamma_idx, :] = 0.0
+
+    # Push initial states
+    d_n_mag = cuda.to_device(n_mag_cpu)
+    d_n_phon = cuda.to_device(n_phon_cpu)
+    
+    # STRIP FIX: Initialize derivatives to strict zeros ONCE before the loop
+    d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
+    d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
+
+    
+
 
     # ========================== Path Lifetime Evaluation ==========================
     print("\nStarting Path Lifetime Evaluation...")
@@ -1581,31 +1607,7 @@ if __name__ == "__main__":
     blocks_eval = math.ceil(num_channels / threads_per_block)
 
 
-    # 4. Setup Phase 2 memory
-    T_mag_init = 25
-    T_phon_init = 20
-    
-    print(f"\nInitializing populations at thermal equilibrium:")
-    print(f" -> Magnons: {T_mag_init} K")
-    print(f" -> Phonons: {T_phon_init} K")
 
-    # Generate population profiles matching the actual branch dispersions
-    n_mag_cpu = init_bose_einstein(crystal_data.w_mag, T_mag_init)
-    n_phon_cpu = init_bose_einstein(crystal_data.w_phon, T_phon_init)
-    
-    # Set Gamma point occupations to zero to avoid singularities
-    n_mag_cpu[gamma_idx, :] = 0.0
-    n_phon_cpu[gamma_idx, :] = 0.0
-
-    # Push initial states
-    d_n_mag = cuda.to_device(n_mag_cpu)
-    d_n_phon = cuda.to_device(n_phon_cpu)
-    
-    # STRIP FIX: Initialize derivatives to strict zeros ONCE before the loop
-    d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
-    d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
-
-    
 
 
     # ====== Lifetime and scattering rate phase ======
