@@ -454,9 +454,9 @@ class CrystalDataSoA:
             B_phon = 0.5 * (D_meV2 / ref_omega - ref_omega * I_phon)
 
             H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
-            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon.conj()
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
             H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
-            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon.conj().T
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon
 
             # ==========================================
             # 2. Magnon Blocks
@@ -502,26 +502,7 @@ class CrystalDataSoA:
             H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = vm.conj().T
             """
 
-            # ==========================================
-            # 4. ARMOR-PLATED DIAGONALIZATION
-            # ==========================================
             
-            # 1. Erase any floating-point asymmetry (Cholesky is ruthless about this)
-            H_BdG = 0.5 * (H_BdG + H_BdG.conj().T)
-
-            # 2. Check the raw eigenvalues before doing anything
-            evals_raw = np.linalg.eigvalsh(H_BdG)
-            min_eig = np.min(evals_raw)
-            
-            shift_applied = 0.0
-            buffer = 1e-2  # Increased from 1e-4. 1e-2 provides a safe Cholesky margin without losing precision.
-            
-            if min_eig <= buffer:
-                shift_applied = np.abs(min_eig) + buffer
-                np.fill_diagonal(H_BdG, H_BdG.diagonal() + shift_applied)
-                
-                # Uncomment the print below if you want to track exactly where the lattice goes unstable
-                # print(f"Diag Shift at q_idx {q_idx}: Min Eig was {min_eig:.4f} meV. Shifted by {shift_applied:.4f}")
 
 
             # ==========================================
