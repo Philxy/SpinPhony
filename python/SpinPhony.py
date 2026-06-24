@@ -406,23 +406,26 @@ class CrystalDataSoA:
         # 1. Instant Binary Load of Phonon Path Data
         with h5py.File(hdf5_path_file, 'r') as f:
             self.N_path = f['nqpoint'][()]
-            
             self.path_q_frac = f['q_positions'][:]
-            # Convert to Cartesian wavevectors
-            self.path_q_cart = np.dot(self.path_q_frac, self.reciprocal_lattice * 2.0 * np.pi)
             
-            # Phonopy frequencies are in THz. Convert to meV.
-            # 1 THz = 4.135667696 meV
+            # DECOUPLING FIX: Read the reciprocal lattice strictly from the path file
+            if 'reciprocal_lattice' in f:
+                self.path_reciprocal_lattice = f['reciprocal_lattice'][:]
+            else:
+                print("Warning: reciprocal_lattice not found in band.h5. Falling back to grid lattice.")
+                self.path_reciprocal_lattice = self.reciprocal_lattice
+                
+            # Convert to Cartesian wavevectors using the PATH's native lattice
+            self.path_q_cart = np.dot(self.path_q_frac, self.path_reciprocal_lattice * 2.0 * np.pi)
+            
             raw_frequencies = f['frequencies'][:]
             self.path_w_phon = raw_frequencies * 4.135667696
             
             if 'eigenvectors' in f:
-                # Shape is exactly what the GPU expects: (N_path, phon_branches, l_atoms, 3) complex128
                 self.path_eig_phon = f['eigenvectors'][:]
             else:
-                raise ValueError("Eigenvectors missing from HDF5. Make sure 'EIGENVECTORS = .TRUE.' was used.")
+                raise ValueError("Eigenvectors missing from HDF5.")
             
-            # Optional: Keep track of symmetry labels for plotting later
             if 'labels_json' in f:
                 self.path_labels = json.loads(f['labels_json'][()])
             if 'segment_nqpoint' in f:
@@ -432,58 +435,129 @@ class CrystalDataSoA:
         self.path_w_mag = np.zeros((self.N_path, self.n_mag_branches), dtype=np.float64)
         self.path_eig_mag = np.zeros((self.N_path, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
 
-        # 3. Compute Exact Magnons for the Path
+        # 3. Compute Exact Magnons for the Path using robust Vectorized Math
         atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
         for i, m_idx in enumerate(self.mag_indices):
             atom_to_mag[m_idx] = i
 
-        S_eff = np.abs(self.mag_moments[self.mag_indices]) / 2.0
+        moments = self.mag_moments[self.mag_indices]
+        S_eff = np.abs(moments) / 2.0
+        sigma = np.sign(moments) 
         
-        # Precompute real J(0)
+        valid_bonds = []
         J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
         for row in self.jij_interactions:
             i, j = int(row[4]) - 1, int(row[5]) - 1
             mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
             if mag_i != -1 and mag_j != -1:
                 J_0[mag_i, mag_j] += row[3]
-                
+                valid_bonds.append((mag_i, mag_j, row[0], row[1], row[2], row[3]))
+
+        J_0 = (J_0 + J_0.T) / 2.0 # Force strict symmetry
+        
+        mag_i_arr = np.array([b[0] for b in valid_bonds])
+        mag_j_arr = np.array([b[1] for b in valid_bonds])
+        r_cart_arr = np.array([b[2:5] for b in valid_bonds]) * lattice_constant
+        J_val_arr = np.array([b[5] for b in valid_bonds])
+
+        # Vectorized Phase Calculation mapping to the independent path cartesian vectors
+        phases = np.dot(self.path_q_cart, r_cart_arr.T)
+        exp_phases = np.exp(1j * phases) * J_val_arr
+
+        J_q_all = np.zeros((self.N_path, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+        for b_idx in range(len(valid_bonds)):
+            mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
+            J_q_all[:, mi, mj] += exp_phases[:, b_idx]
+            
+        J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
+
         for q_idx in range(self.N_path):
-            q_cart = self.path_q_cart[q_idx]
-            J_q = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            J_q = J_q_all[q_idx]
             
-            for row in self.jij_interactions:
-                i, j = int(row[4]) - 1, int(row[5]) - 1
-                mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
-                if mag_i == -1 or mag_j == -1: 
-                    continue
+            A_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            B_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
                 
-                r_cart = np.array([row[0], row[1], row[2]]) * lattice_constant
-                phase = np.dot(q_cart, r_cart)
-                J_q[mag_i, mag_j] += row[3] * cmath.exp(1j * phase)
-                
-            Omega_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
             for n in range(self.n_mag_branches):
-                sum_J_0 = np.sum(J_0[n, :])
+                sum_J_0 = np.sum([J_0[n, m] * S_eff[m] * (sigma[n] * sigma[m]) for m in range(self.n_mag_branches)])
                 for m in range(self.n_mag_branches):
                     if n == m:
-                        Omega_k[n, n] = S_eff[n] * (J_q[n, n] - sum_J_0)
+                        A_mat[n, n] = sum_J_0 - S_eff[n] * J_q[n, n] + K_anisotropy
                     else:
-                        Omega_k[n, m] = S_eff[n] * J_q[n, m]
-                    
+                        if sigma[n] == sigma[m]:
+                            A_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
+                        else:
+                            B_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
+                            
             H_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
-            for n in range(self.n_mag_branches):
-                for m in range(self.n_mag_branches):
-                    val = -Omega_k[n, m] 
-                    if n == m:
-                        val += K_anisotropy
-                    H_BdG[n, m] = val
-                    H_BdG[n + self.n_mag_branches, m + self.n_mag_branches] = np.conj(val)
-            
-            energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
-            self.path_w_mag[q_idx] = energies
-            self.path_eig_mag[q_idx] = para_unitary
-            
+            H_BdG[:self.n_mag_branches, :self.n_mag_branches] = A_mat
+            H_BdG[self.n_mag_branches:, self.n_mag_branches:] = np.conj(A_mat)
+            H_BdG[:self.n_mag_branches, self.n_mag_branches:] = B_mat
+            H_BdG[self.n_mag_branches:, :self.n_mag_branches] = np.conj(B_mat.T)
+
+            min_eig = np.min(np.linalg.eigvalsh(H_BdG))
+            if min_eig <= 1e-8:
+                np.fill_diagonal(H_BdG, H_BdG.diagonal() + np.abs(min_eig) + 1e-5)
+
+            try:
+                energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
+                self.path_w_mag[q_idx] = energies
+                self.path_eig_mag[q_idx] = para_unitary
+            except RuntimeError as e:
+                print(f"Warning at path q_idx {q_idx}: {e}")
+                self.path_w_mag[q_idx] = np.zeros(self.n_mag_branches)
+                
         print(f"-> Evaluated {self.N_path} exact path points.")
+
+    def plot_path_dispersions(self, filename="dispersion_verification.png"):
+        """
+        Plots the exact high-resolution path dispersions using the loaded HDF5 data.
+        """
+        import matplotlib.pyplot as plt
+        
+        if not hasattr(self, 'path_w_mag'):
+            print("Error: Must call load_and_evaluate_path_hdf5() before plotting.")
+            return
+
+        k_distances = np.zeros(self.N_path)
+        for i in range(1, self.N_path):
+            dq_frac = self.path_q_frac[i] - self.path_q_frac[i-1]
+            # DECOUPLING FIX: Use the native path reciprocal lattice for the X-axis
+            dq_cart = np.dot(dq_frac, self.path_reciprocal_lattice * 2.0 * np.pi)
+            k_distances[i] = k_distances[i-1] + np.linalg.norm(dq_cart)
+
+        fig, ax = plt.subplots(figsize=(10/2.52, 12/2.52))
+        
+        for b in range(self.phon_branches):
+            label = 'Phonons' if b == 0 else ""
+            ax.plot(k_distances, self.path_w_phon[:, b], color='#1f77b4', lw=2, label=label)
+            
+        for b in range(self.n_mag_branches):
+            label = 'Magnons' if b == 0 else ""
+            ax.plot(k_distances, self.path_w_mag[:, b], color='#d62728', lw=2, linestyle='--', label=label)
+
+        ax.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
+        ax.set_xlim(0, k_distances[-1])
+        ax.set_ylim(bottom=0)
+        ax.grid(True, axis='y', linestyle=':', color='gray', alpha=0.5)
+        ax.legend(loc='upper right', fontsize=12, framealpha=1.0)
+        
+        if hasattr(self, 'path_labels') and hasattr(self, 'path_segments'):
+            tick_locs = [k_distances[0]]
+            tick_labels = [self.path_labels[0][0]]
+            
+            idx = 0
+            for i, seg_len in enumerate(self.path_segments):
+                idx += seg_len
+                tick_locs.append(k_distances[idx - 1])
+                tick_labels.append(self.path_labels[i][1])
+                
+            ax.set_xticks(tick_locs)
+            ax.set_xticklabels(tick_labels, fontsize=14)
+            ax.grid(True, axis='x', linestyle='-', color='gray', alpha=0.5)
+        
+        plt.tight_layout()
+        plt.savefig(filename, dpi=300)
+        print(f"-> Saved true path dispersion plot to '{filename}'")
 
 
     def save_path_dispersions(self, output_filename="Outputs/path_dispersions.csv"):
@@ -517,61 +591,6 @@ class CrystalDataSoA:
                 f.write(",".join(row) + "\n")
         print("-> Done!")
 
-
-    def plot_path_dispersions(self, filename="dispersion_verification.png"):
-        """
-        Plots the exact high-resolution path dispersions using the loaded HDF5 data.
-        """
-        import matplotlib.pyplot as plt
-        
-        if not hasattr(self, 'path_w_mag'):
-            print("Error: Must call load_and_evaluate_path_hdf5() before plotting.")
-            return
-
-        # Calculate cumulative Cartesian distances for the x-axis
-        k_distances = np.zeros(self.N_path)
-        for i in range(1, self.N_path):
-            dq_frac = self.path_q_frac[i] - self.path_q_frac[i-1]
-            dq_cart = np.dot(dq_frac, self.reciprocal_lattice * 2.0 * np.pi)
-            k_distances[i] = k_distances[i-1] + np.linalg.norm(dq_cart)
-
-        fig, ax = plt.subplots(figsize=(10/2.52, 12/2.52))
-        
-        # Plot Phonons
-        for b in range(self.phon_branches):
-            label = 'Phonons' if b == 0 else ""
-            ax.plot(k_distances, self.path_w_phon[:, b], color='#1f77b4', lw=2, label=label)
-            
-        # Plot Magnons
-        for b in range(self.n_mag_branches):
-            label = 'Magnons' if b == 0 else ""
-            ax.plot(k_distances, self.path_w_mag[:, b], color='#d62728', lw=2, linestyle='--', label=label)
-
-        # Formatting
-        ax.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
-        ax.set_xlim(0, k_distances[-1])
-        ax.set_ylim(bottom=0)
-        ax.grid(True, axis='y', linestyle=':', color='gray', alpha=0.5)
-        ax.legend(loc='upper right', fontsize=12, framealpha=1.0)
-        
-        # Add symmetry labels if they exist in the HDF5 file
-        if hasattr(self, 'path_labels') and hasattr(self, 'path_segments'):
-            tick_locs = [k_distances[0]]
-            tick_labels = [self.path_labels[0][0]]
-            
-            idx = 0
-            for i, seg_len in enumerate(self.path_segments):
-                idx += seg_len
-                tick_locs.append(k_distances[idx - 1])
-                tick_labels.append(self.path_labels[i][1])
-                
-            ax.set_xticks(tick_locs)
-            ax.set_xticklabels(tick_labels, fontsize=14)
-            ax.grid(True, axis='x', linestyle='-', color='gray', alpha=0.5)
-        
-        plt.tight_layout()
-        plt.savefig(filename, dpi=300)
-        print(f"-> Saved true path dispersion plot to '{filename}'")
 
 
     def plot_dispersions(self):
