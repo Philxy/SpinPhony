@@ -383,14 +383,12 @@ class CrystalDataSoA:
             J_q_all = np.zeros((N_pts, num_mag, num_mag), dtype=np.complex128)
 
         # --- B. Precalculate Spin-Lattice Tensors ---
-        # Remap 1-based SLC file indices into 0-based arrays
         n_arr = atom_to_mag[self.slc_types[:, 0] - 1]
         m_arr = atom_to_mag[self.slc_types[:, 1] - 1]
         l_arr = self.slc_types[:, 2] - 1
         mu_arr = self.slc_axis
         p_arr = 3 * l_arr + mu_arr
 
-        # Filter out bonds involving non-magnetic atoms
         valid_mask = (n_arr != -1) & (m_arr != -1)
         n_v, m_v, p_v, l_v = n_arr[valid_mask], m_arr[valid_mask], p_arr[valid_mask], l_arr[valid_mask]
         
@@ -400,23 +398,19 @@ class CrystalDataSoA:
         Jxz = J_v[:, 0, 2] # x, z
         Jyz = J_v[:, 1, 2] # y, z
 
-        # Dynamic Spin Signature Mappings
         sigma_n = sigma[n_v]
         sigma_m = sigma[m_v]
         S_n = S_eff[n_v]
         mass_l = self.atom_masses[l_v]
 
-        # Explicit construction of D+ and D- generalized over magnetic configurations
         term_plus = sigma_m * Jxz + 1j * sigma_n * sigma_m * Jyz
         term_minus = sigma_m * Jxz - 1j * sigma_n * sigma_m * Jyz
 
-        # Evaluate projection scalar into Cartesian reference frames
         prefactors = np.sqrt((hbar * hbar) / (S_n * mass_l * DALTON_TO_meV * ref_omega))
 
         D_plus = term_plus * prefactors
         D_minus = term_minus * prefactors
 
-        # Rapid parallel Fourier sum over the full momentum path
         phases_slc = np.dot(q_cart_array, rik_v.T)
         exp_phases_slc = np.exp(1j * phases_slc)
 
@@ -426,7 +420,6 @@ class CrystalDataSoA:
         V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
         V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
 
-        # Accumulate tensors
         for b_idx in range(len(n_v)):
             n_idx = n_v[b_idx]
             p_idx = p_v[b_idx]
@@ -441,23 +434,22 @@ class CrystalDataSoA:
         for q_idx in range(N_pts):
             H_BdG = np.zeros((dim, dim), dtype=np.complex128)
             
-
             # ==========================================
-            # 1. Phonon Blocks
+            # 1. Phonon Blocks (Site Basis Transformation)
             # ==========================================
             D_complex = dyn_mat[q_idx]
             D_meV2 = D_complex * (CONV_FACTOR ** 2)
 
-            # --- THE CURE: Project D(q) to be Positive Definite ---
-            # This fixes imaginary acoustic modes without shifting optical modes
-            # and perfectly preserves the BdG particle-hole symmetries.
+            # --- Enforce Positive Semi-Definiteness on D(q) ---
             evals_D, evecs_D = np.linalg.eigh(D_meV2)
-            if np.any(evals_D < 1e-6):
-                evals_D = np.maximum(evals_D, 1e-6)
-                D_meV2 = evecs_D @ np.diag(evals_D) @ evecs_D.conj().T
-            # ------------------------------------------------------
+            
+            if np.any(evals_D < 1e-5):
+                # Optionally print a warning here if you want to track where it triggers
+                # print(f"Warning: Phonon eigenvalue(s) clamped to 1e-5 meV^2 to ensure stability at q_idx {q_idx}")
+                evals_clamped = np.maximum(evals_D, 1e-5)
+                D_meV2 = evecs_D @ np.diag(evals_clamped) @ evecs_D.conj().T
 
-            # Cast dynamic matrix into the reference oscillator basis
+            # Cast dynamic matrix into the reference oscillator creation/annihilation block basis
             A_phon = 0.5 * (D_meV2 / ref_omega + ref_omega * I_phon)
             B_phon = 0.5 * (D_meV2 / ref_omega - ref_omega * I_phon)
 
@@ -465,7 +457,6 @@ class CrystalDataSoA:
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon.conj()
             H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon.conj().T
-
 
             # ==========================================
             # 2. Magnon Blocks
@@ -493,30 +484,24 @@ class CrystalDataSoA:
             # ==========================================
             # 3. SLC Blocks
             # ==========================================
-            """
-
             vp = V_plus_all[q_idx]
             vm = V_minus_all[q_idx]
 
-            # (Magnon_p, Phonon_p)
             H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = vp
             H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = vp.conj().T
 
-            # (Magnon_p, Phonon_h)
             H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_h:off_ph_h+num_phon] = vp
             H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_p:off_mag_p+num_mag] = vp.conj().T
 
-            # (Magnon_h, Phonon_p)
             H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = vm
             H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = vm.conj().T
 
-            # (Magnon_h, Phonon_h)
             H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_h:off_ph_h+num_phon] = vm
             H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = vm.conj().T
-            """
 
-            H_BdG = make_positive_definite(H_BdG, epsilon=1e-6, q_info=f"Hybridized q_idx {q_idx}")
-
+            # ==========================================
+            # 4. Diagonalization
+            # ==========================================
             try:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
                 w_hyb[q_idx] = energies
