@@ -485,7 +485,6 @@ class CrystalDataSoA:
             # 3. SLC Blocks
             # ==========================================
 
-            """
             vp = V_plus_all[q_idx]
             vm = V_minus_all[q_idx]
 
@@ -500,7 +499,6 @@ class CrystalDataSoA:
 
             H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_h:off_ph_h+num_phon] = vm
             H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = vm.conj().T
-            """
 
             
 
