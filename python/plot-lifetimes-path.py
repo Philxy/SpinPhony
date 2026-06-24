@@ -13,18 +13,6 @@ def plot_colored_line_dispersions(csv_file, output_image='lifetime_lineplots.png
     df.loc[df['gamma_ps-1'] <= 0, 'gamma_ps-1'] = 1e-12
     df['tau_ps'] = 1.0 / df['gamma_ps-1']
     
-    # Find realistic bounds for the color scale (ignoring the artificial 1e12 lifetimes)
-    finite_taus = df.loc[np.isfinite(df['tau_ps']) & (df['tau_ps'] < 1e10), 'tau_ps']
-    if not finite_taus.empty:
-        tau_max = finite_taus.quantile(0.95) # Cap at 95th percentile
-        tau_min = finite_taus.min()
-    else:
-        tau_max = 1e4
-        tau_min = 1e-2
-        
-    # Cap the extreme outliers for the colormap
-    df.loc[df['tau_ps'] > tau_max, 'tau_ps'] = tau_max
-
     # 2. Reconstruct the X-axis (Cumulative distance)
     q_points = df[['q_idx', 'qx', 'qy', 'qz']].drop_duplicates().sort_values('q_idx')
     dq = np.diff(q_points[['qx', 'qy', 'qz']].values, axis=0)
@@ -36,17 +24,33 @@ def plot_colored_line_dispersions(csv_file, output_image='lifetime_lineplots.png
 
     # 3. Setup the Figure (Two subplots side-by-side)
     print("Generating lineplots...")
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+    # Use explicit width_ratios to make room for independent colorbars inside the grid
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6), sharey=True)
     
-    # Shared Logarithmic Normalization for the colormap
-    norm = LogNorm(vmin=tau_min, vmax=tau_max)
-    cmap = 'viridis_r' # reversed: dark/purple = short lifetime, bright/yellow = long lifetime
-
-    def plot_particle_lines(ax, particle_name, title):
-        particle_df = df[df['particle'] == particle_name]
+    def plot_particle_lines(ax, particle_name, title, cmap_name):
+        particle_df = df[df['particle'] == particle_name].copy()
+        
+        if particle_df.empty:
+            ax.set_title(title, fontsize=15, fontweight='bold')
+            return None
+            
+        # Find realistic bounds for THIS specific particle type
+        finite_taus = particle_df.loc[np.isfinite(particle_df['tau_ps']) & (particle_df['tau_ps'] < 1e10), 'tau_ps']
+        if not finite_taus.empty:
+            tau_max = finite_taus.quantile(0.95)  # Cap at 95th percentile
+            tau_min = finite_taus.min()
+        else:
+            tau_max = 1e4
+            tau_min = 1e-2
+            
+        # Cap the extreme outliers for the colormap locally
+        particle_df.loc[particle_df['tau_ps'] > tau_max, 'tau_ps'] = tau_max
+        
+        # Unique normalization for this particle type
+        norm = LogNorm(vmin=tau_min, vmax=tau_max)
         branches = particle_df['branch'].unique()
         
-        lc_list = []
+        last_lc = None
         for b in branches:
             branch_data = particle_df[particle_df['branch'] == b].sort_values('q_idx')
             
@@ -62,40 +66,35 @@ def plot_colored_line_dispersions(csv_file, output_image='lifetime_lineplots.png
             z_seg = (z[:-1] + z[1:]) / 2.0
             
             # Create and add the LineCollection
-            lc = LineCollection(segments, cmap=cmap, norm=norm)
+            lc = LineCollection(segments, cmap=cmap_name, norm=norm)
             lc.set_array(z_seg)
             lc.set_linewidth(2.5)
             ax.add_collection(lc)
-            lc_list.append(lc)
+            last_lc = lc
             
         # Formatting for the specific axis
         ax.set_xlim(0, cumulative_dist[-1])
-        # Auto-scale y-axis based on data
-        if not particle_df.empty:
-            ax.set_ylim(0, particle_df['energy_meV'].max() * 1.05)
+        ax.set_ylim(0, particle_df['energy_meV'].max() * 1.05)
         
         ax.set_title(title, fontsize=15, fontweight='bold')
         ax.set_xlabel('Wavevector Path Distance', fontsize=13)
         ax.grid(True, axis='both', linestyle=':', color='gray', alpha=0.5)
         
-        return lc_list[0] if lc_list else None
+        # Add dedicated colorbar right next to this specific axis
+        cbar = fig.colorbar(last_lc, ax=ax, orientation='vertical', pad=0.03, shrink=0.85)
+        cbar.set_label(f'{particle_name.capitalize()} $\\tau$ (ps)', fontsize=12, fontweight='bold')
+        
+        return last_lc
 
-    # Plot on respective axes
-    lc_phon = plot_particle_lines(ax1, 'phonon', 'Phonon Dispersion')
-    lc_mag = plot_particle_lines(ax2, 'magnon', 'Magnon Dispersion')
+    # Plot on respective axes with different colormaps
+    # Phonons: Warm theme (inferno_r), Magnons: Cool theme (viridis_r)
+    _ = plot_particle_lines(ax1, 'phonon', 'Phonon Dispersion', cmap_name='inferno_r')
+    _ = plot_particle_lines(ax2, 'magnon', 'Magnon Dispersion', cmap_name='viridis_r')
     
     ax1.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
 
-    # 4. Add a shared Colorbar
-    # Use the mappable from one of the LineCollections
-    mappable = lc_phon if lc_phon else lc_mag
-    if mappable:
-        # Adjust layout to make room for colorbar
-        fig.subplots_adjust(right=0.9)
-        cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-        cbar = fig.colorbar(mappable, cax=cbar_ax)
-        cbar.set_label('Lifetime $\\tau$ (ps)', fontsize=14, fontweight='bold')
-
+    # Adjust layout dynamically to ensure labels and colorbars do not overlap
+    plt.tight_layout()
     plt.savefig(output_image, dpi=300, bbox_inches='tight')
     print(f"-> Saved plot to '{output_image}'")
 
