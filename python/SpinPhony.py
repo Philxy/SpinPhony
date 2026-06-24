@@ -672,36 +672,36 @@ class CrystalDataSoA:
             rate = fgr_prefactor * V_sq * (n_kminq_mag - nk_mag)
             cuda.atomic.add(gamma_phon_path, path_idx * num_phon_branches + lam, rate)
 
-        def save_path_dispersions(self, output_filename="Outputs/path_dispersions.csv"):
-            """
-            Saves the exact high-symmetry path dispersions (magnons and phonons) to a CSV file.
-            """
-            import os
-            os.makedirs(os.path.dirname(output_filename), exist_ok=True)
-            
-            print(f"\nWriting high-resolution path dispersions to {output_filename}...")
-            with open(output_filename, 'w') as f:
-                # Generate Header
-                header = ["q_idx", "qx", "qy", "qz"]
-                for b in range(self.phon_branches):
-                    header.append(f"w_phon_{b}_meV")
-                for b in range(self.n_mag_branches):
-                    header.append(f"w_mag_{b}_meV")
-                f.write(",".join(header) + "\n")
+    def save_path_dispersions(self, output_filename="Outputs/path_dispersions.csv"):
+        """
+        Saves the exact high-symmetry path dispersions (magnons and phonons) to a CSV file.
+        """
+        import os
+        os.makedirs(os.path.dirname(output_filename), exist_ok=True)
+        
+        print(f"\nWriting high-resolution path dispersions to {output_filename}...")
+        with open(output_filename, 'w') as f:
+            # Generate Header
+            header = ["q_idx", "qx", "qy", "qz"]
+            for b in range(self.phon_branches):
+                header.append(f"w_phon_{b}_meV")
+            for b in range(self.n_mag_branches):
+                header.append(f"w_mag_{b}_meV")
+            f.write(",".join(header) + "\n")
 
-                # Write Rows
-                for q_idx in range(self.N_path):
-                    qx, qy, qz = self.path_q_frac[q_idx]
-                    row = [f"{q_idx}", f"{qx:.6f}", f"{qy:.6f}", f"{qz:.6f}"]
+            # Write Rows
+            for q_idx in range(self.N_path):
+                qx, qy, qz = self.path_q_frac[q_idx]
+                row = [f"{q_idx}", f"{qx:.6f}", f"{qy:.6f}", f"{qz:.6f}"]
+                
+                for b in range(self.phon_branches):
+                    row.append(f"{self.path_w_phon[q_idx, b]:.6f}")
+                
+                for b in range(self.n_mag_branches):
+                    row.append(f"{self.path_w_mag[q_idx, b]:.6f}")
                     
-                    for b in range(self.phon_branches):
-                        row.append(f"{self.path_w_phon[q_idx, b]:.6f}")
-                    
-                    for b in range(self.n_mag_branches):
-                        row.append(f"{self.path_w_mag[q_idx, b]:.6f}")
-                        
-                    f.write(",".join(row) + "\n")
-            print("-> Done!")
+                f.write(",".join(row) + "\n")
+        print("-> Done!")
 
 
     def plot_path_dispersions(self, filename="dispersion_verification.png"):
