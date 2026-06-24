@@ -503,13 +503,13 @@ class CrystalDataSoA:
             # (Magnon_h, Phonon_h)
             H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_h:off_ph_h+num_phon] = vm
             H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = vm.conj().T
+            """
 
             # Positive Definiteness Enforcement across the unified block Hamiltonian
             min_eig = np.min(np.linalg.eigvalsh(H_BdG))
             if min_eig <= 1e-8:
                 np.fill_diagonal(H_BdG, H_BdG.diagonal() + np.abs(min_eig) + 1e-5)
 
-            """
 
             try:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
