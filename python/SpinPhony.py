@@ -394,6 +394,98 @@ class CrystalDataSoA:
                     self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
 
 
+    def load_and_evaluate_path_hdf5(self, hdf5_path_file, K_anisotropy=0.01, lattice_constant=1.0):
+        """
+        Loads pre-calculated phonon band structures from an HDF5 file and 
+        computes exact magnon energies along the same high-symmetry path.
+        """
+        import json
+        
+        print(f"\nLoading explicit high-symmetry path from HDF5: {hdf5_path_file}")
+        
+        # 1. Instant Binary Load of Phonon Path Data
+        with h5py.File(hdf5_path_file, 'r') as f:
+            self.N_path = f['nqpoint'][()]
+            
+            self.path_q_frac = f['q_positions'][:]
+            # Convert to Cartesian wavevectors
+            self.path_q_cart = np.dot(self.path_q_frac, self.reciprocal_lattice * 2.0 * np.pi)
+            
+            # Phonopy frequencies are in THz. Convert to meV.
+            # 1 THz = 4.135667696 meV
+            raw_frequencies = f['frequencies'][:]
+            self.path_w_phon = raw_frequencies * 4.135667696
+            
+            if 'eigenvectors' in f:
+                # Shape is exactly what the GPU expects: (N_path, phon_branches, l_atoms, 3) complex128
+                self.path_eig_phon = f['eigenvectors'][:]
+            else:
+                raise ValueError("Eigenvectors missing from HDF5. Make sure 'EIGENVECTORS = .TRUE.' was used.")
+            
+            # Optional: Keep track of symmetry labels for plotting later
+            if 'labels_json' in f:
+                self.path_labels = json.loads(f['labels_json'][()])
+            if 'segment_nqpoint' in f:
+                self.path_segments = f['segment_nqpoint'][:]
+
+        # 2. Allocate Path Arrays for Magnons
+        self.path_w_mag = np.zeros((self.N_path, self.n_mag_branches), dtype=np.float64)
+        self.path_eig_mag = np.zeros((self.N_path, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+
+        # 3. Compute Exact Magnons for the Path
+        atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
+        for i, m_idx in enumerate(self.mag_indices):
+            atom_to_mag[m_idx] = i
+
+        S_eff = np.abs(self.mag_moments[self.mag_indices]) / 2.0
+        
+        # Precompute real J(0)
+        J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
+        for row in self.jij_interactions:
+            i, j = int(row[4]) - 1, int(row[5]) - 1
+            mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
+            if mag_i != -1 and mag_j != -1:
+                J_0[mag_i, mag_j] += row[3]
+                
+        for q_idx in range(self.N_path):
+            q_cart = self.path_q_cart[q_idx]
+            J_q = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            
+            for row in self.jij_interactions:
+                i, j = int(row[4]) - 1, int(row[5]) - 1
+                mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
+                if mag_i == -1 or mag_j == -1: 
+                    continue
+                
+                r_cart = np.array([row[0], row[1], row[2]]) * lattice_constant
+                phase = np.dot(q_cart, r_cart)
+                J_q[mag_i, mag_j] += row[3] * cmath.exp(1j * phase)
+                
+            Omega_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            for n in range(self.n_mag_branches):
+                sum_J_0 = np.sum(J_0[n, :])
+                for m in range(self.n_mag_branches):
+                    if n == m:
+                        Omega_k[n, n] = S_eff[n] * (J_q[n, n] - sum_J_0)
+                    else:
+                        Omega_k[n, m] = S_eff[n] * J_q[n, m]
+                    
+            H_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+            for n in range(self.n_mag_branches):
+                for m in range(self.n_mag_branches):
+                    val = -Omega_k[n, m] 
+                    if n == m:
+                        val += K_anisotropy
+                    H_BdG[n, m] = val
+                    H_BdG[n + self.n_mag_branches, m + self.n_mag_branches] = np.conj(val)
+            
+            energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
+            self.path_w_mag[q_idx] = energies
+            self.path_eig_mag[q_idx] = para_unitary
+            
+        print(f"-> Evaluated {self.N_path} exact path points.")
+
+
     def plot_dispersions(self):
             """
             Extracts high-symmetry lines from the random SoA q-grid and plots 
@@ -548,6 +640,8 @@ def diagonalize_bosonic_hamiltonian(H_matrix):
 
 
     return final_evals_squared[:m], Q_final
+
+
 
 
 
@@ -1074,6 +1168,15 @@ if __name__ == "__main__":
     blocks_x = math.ceil(N_points / threads_per_block_2d[0])
     blocks_y = math.ceil(N_points / threads_per_block_2d[1])
     blocks_per_grid_2d = (blocks_x, blocks_y)
+
+
+    crystal_data.load_and_evaluate_path("Inputs/CrI3/band.h5", anisotropy=anisotropy, lattice_constant=lattice_constant)
+    d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
+    d_path_q_cart = cuda.to_device(crystal_data.path_q_cart)
+    d_path_w_phon = cuda.to_device(crystal_data.path_w_phon)
+    d_path_w_mag = cuda.to_device(crystal_data.path_w_mag)
+    d_path_eig_phon = cuda.to_device(crystal_data.path_eig_phon)
+
 
     phase_1_scan[blocks_per_grid_2d, threads_per_block_2d](
         gpu_data["mesh"], 
