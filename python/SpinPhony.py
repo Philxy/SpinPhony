@@ -533,7 +533,7 @@ class CrystalDataSoA:
             dq_cart = np.dot(dq_frac, self.reciprocal_lattice * 2.0 * np.pi)
             k_distances[i] = k_distances[i-1] + np.linalg.norm(dq_cart)
 
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(10/2.52, 12/2.52))
         
         # Plot Phonons
         for b in range(self.phon_branches):
@@ -551,7 +551,6 @@ class CrystalDataSoA:
         ax.set_ylim(bottom=0)
         ax.grid(True, axis='y', linestyle=':', color='gray', alpha=0.5)
         ax.legend(loc='upper right', fontsize=12, framealpha=1.0)
-        ax.set_title('Exact Dispersion Path Verification', fontsize=16, fontweight='bold')
         
         # Add symmetry labels if they exist in the HDF5 file
         if hasattr(self, 'path_labels') and hasattr(self, 'path_segments'):
