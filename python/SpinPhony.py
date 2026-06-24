@@ -1170,7 +1170,7 @@ if __name__ == "__main__":
     blocks_per_grid_2d = (blocks_x, blocks_y)
 
 
-    crystal_data.load_and_evaluate_path("Inputs/CrI3/band.h5", anisotropy=anisotropy, lattice_constant=lattice_constant)
+    crystal_data.load_and_evaluate_path_hdf5("Inputs/CrI3/band.h5", anisotropy=anisotropy, lattice_constant=lattice_constant)
     d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
     d_path_q_cart = cuda.to_device(crystal_data.path_q_cart)
     d_path_w_phon = cuda.to_device(crystal_data.path_w_phon)
