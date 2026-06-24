@@ -1404,7 +1404,7 @@ if __name__ == "__main__":
     lattice_constant_bccFe = 2.8665  # in Angstroms
     lattice_constant_CrI3 = 7.006660421592247  # in Angstroms
 
-    anisotropy_bccFe = 0.001 
+    anisotropy_bccFe = 0.01 
     anisotropy_CrI3 = 1.0
 
     anisotropy = anisotropy_CrI3     
@@ -1414,7 +1414,7 @@ if __name__ == "__main__":
     Jijs = Jijs_CrI3
     slc_files = slc_files_CrI3
 
-    smearing = 0.05
+    smearing = 0.005
     
     crystal_data = CrystalDataSoA(
         mesh, 
