@@ -323,7 +323,7 @@ class CrystalDataSoA:
     
 
 
-    def _calculate_coupled_hamiltonian(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=10.0):
+    def _calculate_coupled_hamiltonian(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=5.0):
         print(f" -> Constructing Joint Magnon-Phonon BdG Matrix (Cartesian Basis, w_ref={ref_omega} meV)...")
         N_pts = q_cart_array.shape[0]
         num_phon = self.phon_branches
