@@ -1230,6 +1230,20 @@ if __name__ == "__main__":
 
     gamma_idx = int(crystal_data.grid_map[0, 0, 0])
 
+
+    # Load the high-symmetry path from the HDF5 band file
+    crystal_data.load_and_evaluate_path_hdf5("Inputs/CrI3/band.h5", anisotropy=anisotropy, lattice_constant=lattice_constant)
+    # Save the exact path energies to a CSV
+    crystal_data.save_path_dispersions("Outputs/path_dispersions.csv")
+    # Plot the exact path
+    crystal_data.plot_path_dispersions("Outputs/exact_path_dispersions.png")
+    # Push path data to GPU for scanning kernels
+    d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
+    d_path_q_cart = cuda.to_device(crystal_data.path_q_cart)
+    d_path_w_phon = cuda.to_device(crystal_data.path_w_phon)
+    d_path_w_mag = cuda.to_device(crystal_data.path_w_mag)
+    d_path_eig_phon = cuda.to_device(crystal_data.path_eig_phon)
+
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
     
@@ -1248,6 +1262,7 @@ if __name__ == "__main__":
     threads_per_block = 256
     blocks_per_grid = math.ceil(N_points / threads_per_block)
 
+
     # 3. Execute Phase 1
     print("\nStarting Phase 1: Scanning Phase Space and computing FT Vertices...")
 
@@ -1255,14 +1270,6 @@ if __name__ == "__main__":
     blocks_x = math.ceil(N_points / threads_per_block_2d[0])
     blocks_y = math.ceil(N_points / threads_per_block_2d[1])
     blocks_per_grid_2d = (blocks_x, blocks_y)
-
-
-    crystal_data.load_and_evaluate_path_hdf5("Inputs/CrI3/band.h5", anisotropy=anisotropy, lattice_constant=lattice_constant)
-    d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
-    d_path_q_cart = cuda.to_device(crystal_data.path_q_cart)
-    d_path_w_phon = cuda.to_device(crystal_data.path_w_phon)
-    d_path_w_mag = cuda.to_device(crystal_data.path_w_mag)
-    d_path_eig_phon = cuda.to_device(crystal_data.path_eig_phon)
 
 
     phase_1_scan[blocks_per_grid_2d, threads_per_block_2d](
