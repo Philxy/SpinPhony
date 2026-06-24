@@ -1449,77 +1449,6 @@ if __name__ == "__main__":
     blocks_per_grid = math.ceil(N_points / threads_per_block)
 
 
-    # 3. Execute Phase 1
-    print("\nStarting Phase 1: Scanning Phase Space and computing FT Vertices...")
-
-    threads_per_block_2d = (16, 16) # 256 threads total per block
-    blocks_x = math.ceil(N_points / threads_per_block_2d[0])
-    blocks_y = math.ceil(N_points / threads_per_block_2d[1])
-    blocks_per_grid_2d = (blocks_x, blocks_y)
-
-
-    phase_1_scan[blocks_per_grid_2d, threads_per_block_2d](
-        gpu_data["mesh"], 
-        gpu_data["q_grid"], 
-        gpu_data["q_grid_cart"],
-        gpu_data["grid_map"], 
-        gpu_data["w_phon"], 
-        gpu_data["w_mag"], 
-        gpu_data["eig_phon"],
-        gpu_data["slc_axis"], 
-        gpu_data["slc_rij"], 
-        gpu_data["slc_rik"], 
-        gpu_data["slc_J"], 
-        gpu_data["slc_types"], 
-        smearing, 
-        d_chan_indices,   
-        d_chan_weights, 
-        d_channel_count,
-        gpu_data["atom_masses"], 
-        gpu_data["mag_moments"],
-        gamma_idx
-    )
-
-    # Wait for the GPU to finish the scan
-    cuda.synchronize()
-    
-    # Extract the final count BEFORE slicing
-    num_channels = d_channel_count.copy_to_host()[0]
-    print(f"Allowed Channels found: {num_channels:,}")
-    print(f" -> Percentage of phase space allowed: {num_channels / total_loops:.2%}")
-
-    # Slice the device arrays so Phase 2 ONLY iterates over valid channels
-    # Slicing along the 2nd axis preserves the C-contiguous layout
-    d_chan_indices_active = d_chan_indices[:, :num_channels]
-    d_chan_weights_active = d_chan_weights[:num_channels]
-    
-    blocks_eval = math.ceil(num_channels / threads_per_block)
-
-
-    # 4. Setup Phase 2 memory
-    T_mag_init = 25
-    T_phon_init = 20
-    
-    print(f"\nInitializing populations at thermal equilibrium:")
-    print(f" -> Magnons: {T_mag_init} K")
-    print(f" -> Phonons: {T_phon_init} K")
-
-    # Generate population profiles matching the actual branch dispersions
-    n_mag_cpu = init_bose_einstein(crystal_data.w_mag, T_mag_init)
-    n_phon_cpu = init_bose_einstein(crystal_data.w_phon, T_phon_init)
-    
-    # Set Gamma point occupations to zero to avoid singularities
-    n_mag_cpu[gamma_idx, :] = 0.0
-    n_phon_cpu[gamma_idx, :] = 0.0
-
-    # Push initial states
-    d_n_mag = cuda.to_device(n_mag_cpu)
-    d_n_phon = cuda.to_device(n_phon_cpu)
-    
-    # STRIP FIX: Initialize derivatives to strict zeros ONCE before the loop
-    d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
-    d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
-
     # ========================== Path Lifetime Evaluation ==========================
     print("\nStarting Path Lifetime Evaluation...")
     
@@ -1605,6 +1534,80 @@ if __name__ == "__main__":
                 f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},phonon,{b},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
                 
     print("-> Saved true path lifetimes to Outputs/path_lifetimes.csv")
+
+
+    # 3. Execute Phase 1
+    print("\nStarting Phase 1: Scanning Phase Space and computing FT Vertices...")
+
+    threads_per_block_2d = (16, 16) # 256 threads total per block
+    blocks_x = math.ceil(N_points / threads_per_block_2d[0])
+    blocks_y = math.ceil(N_points / threads_per_block_2d[1])
+    blocks_per_grid_2d = (blocks_x, blocks_y)
+
+
+    phase_1_scan[blocks_per_grid_2d, threads_per_block_2d](
+        gpu_data["mesh"], 
+        gpu_data["q_grid"], 
+        gpu_data["q_grid_cart"],
+        gpu_data["grid_map"], 
+        gpu_data["w_phon"], 
+        gpu_data["w_mag"], 
+        gpu_data["eig_phon"],
+        gpu_data["slc_axis"], 
+        gpu_data["slc_rij"], 
+        gpu_data["slc_rik"], 
+        gpu_data["slc_J"], 
+        gpu_data["slc_types"], 
+        smearing, 
+        d_chan_indices,   
+        d_chan_weights, 
+        d_channel_count,
+        gpu_data["atom_masses"], 
+        gpu_data["mag_moments"],
+        gamma_idx
+    )
+
+    # Wait for the GPU to finish the scan
+    cuda.synchronize()
+    
+    # Extract the final count BEFORE slicing
+    num_channels = d_channel_count.copy_to_host()[0]
+    print(f"Allowed Channels found: {num_channels:,}")
+    print(f" -> Percentage of phase space allowed: {num_channels / total_loops:.2%}")
+
+    # Slice the device arrays so Phase 2 ONLY iterates over valid channels
+    # Slicing along the 2nd axis preserves the C-contiguous layout
+    d_chan_indices_active = d_chan_indices[:, :num_channels]
+    d_chan_weights_active = d_chan_weights[:num_channels]
+    
+    blocks_eval = math.ceil(num_channels / threads_per_block)
+
+
+    # 4. Setup Phase 2 memory
+    T_mag_init = 25
+    T_phon_init = 20
+    
+    print(f"\nInitializing populations at thermal equilibrium:")
+    print(f" -> Magnons: {T_mag_init} K")
+    print(f" -> Phonons: {T_phon_init} K")
+
+    # Generate population profiles matching the actual branch dispersions
+    n_mag_cpu = init_bose_einstein(crystal_data.w_mag, T_mag_init)
+    n_phon_cpu = init_bose_einstein(crystal_data.w_phon, T_phon_init)
+    
+    # Set Gamma point occupations to zero to avoid singularities
+    n_mag_cpu[gamma_idx, :] = 0.0
+    n_phon_cpu[gamma_idx, :] = 0.0
+
+    # Push initial states
+    d_n_mag = cuda.to_device(n_mag_cpu)
+    d_n_phon = cuda.to_device(n_phon_cpu)
+    
+    # STRIP FIX: Initialize derivatives to strict zeros ONCE before the loop
+    d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
+    d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
+
+    
 
 
     # ====== Lifetime and scattering rate phase ======
