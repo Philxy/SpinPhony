@@ -441,16 +441,23 @@ class CrystalDataSoA:
         for q_idx in range(N_pts):
             H_BdG = np.zeros((dim, dim), dtype=np.complex128)
             
-            """
 
             # ==========================================
             # 1. Phonon Blocks
             # ==========================================
-            # Apply mass scaling via the converted VASP -> meV energy mapping
             D_complex = dyn_mat[q_idx]
             D_meV2 = D_complex * (CONV_FACTOR ** 2)
 
-            # Cast dynamic matrix into the reference oscillator creation/annihilation block basis
+            # --- THE CURE: Project D(q) to be Positive Definite ---
+            # This fixes imaginary acoustic modes without shifting optical modes
+            # and perfectly preserves the BdG particle-hole symmetries.
+            evals_D, evecs_D = np.linalg.eigh(D_meV2)
+            if np.any(evals_D < 1e-6):
+                evals_D = np.maximum(evals_D, 1e-6)
+                D_meV2 = evecs_D @ np.diag(evals_D) @ evecs_D.conj().T
+            # ------------------------------------------------------
+
+            # Cast dynamic matrix into the reference oscillator basis
             A_phon = 0.5 * (D_meV2 / ref_omega + ref_omega * I_phon)
             B_phon = 0.5 * (D_meV2 / ref_omega - ref_omega * I_phon)
 
@@ -458,8 +465,6 @@ class CrystalDataSoA:
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon.conj()
             H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon.conj().T
-            """
-
 
 
             # ==========================================
