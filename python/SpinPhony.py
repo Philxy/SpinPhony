@@ -457,6 +457,9 @@ class CrystalDataSoA:
             H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon.conj().T
 
+
+            """
+
             # ==========================================
             # 2. Magnon Blocks
             # ==========================================
@@ -484,7 +487,6 @@ class CrystalDataSoA:
             # 3. SLC Blocks
             # ==========================================
 
-            """
             vp = V_plus_all[q_idx]
             vm = V_minus_all[q_idx]
 
