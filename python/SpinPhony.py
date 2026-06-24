@@ -648,12 +648,12 @@ class CrystalDataSoA:
             dq_cart = np.dot(dq_frac, self.path_reciprocal_lattice * 2.0 * np.pi)
             k_distances[i] = k_distances[i-1] + np.linalg.norm(dq_cart)
 
-        fig, ax = plt.subplots(figsize=(10/2.52, 12/2.52))
+        fig, ax = plt.subplots(figsize=(12/2.52, 14/2.52))
         
         num_bands = self.path_w_hyb.shape[1]
         for b in range(num_bands):
             label = 'Magnon-Polaron' if b == 0 else ""
-            ax.plot(k_distances, self.path_w_hyb[:, b], color='#8c564b', lw=2, label=label)
+            ax.plot(k_distances, self.path_w_hyb[:, b], color='#8c564b', lw=1, label=label)
 
         ax.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
         ax.set_xlim(0, k_distances[-1])
