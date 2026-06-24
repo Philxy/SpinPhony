@@ -505,11 +505,7 @@ class CrystalDataSoA:
             H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = vm.conj().T
             """
 
-            # Positive Definiteness Enforcement across the unified block Hamiltonian
-            min_eig = np.min(np.linalg.eigvalsh(H_BdG))
-            if min_eig <= 1e-8:
-                np.fill_diagonal(H_BdG, H_BdG.diagonal() + np.abs(min_eig) + 1e-5)
-
+            H_BdG = make_positive_definite(H_BdG, epsilon=1e-6, q_info=f"Hybridized q_idx {q_idx}")
 
             try:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
@@ -520,6 +516,8 @@ class CrystalDataSoA:
                 
         return w_hyb
 
+
+    
 
     def load_and_evaluate_path_hdf5(self, hdf5_path_file, K_anisotropy=0.01, lattice_constant=1.0):
         """
@@ -858,6 +856,26 @@ class CrystalDataSoA:
             plt.tight_layout()
             plt.savefig('dispersion_verification.png', dpi=300)
             print("-> Saved dispersion plot to 'dispersion_verification.png'")
+
+
+def make_positive_definite(H, epsilon=1e-6, q_info=""):
+        # 1. Diagonalize the Hermitian matrix
+        evals, evecs = np.linalg.eigh(H)
+        
+        # 2. Check and clamp
+        if np.any(evals < epsilon):
+            min_val = np.min(evals)
+            print(f"Warning: Eigenvalue {min_val:.4e} clamped to {epsilon} "
+                f"to ensure positive definiteness. (Info: {q_info})")
+            
+            evals_clamped = np.maximum(evals, epsilon)
+            
+            # 3. Reconstruct H_clean = U * D_clean * U^dagger
+            H_clean = evecs @ np.diag(evals_clamped) @ evecs.conj().T
+            return H_clean
+            
+        return H
+
 
 @cuda.jit(device=True)
 def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
