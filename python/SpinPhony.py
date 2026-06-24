@@ -398,6 +398,7 @@ class CrystalDataSoA:
                     print(f"Warning at q_idx {q_idx}: {e}")
                     self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
     
+    
     def _calculate_joint_hamiltonian_cartesian(self, q_cart_array, w_phon_array, eig_phon_array, K_anisotropy, lattice_constant, ref_omega=10.0):
         print(f" -> Constructing Joint Magnon-Phonon BdG Matrix (Cartesian Basis, w_ref={ref_omega} meV)...")
         N_pts = q_cart_array.shape[0]
@@ -438,101 +439,120 @@ class CrystalDataSoA:
 
         J_0 = (J_0 + J_0.T) / 2.0
         
+        # --- FAST VECTORIZATION: Pre-calculate Magnon Phases ---
+        mag_i_arr = np.array([b[0] for b in valid_bonds], dtype=np.int32)
+        mag_j_arr = np.array([b[1] for b in valid_bonds], dtype=np.int32)
+        r_cart_arr = np.array([b[2:5] for b in valid_bonds]) * lattice_constant
+        J_val_arr = np.array([b[5] for b in valid_bonds])
+        
+        phases = np.dot(q_cart_array, r_cart_arr.T)
+        exp_phases = np.exp(1j * phases) * J_val_arr
+        
+        J_q_all = np.zeros((N_pts, num_mag, num_mag), dtype=np.complex128)
+        for b_idx in range(len(valid_bonds)):
+            J_q_all[:, mag_i_arr[b_idx], mag_j_arr[b_idx]] += exp_phases[:, b_idx]
+        J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
+
+        # --- FAST VECTORIZATION: Pre-calculate SLC Phases ---
+        valid_slc_indices, vp_coeffs, vm_coeffs, slc_mag_idx, slc_ph_idx = [], [], [], [], []
+        
+        for i in range(len(self.slc_axis)):
+            mu = self.slc_axis[i]
+            type_i, type_j, disp_atom_idx = self.slc_types[i, 0], self.slc_types[i, 1], self.slc_types[i, 2] - 1
+            n_mag_i = atom_to_mag[type_i - 1]
+            n_mag_j = atom_to_mag[type_j - 1]
+            if n_mag_i == -1 or n_mag_j == -1: continue
+
+            p_idx = 3 * disp_atom_idx + mu
+            Jxz, Jyz = self.slc_J[i, 0, 2], self.slc_J[i, 1, 2]
+            
+            if not is_FM:
+                Jxz *= 2.0; Jyz *= 2.0
+                if type_j == 2: Jxz *= -1.0; Jyz *= -1.0
+                if type_i == 2: Jyz *= -1.0
+                    
+            vp_coeffs.append(Jxz + 1j * Jyz)
+            vm_coeffs.append(Jxz - 1j * Jyz)
+            slc_mag_idx.append(n_mag_i)
+            slc_ph_idx.append(p_idx)
+            valid_slc_indices.append(i)
+            
+        vp_coeffs = np.array(vp_coeffs, dtype=np.complex128)
+        vm_coeffs = np.array(vm_coeffs, dtype=np.complex128)
+        slc_mag_idx = np.array(slc_mag_idx, dtype=np.int32)
+        slc_ph_idx = np.array(slc_ph_idx, dtype=np.int32)
+        
+        # Calculate phases for all valid SLC vectors across all Q-points at once
+        slc_rik_valid = self.slc_rik[valid_slc_indices]
+        slc_phases_all = np.exp(1j * np.dot(q_cart_array, slc_rik_valid.T))
+        
+        # Precompute the amplitude prefactor matrix
+        pref_matrix = np.zeros((num_mag, num_phon), dtype=np.float64)
+        for p in range(num_phon):
+            mass = self.atom_masses[p // 3]
+            for m in range(num_mag):
+                pref_matrix[m, p] = math.sqrt((hbar * hbar) / (S_eff[m] * mass * DALTON_TO_meV_PS2_PER_A2 * ref_omega))
+
+        I_mat = np.eye(num_phon, dtype=np.complex128)
+
+        # ==========================================
+        # FAST MAIN LOOP
+        # ==========================================
         for q_idx in range(N_pts):
             q_cart = q_cart_array[q_idx]
             H_BdG = np.zeros((dim, dim), dtype=np.complex128)
             
-            # ==========================================
-            # 1. Phonon Blocks (Cartesian Reconstruction)
-            # ==========================================
-            D_q = np.zeros((num_phon, num_phon), dtype=np.complex128)
-            for b in range(num_phon):
-                # Flatten the (l_atoms, 3) eigenvector into a (3*l_atoms) mode vector
-                e_vec = eig_phon_array[q_idx, b].flatten()
-                
-                # Scale frequencies to meV^2 and enforce Positive Definiteness (> 1e-5)
-                eval_meV2 = w_phon_array[q_idx, b]**2
-                if eval_meV2 < 1e-5: eval_meV2 = 1e-5 
-                
-                # Reconstruct strict PSD dynamical matrix
-                D_q += eval_meV2 * np.outer(e_vec, e_vec.conj())
-                
-            for i in range(num_phon):
-                for j in range(num_phon):
-                    d_val = D_q[i, j]
-                    delta = 1.0 if i == j else 0.0
-                    
-                    A_val = 0.5 * (ref_omega * delta + d_val / ref_omega)
-                    B_val = 0.5 * (d_val / ref_omega - ref_omega * delta)
-                    
-                    H_BdG[i + off_ph_p, j + off_ph_p] = A_val
-                    H_BdG[i + off_ph_h, j + off_ph_h] = np.conj(A_val)
-                    H_BdG[i + off_ph_p, j + off_ph_h] = B_val
-                    H_BdG[i + off_ph_h, j + off_ph_p] = np.conj(B_val)
+            # 1. Phonon Blocks (Vectorized Reconstruction)
+            evals_meV2 = np.maximum(w_phon_array[q_idx]**2, 1e-5)
+            E_rows = eig_phon_array[q_idx].reshape(num_phon, num_phon)
+            
+            # einsum cleanly builds the PSD matrix without nested for loops
+            D_q = np.einsum('bi,b,bj->ij', E_rows, evals_meV2, E_rows.conj())
+            
+            # Matrix operations to fill blocks instantly
+            A_val = 0.5 * (ref_omega * I_mat + D_q / ref_omega)
+            B_val = 0.5 * (D_q / ref_omega - ref_omega * I_mat)
+            
+            H_BdG[off_ph_p:off_mag_p, off_ph_p:off_mag_p] = A_val
+            H_BdG[off_ph_h:off_mag_h, off_ph_h:off_mag_h] = A_val.conj()
+            H_BdG[off_ph_p:off_mag_p, off_ph_h:off_mag_h] = B_val
+            H_BdG[off_ph_h:off_mag_h, off_ph_p:off_mag_p] = B_val.conj()
 
-            # ==========================================
             # 2. Magnon Blocks
-            # ==========================================
+            J_q = J_q_all[q_idx]
             if is_FM:
-                J_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
-                J_m_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
-                
-                for b_idx in range(len(valid_bonds)):
-                    i, j, rx, ry, rz, Jval = valid_bonds[b_idx]
-                    dot_prod = np.dot(q_cart, [rx, ry, rz] * lattice_constant)
-                    J_k[i, j] += Jval * np.exp(1j * dot_prod)
-                    J_m_k[i, j] += Jval * np.exp(-1j * dot_prod)
-                    
                 Omega_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
-                Omega_m_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
-                
                 for i in range(num_mag):
                     sum_J0 = np.sum(J_0[i, :])
                     for j in range(num_mag):
-                        if i == j:
-                            Omega_k[i, i] = S_eff[i] * (J_k[i, i] - sum_J0)
-                            Omega_m_k[i, i] = S_eff[i] * (J_m_k[i, i] - sum_J0)
-                        else:
-                            Omega_k[i, j] = S_eff[i] * J_k[i, j]
-                            Omega_m_k[i, j] = S_eff[i] * J_m_k[i, j]
+                        Omega_k[i, j] = S_eff[i] * (J_q[i, i] - sum_J0) if i == j else S_eff[i] * J_q[i, j]
                             
                 for m in range(num_mag):
                     for n in range(num_mag):
-                        val_n = -Omega_k[m, n]
-                        if m == n: val_n += K_anisotropy
-                        H_BdG[m + off_mag_p, n + off_mag_p] = val_n
-                        
-                        val_h = -Omega_m_k[n, m]
-                        if m == n: val_h += K_anisotropy
-                        H_BdG[m + off_mag_h, n + off_mag_h] = val_h
-                        
-            else: # AFM / Ferrimagnetic C++ Logic Mapping
+                        val = -Omega_k[m, n]
+                        if m == n: val += K_anisotropy
+                        H_BdG[m + off_mag_p, n + off_mag_p] = val
+                        H_BdG[m + off_mag_h, n + off_mag_h] = np.conj(val)
+            else:
                 Omega_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
                 Omega_m_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
                 delta_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
-                delta_m_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
                 
                 for b_idx in range(len(valid_bonds)):
                     i, j, rx, ry, rz, Jval = valid_bonds[b_idx]
                     dot_prod = np.dot(q_cart, [rx, ry, rz] * lattice_constant)
-                    
                     if i == j:
-                        Omega_k[i, j] -= (2.0 / S_eff[i]) * Jval
-                        Omega_m_k[i, j] -= (2.0 / S_eff[i]) * Jval
-                        Omega_k[i, j] += (2.0 / S_eff[i]) * Jval * np.exp(1j * dot_prod)
-                        Omega_m_k[i, j] += (2.0 / S_eff[i]) * Jval * np.exp(-1j * dot_prod)
+                        Omega_k[i, j] += (-2.0 / S_eff[i] * Jval) + (2.0 / S_eff[i] * Jval * np.exp(1j * dot_prod))
+                        Omega_m_k[i, j] += (-2.0 / S_eff[i] * Jval) + (2.0 / S_eff[i] * Jval * np.exp(-1j * dot_prod))
                     else:
                         Omega_k[i, i] -= (-2.0 / S_eff[i]) * Jval
                         Omega_m_k[i, i] -= (-2.0 / S_eff[i]) * Jval
                         delta_k[i, j] += (2.0 / S_eff[i]) * Jval * np.exp(1j * dot_prod)
-                        delta_m_k[i, j] += (2.0 / S_eff[i]) * Jval * np.exp(-1j * dot_prod)
                         
                 for m in range(num_mag):
                     for n in range(num_mag):
                         H_BdG[m + off_mag_h, n + off_mag_p] += delta_k[m, n]
                         H_BdG[n + off_mag_p, m + off_mag_h] += np.conj(delta_k[n, m])
-                        
-                        afm_sign = 1.0 if (m % 2 == 0) else -1.0
                         
                         val_n = -Omega_k[m, n]
                         if m == n: val_n += K_anisotropy 
@@ -542,52 +562,34 @@ class CrystalDataSoA:
                         if m == n: val_h += K_anisotropy
                         H_BdG[m + off_mag_h, n + off_mag_h] = val_h
 
-            # ==========================================
-            # 3. Interaction Blocks (SLC)
-            # ==========================================
+            # 3. Interaction Blocks (SLC Vectorized)
             V_plus = np.zeros((num_mag, num_phon), dtype=np.complex128)
             V_minus = np.zeros((num_mag, num_phon), dtype=np.complex128)
             
-            for i in range(len(self.slc_axis)):
-                mu = self.slc_axis[i]
-                type_i, type_j, disp_atom_idx = self.slc_types[i, 0], self.slc_types[i, 1], self.slc_types[i, 2] - 1
-                
-                n_mag_i = atom_to_mag[type_i - 1]
-                n_mag_j = atom_to_mag[type_j - 1]
-                if n_mag_i == -1 or n_mag_j == -1: continue
+            # Combine phases and constant coefficients
+            vp_terms = vp_coeffs * slc_phases_all[q_idx]
+            vm_terms = vm_coeffs * slc_phases_all[q_idx]
+            
+            # Add results to corresponding [mag, phon] index (replaces 2000-iteration loop)
+            np.add.at(V_plus, (slc_mag_idx, slc_ph_idx), vp_terms)
+            np.add.at(V_minus, (slc_mag_idx, slc_ph_idx), vm_terms)
+            
+            # Scale by interaction prefactors
+            V_plus *= pref_matrix
+            V_minus *= pref_matrix
 
-                p_idx = 3 * disp_atom_idx + mu
-                Jxz, Jyz = self.slc_J[i, 0, 2], self.slc_J[i, 1, 2]
-                
-                if not is_FM:
-                    # AFM Definitions
-                    Jxz *= 2.0; Jyz *= 2.0
-                    if type_j == 2: Jxz *= -1.0; Jyz *= -1.0
-                    if type_i == 2: Jyz *= -1.0
-                        
-                phase = np.exp(1j * np.dot(q_cart, self.slc_rik[i]))
-                V_plus[n_mag_i, p_idx] += (Jxz + 1j * Jyz) * phase
-                V_minus[n_mag_i, p_idx] += (Jxz - 1j * Jyz) * phase
-
-            for p in range(num_phon):
-                mass = self.atom_masses[p // 3]
-                for m in range(num_mag):
-                    pref = math.sqrt((hbar * hbar) / (S_eff[m] * mass * DALTON_TO_meV_PS2_PER_A2 * ref_omega))
-                    vp = V_plus[m, p] * pref
-                    vm = V_minus[m, p] * pref
-                    
-                    # Fill Cross-terms perfectly aligned with C++ H_matrix
-                    H_BdG[m + off_mag_p, p + off_ph_p] = vp
-                    H_BdG[p + off_ph_p, m + off_mag_p] = np.conj(vp)
-                    
-                    H_BdG[m + off_mag_h, p + off_ph_p] = vm
-                    H_BdG[p + off_ph_p, m + off_mag_h] = np.conj(vm)
-                    
-                    H_BdG[m + off_mag_p, p + off_ph_h] = vp
-                    H_BdG[p + off_ph_h, m + off_mag_p] = np.conj(vp)
-                    
-                    H_BdG[m + off_mag_h, p + off_ph_h] = vm
-                    H_BdG[p + off_ph_h, m + off_mag_h] = np.conj(vm)
+            # Instantly slice blocks into Hamiltonian
+            H_BdG[off_mag_p:off_ph_h, off_ph_p:off_mag_p] = V_plus
+            H_BdG[off_ph_p:off_mag_p, off_mag_p:off_ph_h] = V_plus.conj().T
+            
+            H_BdG[off_mag_h:dim, off_ph_p:off_mag_p] = V_minus
+            H_BdG[off_ph_p:off_mag_p, off_mag_h:dim] = V_minus.conj().T
+            
+            H_BdG[off_mag_p:off_ph_h, off_ph_h:off_mag_h] = V_plus
+            H_BdG[off_ph_h:off_mag_h, off_mag_p:off_ph_h] = V_plus.conj().T
+            
+            H_BdG[off_mag_h:dim, off_ph_h:off_mag_h] = V_minus
+            H_BdG[off_ph_h:off_mag_h, off_mag_h:dim] = V_minus.conj().T
 
             # Enforce positive definiteness for Colpa
             min_eig = np.min(np.linalg.eigvalsh(H_BdG))
