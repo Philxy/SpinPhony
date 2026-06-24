@@ -1405,7 +1405,7 @@ if __name__ == "__main__":
     lattice_constant_CrI3 = 7.006660421592247  # in Angstroms
 
     anisotropy_bccFe = 0.01 
-    anisotropy_CrI3 = 0.49
+    anisotropy_CrI3 = 1.0
 
     anisotropy = anisotropy_CrI3     
 
