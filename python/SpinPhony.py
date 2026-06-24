@@ -549,6 +549,11 @@ class CrystalDataSoA:
             else:
                 raise ValueError("Eigenvectors missing from HDF5.")
             
+            if 'dynamical_matrices' in f:
+                self.path_dyn_mat = f['dynamical_matrices'][:]
+            else:
+                print("Warning: 'dynamical_matrices' missing from path HDF5. Coupled Hamiltonian requires them!")
+
             if 'labels_json' in f:
                 self.path_labels = json.loads(f['labels_json'][()])
             if 'segment_nqpoint' in f:
