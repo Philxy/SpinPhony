@@ -1014,7 +1014,7 @@ if __name__ == "__main__":
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
     mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.h5"
-    mesh_CrI3 = "Inputs/CrI3/combined_band_20x20x20.h5"
+    mesh_CrI3 = "Inputs/CrI3/combined_band_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
     Jijs_CrI3 = "Inputs/CrI3/JijCrI3.dat"
 
@@ -1031,7 +1031,7 @@ if __name__ == "__main__":
     Jijs = Jijs_CrI3
     slc_files = slc_files_CrI3
 
-    smearing = 0.1
+    smearing = 0.05
     
     crystal_data = CrystalDataSoA(
         mesh, 
