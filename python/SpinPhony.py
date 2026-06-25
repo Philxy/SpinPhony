@@ -466,15 +466,15 @@ class CrystalDataSoA:
             B_mag = np.zeros((num_mag, num_mag), dtype=np.complex128)
                 
             for n in range(num_mag):
-                sum_J_0 = np.sum([J_0[n, m] * 1.0 / S_eff[m] * (sigma[n] * sigma[m]) for m in range(num_mag)])
+                sum_J_0 = np.sum([J_0[n, m] * S_eff[m] / 2.0 * (sigma[n] * sigma[m]) for m in range(num_mag)])
                 for m in range(num_mag):
                     if n == m:
-                        A_mag[n, n] = sum_J_0 - 1.0 / S_eff[n] * J_q[n, n] + K_anisotropy 
+                        A_mag[n, n] = sum_J_0 - S_eff[n]  / 2.0 * J_q[n, n] + K_anisotropy
                     else:
                         if sigma[n] == sigma[m]:
-                            A_mag[n, m] = -1.0/np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
+                            A_mag[n, m] = -np.sqrt(S_eff[n] * S_eff[m] / 2.0) * J_q[n, m]
                         else:
-                            B_mag[n, m] = -1.0/np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
+                            B_mag[n, m] = -np.sqrt(S_eff[n] * S_eff[m] / 2.0) * J_q[n, m]
                             
             H_BdG[off_mag_p:off_mag_p+num_mag, off_mag_p:off_mag_p+num_mag] = A_mag
             H_BdG[off_mag_h:off_mag_h+num_mag, off_mag_h:off_mag_h+num_mag] = A_mag.conj()
