@@ -57,7 +57,7 @@ class CrystalDataSoA:
 
         # Allocate and Compute Magnons
         self.w_mag = np.zeros((self.N, self.n_mag_branches), dtype=np.float64)
-        self._compute_magnon_dispersions_test(K_anisotropy=anisotropy, lattice_constant=lattice_constant)
+        self._compute_magnon_dispersions(K_anisotropy=anisotropy, lattice_constant=lattice_constant)
 
         # Cartesian conversion
         q_frac_array = self.q_grid / self.mesh
@@ -235,7 +235,7 @@ class CrystalDataSoA:
         return gpu_buffers
     
 
-    def _compute_magnon_dispersions_test(self, K_anisotropy=0.5, lattice_constant=1.0):
+    def _compute_magnon_dispersions(self, K_anisotropy=0.5, lattice_constant=1.0):
             self.eig_mag = np.zeros((self.N, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
             
             atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
@@ -256,7 +256,8 @@ class CrystalDataSoA:
                     J_0[mag_i, mag_j] += row[3]
                     valid_bonds.append((mag_i, mag_j, row[0], row[1], row[2], row[3]))
 
-            J_0 = (J_0 + J_0.T) / 2.0 # Force strict symmetry
+            #J_0 = (J_0 + J_0.T) / 2.0 # Force strict symmetry
+            J_0 = J_0  / 2.0 # Force strict symmetry
             
             # Convert to fast NumPy arrays
             mag_i_arr = np.array([b[0] for b in valid_bonds])
@@ -282,7 +283,8 @@ class CrystalDataSoA:
                 J_q_all[:, mi, mj] += exp_phases[:, b_idx]
                 
             # Symmetrize all J_q matrices simultaneously to kill floating point noise
-            J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
+            #J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
+            J_q_all = J_q_all / 2.0
 
             # 5. Build BdG and Diagonalize (Now the loop only handles small 4x4 matrices)
             for q_idx in range(self.N):
@@ -1692,9 +1694,6 @@ if __name__ == "__main__":
     d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
     d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
 
-    
-
-
     # ========================== Path Lifetime Evaluation ==========================
     print("\nStarting Path Lifetime Evaluation...")
     
@@ -1827,10 +1826,6 @@ if __name__ == "__main__":
     d_chan_weights_active = d_chan_weights[:num_channels]
     
     blocks_eval = math.ceil(num_channels / threads_per_block)
-
-
-
-
 
     # ====== Lifetime and scattering rate phase ======
 
