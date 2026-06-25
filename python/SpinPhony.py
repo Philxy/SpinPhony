@@ -459,22 +459,33 @@ class CrystalDataSoA:
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon
 
             # ==========================================
-            # 2. Magnon Blocks
+            # 2. Magnon Blocks (Strictly following BdG Theory)
             # ==========================================
             J_q = J_q_all[q_idx]
             A_mag = np.zeros((num_mag, num_mag), dtype=np.complex128)
             B_mag = np.zeros((num_mag, num_mag), dtype=np.complex128)
                 
             for n in range(num_mag):
-                sum_J_0 = np.sum([J_0[n, m] * S_eff[m] / 2.0 * (sigma[n] * sigma[m]) for m in range(num_mag)])
+                # 1. Pulled 1/S_n out of the sum. Strictly match: \sum_l (1/S_n) J_nl(0) sigma_n sigma_l
+                sum_J_0 = (1.0 / S_eff[n]) * np.sum(
+                    [J_0[n, l] * sigma[n] * sigma[l] for l in range(num_mag)]
+                )
+                
                 for m in range(num_mag):
                     if n == m:
-                        A_mag[n, n] = sum_J_0 - S_eff[n]  / 2.0 * J_q[n, n] + K_anisotropy
+                        # 2. Diagonal A_nn: Apply factor of 2, ensure positive J_q term.
+                        # Note: Assuming K_anisotropy is literally K_n. If your K_anisotropy variable 
+                        # is already pre-scaled to represent the full energy, adjust accordingly.
+                        K_term = K_anisotropy / S_eff[n] 
+                        A_mag[n, n] = 2.0 * (K_term - sum_J_0) + (2.0 / S_eff[n]) * J_q[n, n]
+                        
                     else:
                         if sigma[n] == sigma[m]:
-                            A_mag[n, m] = -np.sqrt(S_eff[n] * S_eff[m] / 2.0) * J_q[n, m]
+                            # 3. Off-Diagonal A_nm: (1 + 1) = 2, positive sign
+                            A_mag[n, m] = (2.0 / np.sqrt(S_eff[n] * S_eff[m])) * J_q[n, m]
                         else:
-                            B_mag[n, m] = -np.sqrt(S_eff[n] * S_eff[m] / 2.0) * J_q[n, m]
+                            # 4. Off-Diagonal B_nm: (1 - (-1))/2 = 1, positive sign
+                            B_mag[n, m] = (1.0 / np.sqrt(S_eff[n] * S_eff[m])) * J_q[n, m]
                             
             H_BdG[off_mag_p:off_mag_p+num_mag, off_mag_p:off_mag_p+num_mag] = A_mag
             H_BdG[off_mag_h:off_mag_h+num_mag, off_mag_h:off_mag_h+num_mag] = A_mag.conj()
