@@ -1609,7 +1609,7 @@ if __name__ == "__main__":
     Jijs = Jijs_CrI3
     slc_files = slc_files_CrI3
 
-    smearing = 0.005
+    smearing = 0.02
     
     crystal_data = CrystalDataSoA(
         mesh, 

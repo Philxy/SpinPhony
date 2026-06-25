@@ -43,8 +43,6 @@ def plot_colored_line_dispersions(csv_file, output_image='lifetime_lineplots.png
             tau_max = 1e4
             tau_min = 1e-2
             
-        tau_max = 1e2
-        tau_min = 1e-3
 
         # Cap the extreme outliers for the colormap locally
         particle_df.loc[particle_df['tau_ps'] > tau_max, 'tau_ps'] = tau_max
