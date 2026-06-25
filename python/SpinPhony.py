@@ -363,7 +363,6 @@ class CrystalDataSoA:
                 J_0[mag_i, mag_j] += row[3]
                 valid_bonds_mag.append((mag_i, mag_j, row[0], row[1], row[2], row[3]))
 
-        #J_0 = (J_0 + J_0.T) / 2.0
 
         if valid_bonds_mag:
             mag_i_arr = np.array([b[0] for b in valid_bonds_mag])
@@ -378,7 +377,6 @@ class CrystalDataSoA:
             for b_idx in range(len(valid_bonds_mag)):
                 mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
                 J_q_all[:, mi, mj] += exp_phases_mag[:, b_idx]
-            #J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
         else:
             J_q_all = np.zeros((N_pts, num_mag, num_mag), dtype=np.complex128)
 
@@ -425,7 +423,7 @@ class CrystalDataSoA:
             p_idx = p_v[b_idx]
             V_plus_all[:, n_idx, p_idx] += inc_plus[:, b_idx]
             V_minus_all[:, n_idx, p_idx] += inc_minus[:, b_idx]
-
+        
         I_phon = np.eye(num_phon, dtype=np.complex128)
 
         J_0 = J_0 / 2.0
@@ -494,7 +492,7 @@ class CrystalDataSoA:
             vm = V_minus_all[q_idx]
 
 
-            """            H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = vp
+            H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = vp
             H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = vp.conj().T
 
             H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_h:off_ph_h+num_phon] = vp
@@ -505,7 +503,6 @@ class CrystalDataSoA:
 
             H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_h:off_ph_h+num_phon] = vm
             H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = vm.conj().T
-            """
 
 
             # ==========================================
@@ -657,13 +654,11 @@ class CrystalDataSoA:
         
         num_bands = self.path_w_hyb.shape[1]
         for b in range(num_bands):
-            label = 'Magnon-Polaron' if b == 0 else ""
-            ax.plot(k_distances, self.path_w_hyb[:, b], color='#8c564b', lw=1, label=label)
+            ax.plot(k_distances, self.path_w_hyb[:, b], color='#8c564b', lw=1)
 
         ax.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
         ax.set_xlim(0, k_distances[-1])
         ax.set_ylim(bottom=0)
-        ax.grid(True, axis='y', linestyle=':', color='gray', alpha=0.5)
         ax.legend(loc='upper right', fontsize=12, framealpha=1.0)
         
         if hasattr(self, 'path_labels') and hasattr(self, 'path_segments'):
