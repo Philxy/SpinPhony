@@ -1599,7 +1599,7 @@ if __name__ == "__main__":
     Jijs_CrI3 = "Inputs/CrI3/JijCrI3.dat"
 
     lattice_constant_bccFe = 2.8665  # in Angstroms
-    lattice_constant_CrI3 = 7.006660421592247  # in Angstroms
+    lattice_constant_CrI3 = 6.91   # in Angstroms
 
     anisotropy_bccFe = 0.01 
     anisotropy_CrI3 = 3 * 0.49
