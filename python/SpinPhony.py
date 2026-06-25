@@ -423,7 +423,7 @@ class CrystalDataSoA:
             p_idx = p_v[b_idx]
             V_plus_all[:, n_idx, p_idx] += inc_plus[:, b_idx]
             V_minus_all[:, n_idx, p_idx] += inc_minus[:, b_idx]
-        
+
         I_phon = np.eye(num_phon, dtype=np.complex128)
 
         J_0 = J_0 / 2.0
@@ -490,7 +490,6 @@ class CrystalDataSoA:
 
             vp = V_plus_all[q_idx]
             vm = V_minus_all[q_idx]
-
 
             H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = vp
             H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = vp.conj().T
