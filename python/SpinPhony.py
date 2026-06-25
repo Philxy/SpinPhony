@@ -493,7 +493,8 @@ class CrystalDataSoA:
             vp = V_plus_all[q_idx]
             vm = V_minus_all[q_idx]
 
-            H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = vp
+
+            """            H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = vp
             H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = vp.conj().T
 
             H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_h:off_ph_h+num_phon] = vp
@@ -504,6 +505,7 @@ class CrystalDataSoA:
 
             H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_h:off_ph_h+num_phon] = vm
             H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = vm.conj().T
+            """
 
 
             # ==========================================
