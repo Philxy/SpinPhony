@@ -585,7 +585,8 @@ class CrystalDataSoA:
                 J_0[mag_i, mag_j] += row[3]
                 valid_bonds.append((mag_i, mag_j, row[0], row[1], row[2], row[3]))
 
-        J_0 = (J_0 + J_0.T) / 2.0 # Force strict symmetry
+        #J_0 = (J_0 + J_0.T) / 2.0 # Force strict symmetry
+        J_0 = J_0 / 2  # Force strict symmetry
         
         mag_i_arr = np.array([b[0] for b in valid_bonds])
         mag_j_arr = np.array([b[1] for b in valid_bonds])
@@ -601,7 +602,8 @@ class CrystalDataSoA:
             mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
             J_q_all[:, mi, mj] += exp_phases[:, b_idx]
             
-        J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
+        #J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
+        J_q_all = J_q_all / 2.0
 
         for q_idx in range(self.N_path):
             J_q = J_q_all[q_idx]
