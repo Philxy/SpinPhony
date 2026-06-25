@@ -428,6 +428,9 @@ class CrystalDataSoA:
 
         I_phon = np.eye(num_phon, dtype=np.complex128)
 
+        J_0 = J_0 / 2.0
+        J_q_all = J_q_all / 2.0
+
         # ==========================================
         # HAMILTONIAN ASSEMBLY
         # ==========================================
@@ -466,24 +469,16 @@ class CrystalDataSoA:
             B_mag = np.zeros((num_mag, num_mag), dtype=np.complex128)
                 
             for n in range(num_mag):
-                # 1. Scale with S_eff. 
-                # For AFM, J_0 < 0 and sigma_n*sigma_m = -1 yield a correct positive local field cost.
                 sum_J_0 = S_eff[n] * np.sum(
                     [J_0[n, m] * sigma[n] * sigma[m] for m in range(num_mag)]
                 )
-                
                 for m in range(num_mag):
                     if n == m:
-                        # 2. Diagonal: No factor of 2. Matches the working script exactly.
                         A_mag[n, n] = K_anisotropy + sum_J_0 - S_eff[n] * J_q[n, n]
-                        
                     else:
                         if sigma[n] == sigma[m]:
-                            # 3. Off-Diagonal (Same spin, Hopping): -S * J_q
                             A_mag[n, m] = - np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
                         else:
-                            # 4. Off-Diagonal (Opposite spin, Pairing): -S * J_q
-                            # Notice this is now identical in scale to the A_mag hopping term.
                             B_mag[n, m] = - np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
                             
             H_BdG[off_mag_p:off_mag_p+num_mag, off_mag_p:off_mag_p+num_mag] = A_mag
