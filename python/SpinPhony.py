@@ -363,7 +363,7 @@ class CrystalDataSoA:
                 J_0[mag_i, mag_j] += row[3]
                 valid_bonds_mag.append((mag_i, mag_j, row[0], row[1], row[2], row[3]))
 
-        J_0 = (J_0 + J_0.T) / 2.0
+        #J_0 = (J_0 + J_0.T) / 2.0
 
         if valid_bonds_mag:
             mag_i_arr = np.array([b[0] for b in valid_bonds_mag])
@@ -378,7 +378,7 @@ class CrystalDataSoA:
             for b_idx in range(len(valid_bonds_mag)):
                 mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
                 J_q_all[:, mi, mj] += exp_phases_mag[:, b_idx]
-            J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
+            #J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
         else:
             J_q_all = np.zeros((N_pts, num_mag, num_mag), dtype=np.complex128)
 
