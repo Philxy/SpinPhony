@@ -636,7 +636,6 @@ class CrystalDataSoA:
 
 
     def plot_hybridized_path_dispersions(self, filename="hybridized_path.png"):
-        import matplotlib.pyplot as plt
         
         # 1. Calculate piecewise k-distances
         k_distances = np.zeros(self.N_path)
@@ -1138,7 +1137,7 @@ def diagonalize_bosonic_hamiltonian(H_matrix):
     # We only return the physical, positive modes (first m elements)
 
 
-    return final_evals_squared[:m], Q_final
+    return final_evals[:m], Q_final
 
 
 
