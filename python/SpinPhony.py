@@ -1794,13 +1794,12 @@ if __name__ == "__main__":
     d_path_w_phon = cuda.to_device(crystal_data.path_w_phon)
     d_path_w_mag = cuda.to_device(crystal_data.path_w_mag)
     d_path_eig_phon = cuda.to_device(crystal_data.path_eig_phon)
-    
     d_path_eig_mag = cuda.to_device(crystal_data.path_eig_mag)
     d_path_eig_hyb = cuda.to_device(crystal_data.path_eig_hyb)
 
     # Stop the program early
-    cuda.synchronize()
-    exit()
+    #cuda.synchronize()
+    #exit()
 
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
