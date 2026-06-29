@@ -790,12 +790,12 @@ class CrystalDataSoA:
                 
                 if color_mode == 'spin_am':
                     cbar_label = r"Spin AM $S_z$ ($\hbar$)"
-                    cmap = 'PRGn' # Purple to Green
+                    cmap = 'coolwarm'
                     Operator[num_phon:dim_block, num_phon:dim_block] = L_z_total[num_phon:dim_block, num_phon:dim_block]
                     Operator[dim_block+num_phon:, dim_block+num_phon:] = L_z_total[dim_block+num_phon:, dim_block+num_phon:]
                 else:
                     cbar_label = r"Phonon AM $L_z$ ($\hbar$)"
-                    cmap = 'PiYG' # Pink to Green
+                    cmap = 'coolwarm'
                     Operator[:num_phon, :num_phon] = L_z_total[:num_phon, :num_phon]
                     Operator[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon] = L_z_total[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon]
                 
