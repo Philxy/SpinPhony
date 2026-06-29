@@ -717,8 +717,13 @@ class CrystalDataSoA:
         print(f"-> Done! (Sanity check: character sum phon+mag should equal exactly 1.0 for all bands)")
 
 
-    def plot_hybridized_path_dispersions(self, filename="hybridized_path.png"):
+    def plot_hybridized_path_dispersions(self, filename="hybridized_path.png", color_mode='character'):
+        """
+        Plots the hybridized band structure.
+        color_mode: None, 'character', 'spin_am', or 'phon_am'
+        """
         import matplotlib.pyplot as plt
+        import matplotlib.cm as cm
         
         k_distances = np.zeros(self.N_path)
         current_dist = 0.0
@@ -735,29 +740,92 @@ class CrystalDataSoA:
         fig, ax = plt.subplots(figsize=(12/2.52, 14/2.52))
         num_bands = self.path_w_hyb.shape[1]
         
-        # 2. Overlap Segments to Close Visual Gaps
+        weights = None
+        cbar_label = ""
+        cmap = 'coolwarm'
+        vmin, vmax = -1.0, 1.0
+
+        # 2. Extract Physical Properties on-the-fly for Color Mapping
+        if color_mode and hasattr(self, 'path_eig_hyb'):
+            weights = np.zeros((self.N_path, num_bands))
+            num_phon = self.phon_branches
+            num_mag = self.n_mag_branches
+            dim_block = num_phon + num_mag
+            dim_total = 2 * dim_block
+            
+            if color_mode == 'character':
+                cbar_label = "Character (Blue=Phonon, Red=Magnon)"
+                J_phon = np.zeros((dim_total, dim_total), dtype=np.float64)
+                J_spin = np.zeros((dim_total, dim_total), dtype=np.float64)
+                
+                # Particle blocks
+                np.fill_diagonal(J_phon[:num_phon, :num_phon], 1.0)
+                np.fill_diagonal(J_spin[num_phon:dim_block, num_phon:dim_block], 1.0)
+                # Hole blocks
+                np.fill_diagonal(J_phon[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon], -1.0)
+                np.fill_diagonal(J_spin[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total], -1.0)
+                
+                for q in range(self.N_path):
+                    T = self.path_eig_hyb[q]
+                    T_dag = T.conj().T
+                    w_phon = np.diag(T_dag @ J_phon @ T).real[:num_bands]
+                    w_mag = np.diag(T_dag @ J_spin @ T).real[:num_bands]
+                    # Map to [-1, 1] where -1 is pure phonon, +1 is pure magnon
+                    weights[q, :] = w_mag - w_phon 
+                    
+            elif color_mode in ['spin_am', 'phon_am']:
+                L_z_total = self.get_nambu_angular_momentum(axis=2)
+                Operator = np.zeros_like(L_z_total)
+                
+                if color_mode == 'spin_am':
+                    cbar_label = "Spin AM $S_z$ (meV⋅ps)"
+                    cmap = 'PRGn' # Purple to Green
+                    Operator[num_phon:dim_block, num_phon:dim_block] = L_z_total[num_phon:dim_block, num_phon:dim_block]
+                    Operator[dim_block+num_phon:, dim_block+num_phon:] = L_z_total[dim_block+num_phon:, dim_block+num_phon:]
+                else:
+                    cbar_label = "Phonon AM $L_z$ (meV⋅ps)"
+                    cmap = 'PiYG' # Pink to Green
+                    Operator[:num_phon, :num_phon] = L_z_total[:num_phon, :num_phon]
+                    Operator[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon] = L_z_total[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon]
+                
+                for q in range(self.N_path):
+                    T = self.path_eig_hyb[q]
+                    w_op = np.diag(T.conj().T @ Operator @ T).real[:num_bands]
+                    weights[q, :] = w_op
+                    
+                # Dynamically set colorbar bounds for AM to the max absolute value found
+                max_val = np.max(np.abs(weights))
+                if max_val > 1e-12:
+                    vmin, vmax = -max_val, max_val
+
+        # 3. Plotting with Optional Scatter Overlay
         start_idx = 0
+        sc = None
         for seg_len in self.path_segments:
             end_idx = start_idx + seg_len
-            
-            # Draw up to end_idx + 1 to physically connect the line segments
             plot_end = end_idx + 1 if end_idx < self.N_path else end_idx
             
             for b in range(num_bands):
-                ax.plot(k_distances[start_idx:plot_end], self.path_w_hyb[start_idx:plot_end, b], color='#8c564b', lw=1)
-                
+                if weights is not None:
+                    # Draw a faint structural line to connect points visually
+                    ax.plot(k_distances[start_idx:plot_end], self.path_w_hyb[start_idx:plot_end, b], color='lightgray', lw=0.5, zorder=1)
+                    # Scatter plot the color-mapped values on top
+                    sc = ax.scatter(k_distances[start_idx:plot_end], self.path_w_hyb[start_idx:plot_end, b], 
+                                    c=weights[start_idx:plot_end, b], cmap=cmap, vmin=vmin, vmax=vmax, s=8, zorder=2, edgecolors='none')
+                else:
+                    # Fallback to plain uniform lines if no color mapping is requested
+                    ax.plot(k_distances[start_idx:plot_end], self.path_w_hyb[start_idx:plot_end, b], color='#8c564b', lw=1.5, zorder=2)
+                    
             start_idx = end_idx
 
-        # ... (Keep your existing tick formatting logic below) ...
-
+        # 4. Axes Formatting
         ax.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
         ax.set_xlim(0, k_distances[-1])
         ax.set_ylim(bottom=0)
         
-        # Avoid duplicate legend handles since we plot in segments
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            ax.legend(handles[:1], labels[:1], loc='upper right', fontsize=12, framealpha=1.0)
+        if sc is not None:
+            cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+            cbar.set_label(cbar_label, fontsize=12, fontweight='bold')
         
         if hasattr(self, 'path_labels') and hasattr(self, 'path_segments'):
             tick_locs = [k_distances[0]]
