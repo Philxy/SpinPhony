@@ -747,12 +747,13 @@ class CrystalDataSoA:
 
         fig, ax = plt.subplots(figsize=(12/2.52, 14/2.52))
         
-        # Now that unpacking is fixed, this shape call will work perfectly
         num_bands = self.path_w_hyb.shape[1] 
         
         weights = None
         cbar_label = ""
         cmap = 'coolwarm'
+        
+        # Default fixed scale limits (Perfect for Character and absolute ℏ scales)
         vmin, vmax = -1.0, 1.0
 
         # 2. Extract Physical Properties on-the-fly for Color Mapping
@@ -788,13 +789,13 @@ class CrystalDataSoA:
                 Operator = np.zeros_like(L_z_total)
                 
                 if color_mode == 'spin_am':
-                    cbar_label = "Spin AM S_z (meV⋅ps)"
-                    cmap = 'coolwarm' # Purple to Green
+                    cbar_label = r"Spin AM $S_z$ ($\hbar$)"
+                    cmap = 'PRGn' # Purple to Green
                     Operator[num_phon:dim_block, num_phon:dim_block] = L_z_total[num_phon:dim_block, num_phon:dim_block]
                     Operator[dim_block+num_phon:, dim_block+num_phon:] = L_z_total[dim_block+num_phon:, dim_block+num_phon:]
                 else:
-                    cbar_label = "Phonon AM L_z (meV⋅ps)"
-                    cmap = 'coolwarm' # Pink to Green
+                    cbar_label = r"Phonon AM $L_z$ ($\hbar$)"
+                    cmap = 'PiYG' # Pink to Green
                     Operator[:num_phon, :num_phon] = L_z_total[:num_phon, :num_phon]
                     Operator[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon] = L_z_total[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon]
                 
@@ -803,10 +804,9 @@ class CrystalDataSoA:
                     w_op = np.diag(T.conj().T @ Operator @ T).real[:num_bands]
                     weights[q, :] = w_op
                     
-                # Dynamically set colorbar bounds for AM to the max absolute value found
-                max_val = np.max(np.abs(weights))
-                if max_val > 1e-12:
-                    vmin, vmax = -max_val, max_val
+                # NOTE: The dynamic auto-scaling block was removed here. 
+                # vmin and vmax are locked at -1.0 and 1.0. 
+                # This ensures the colorbar visually respects the absolute hbar limits.
 
         # 3. Plotting with Optional Scatter Overlay
         start_idx = 0
