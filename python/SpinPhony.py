@@ -236,92 +236,99 @@ class CrystalDataSoA:
     
 
     def _compute_magnon_dispersions(self, K_anisotropy=0.5, lattice_constant=1.0):
-            self.eig_mag = np.zeros((self.N, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+        self.eig_mag = np.zeros((self.N, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+        
+        atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
+        for i, m_idx in enumerate(self.mag_indices):
+            atom_to_mag[m_idx] = i
+
+        moments = self.mag_moments[self.mag_indices]
+        S_eff = np.abs(moments) / 2.0
+        S_val = S_eff[0] if len(S_eff) > 0 else 1.0 
+        anisotropy_term = S_val * 2.0 * K_anisotropy
+        
+        # 1. Pre-extract all valid Jij connections
+        valid_bonds = []
+        J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
+        for row in self.jij_interactions:
+            i, j = int(row[4]) - 1, int(row[5]) - 1
+            mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
+            if mag_i != -1 and mag_j != -1:
+                J_val_scaled = row[3]
+                J_0[mag_i, mag_j] += J_val_scaled
+                valid_bonds.append((mag_i, mag_j, row[0], row[1], row[2], J_val_scaled))
+
+        sum_J0_row = np.sum(J_0, axis=1)
+        
+        # Convert to fast NumPy arrays
+        mag_i_arr = np.array([b[0] for b in valid_bonds])
+        mag_j_arr = np.array([b[1] for b in valid_bonds])
+        r_cart_arr = np.array([b[2:5] for b in valid_bonds]) * lattice_constant
+        J_val_arr = np.array([b[5] for b in valid_bonds])
+
+        # 2. Compute q_cart for ALL q-points at once (Shape: N_points x 3)
+        q_frac = self.q_grid / self.mesh
+        q_cart_all = np.dot(q_frac, self.reciprocal_lattice * 2.0 * np.pi)
+
+        # 3. Vectorized Phase Calculation
+        phases = np.dot(q_cart_all, r_cart_arr.T)
+        
+        # Compute exp(+-i * phase) * J for all q-points and bonds simultaneously
+        exp_phases_k = np.exp(1j * phases) * J_val_arr
+        exp_phases_m_k = np.exp(-1j * phases) * J_val_arr
+
+        # 4. Accumulate J_k and J_m_k for all q-points
+        J_k_all = np.zeros((self.N, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+        J_m_k_all = np.zeros((self.N, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+        
+        for b_idx in range(len(valid_bonds)):
+            mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
+            J_k_all[:, mi, mj] += exp_phases_k[:, b_idx]
+            J_m_k_all[:, mi, mj] += exp_phases_m_k[:, b_idx]
+
+        # 5. Build BdG and Diagonalize 
+        for q_idx in range(self.N):
+            J_k = J_k_all[q_idx]
+            J_m_k = J_m_k_all[q_idx]
             
-            atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
-            for i, m_idx in enumerate(self.mag_indices):
-                atom_to_mag[m_idx] = i
-
-            moments = self.mag_moments[self.mag_indices]
-            S_eff = np.abs(moments) / 2.0
-            sigma = np.sign(moments) 
-            
-            # 1. Pre-extract all valid Jij connections
-            valid_bonds = []
-            J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
-            for row in self.jij_interactions:
-                i, j = int(row[4]) - 1, int(row[5]) - 1
-                mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
-                if mag_i != -1 and mag_j != -1:
-                    J_0[mag_i, mag_j] += row[3]
-                    valid_bonds.append((mag_i, mag_j, row[0], row[1], row[2], row[3]))
-
-            #J_0 = (J_0 + J_0.T) / 2.0 # Force strict symmetry
-            J_0 = J_0  / 2.0 # Force strict symmetry
-            
-            # Convert to fast NumPy arrays
-            mag_i_arr = np.array([b[0] for b in valid_bonds])
-            mag_j_arr = np.array([b[1] for b in valid_bonds])
-            r_cart_arr = np.array([b[2:5] for b in valid_bonds]) * lattice_constant
-            J_val_arr = np.array([b[5] for b in valid_bonds])
-
-            # 2. Compute q_cart for ALL q-points at once (Shape: N_points x 3)
-            q_frac = self.q_grid / self.mesh
-            q_cart_all = np.dot(q_frac, self.reciprocal_lattice * 2.0 * np.pi)
-
-            # 3. Vectorized Phase Calculation
-            # np.dot( (N x 3), (3 x N_bonds) ) -> phases is (N x N_bonds)
-            phases = np.dot(q_cart_all, r_cart_arr.T)
-            
-            # Compute exp(i * phase) * J for all q-points and bonds simultaneously
-            exp_phases = np.exp(1j * phases) * J_val_arr
-
-            # 4. Accumulate J_q for all q-points
-            J_q_all = np.zeros((self.N, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
-            for b_idx in range(len(valid_bonds)):
-                mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
-                J_q_all[:, mi, mj] += exp_phases[:, b_idx]
+            Omega_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            Omega_m_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
                 
-            # Symmetrize all J_q matrices simultaneously to kill floating point noise
-            #J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
-            J_q_all = J_q_all / 2.0
-
-            # 5. Build BdG and Diagonalize (Now the loop only handles small 4x4 matrices)
-            for q_idx in range(self.N):
-                J_q = J_q_all[q_idx]
-                
-                A_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
-                B_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
-                    
+            for i in range(self.n_mag_branches):
+                for j in range(self.n_mag_branches):
+                    if i == j:
+                        Omega_k[i, i] = S_val * (J_k[i, i] - sum_J0_row[i]) 
+                        Omega_m_k[i, i] = S_val * (J_m_k[i, i] - sum_J0_row[i])
+                    else:
+                        Omega_k[i, j] = S_val * J_k[i, j]
+                        Omega_m_k[i, j] = S_val * J_m_k[i, j]
+                        
+            H_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+            
+            for m in range(self.n_mag_branches):
                 for n in range(self.n_mag_branches):
-                    sum_J_0 = np.sum([J_0[n, m] * S_eff[m] * (sigma[n] * sigma[m]) for m in range(self.n_mag_branches)])
-                    for m in range(self.n_mag_branches):
-                        if n == m:
-                            A_mat[n, n] = sum_J_0 - S_eff[n] * J_q[n, n] + K_anisotropy
-                        else:
-                            if sigma[n] == sigma[m]:
-                                A_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
-                            else:
-                                B_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
-                                
-                H_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
-                H_BdG[:self.n_mag_branches, :self.n_mag_branches] = A_mat
-                H_BdG[self.n_mag_branches:, self.n_mag_branches:] = np.conj(A_mat)
-                H_BdG[:self.n_mag_branches, self.n_mag_branches:] = B_mat
-                H_BdG[self.n_mag_branches:, :self.n_mag_branches] = np.conj(B_mat.T)
+                    val_n = -Omega_k[m, n]
+                    if m == n:
+                        val_n += anisotropy_term
+                    H_BdG[m, n] = val_n
 
-                # Positive Definiteness Enforcement
-                min_eig = np.min(np.linalg.eigvalsh(H_BdG))
-                if min_eig <= 1e-8:
-                    np.fill_diagonal(H_BdG, H_BdG.diagonal() + np.abs(min_eig) + 1e-5)
+                    val_h = -Omega_m_k[n, m]
+                    if m == n:
+                        val_h += anisotropy_term
+                    H_BdG[self.n_mag_branches + m, self.n_mag_branches + n] = val_h
 
-                try:
-                    energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
-                    self.w_mag[q_idx] = energies
-                    self.eig_mag[q_idx] = para_unitary
-                except RuntimeError as e:
-                    print(f"Warning at q_idx {q_idx}: {e}")
-                    self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
+            # Positive Definiteness Enforcement
+            min_eig = np.min(np.linalg.eigvalsh(H_BdG))
+            if min_eig <= 1e-8:
+                np.fill_diagonal(H_BdG, H_BdG.diagonal() + np.abs(min_eig) + 1e-5)
+
+            try:
+                energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
+                self.w_mag[q_idx] = energies
+                self.eig_mag[q_idx] = para_unitary
+            except RuntimeError as e:
+                print(f"Warning at q_idx {q_idx}: {e}")
+                self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
     
 
     def _calculate_coupled_hamiltonian2(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=5.0, is_FM=True, magnetic_field_T=0.0):
@@ -568,7 +575,8 @@ class CrystalDataSoA:
 
         moments = self.mag_moments[self.mag_indices]
         S_eff = np.abs(moments) / 2.0
-        sigma = np.sign(moments) 
+        S_val = S_eff[0] if len(S_eff) > 0 else 1.0 
+        anisotropy_term = S_val * 2.0 * K_anisotropy
         
         valid_bonds = []
         J_0 = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.float64)
@@ -576,11 +584,11 @@ class CrystalDataSoA:
             i, j = int(row[4]) - 1, int(row[5]) - 1
             mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
             if mag_i != -1 and mag_j != -1:
-                J_0[mag_i, mag_j] += row[3]
-                valid_bonds.append((mag_i, mag_j, row[0], row[1], row[2], row[3]))
+                J_val_scaled = row[3]
+                J_0[mag_i, mag_j] += J_val_scaled
+                valid_bonds.append((mag_i, mag_j, row[0], row[1], row[2], J_val_scaled))
 
-        #J_0 = (J_0 + J_0.T) / 2.0 # Force strict symmetry
-        J_0 = J_0 / 2  # Force strict symmetry
+        sum_J0_row = np.sum(J_0, axis=1)
         
         mag_i_arr = np.array([b[0] for b in valid_bonds])
         mag_j_arr = np.array([b[1] for b in valid_bonds])
@@ -589,38 +597,47 @@ class CrystalDataSoA:
 
         # Vectorized Phase Calculation mapping to the independent path cartesian vectors
         phases = np.dot(self.path_q_cart, r_cart_arr.T)
-        exp_phases = np.exp(1j * phases) * J_val_arr
+        
+        exp_phases_k = np.exp(1j * phases) * J_val_arr
+        exp_phases_m_k = np.exp(-1j * phases) * J_val_arr
 
-        J_q_all = np.zeros((self.N_path, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+        J_k_all = np.zeros((self.N_path, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+        J_m_k_all = np.zeros((self.N_path, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+        
         for b_idx in range(len(valid_bonds)):
             mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
-            J_q_all[:, mi, mj] += exp_phases[:, b_idx]
+            J_k_all[:, mi, mj] += exp_phases_k[:, b_idx]
+            J_m_k_all[:, mi, mj] += exp_phases_m_k[:, b_idx]
             
-        #J_q_all = (J_q_all + np.transpose(J_q_all.conj(), axes=(0, 2, 1))) / 2.0
-        J_q_all = J_q_all / 2.0
-
         for q_idx in range(self.N_path):
-            J_q = J_q_all[q_idx]
+            J_k = J_k_all[q_idx]
+            J_m_k = J_m_k_all[q_idx]
             
-            A_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
-            B_mat = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            Omega_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+            Omega_m_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
                 
-            for n in range(self.n_mag_branches):
-                sum_J_0 = np.sum([J_0[n, m] * S_eff[m] * (sigma[n] * sigma[m]) for m in range(self.n_mag_branches)])
-                for m in range(self.n_mag_branches):
-                    if n == m:
-                        A_mat[n, n] = sum_J_0 - S_eff[n] * J_q[n, n] + K_anisotropy
+            for i in range(self.n_mag_branches):
+                for j in range(self.n_mag_branches):
+                    if i == j:
+                        Omega_k[i, i] = S_val * (J_k[i, i] - sum_J0_row[i]) 
+                        Omega_m_k[i, i] = S_val * (J_m_k[i, i] - sum_J0_row[i])
                     else:
-                        if sigma[n] == sigma[m]:
-                            A_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
-                        else:
-                            B_mat[n, m] = -np.sqrt(S_eff[n] * S_eff[m]) * J_q[n, m]
-                            
+                        Omega_k[i, j] = S_val * J_k[i, j]
+                        Omega_m_k[i, j] = S_val * J_m_k[i, j]
+                        
             H_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
-            H_BdG[:self.n_mag_branches, :self.n_mag_branches] = A_mat
-            H_BdG[self.n_mag_branches:, self.n_mag_branches:] = np.conj(A_mat)
-            H_BdG[:self.n_mag_branches, self.n_mag_branches:] = B_mat
-            H_BdG[self.n_mag_branches:, :self.n_mag_branches] = np.conj(B_mat.T)
+            
+            for m in range(self.n_mag_branches):
+                for n in range(self.n_mag_branches):
+                    val_n = -Omega_k[m, n]
+                    if m == n:
+                        val_n += anisotropy_term
+                    H_BdG[m, n] = val_n
+
+                    val_h = -Omega_m_k[n, m]
+                    if m == n:
+                        val_h += anisotropy_term
+                    H_BdG[self.n_mag_branches + m, self.n_mag_branches + n] = val_h
 
             min_eig = np.min(np.linalg.eigvalsh(H_BdG))
             if min_eig <= 1e-8:
