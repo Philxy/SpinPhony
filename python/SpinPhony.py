@@ -346,6 +346,7 @@ class CrystalDataSoA:
         moments = self.mag_moments[self.mag_indices]
         S_eff = np.abs(moments) / 2.0
         S_val = S_eff[0] if len(S_eff) > 0 else 1.0 
+        print(S_val)
         anisotropy_term = S_val * 2.0 * K_anisotropy
 
         # ==========================================
