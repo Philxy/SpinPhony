@@ -1822,8 +1822,8 @@ if __name__ == "__main__":
     blocks_per_grid = math.ceil(N_points / threads_per_block)
 
     # Setup Phase 2 memory
-    T_mag_init = 25
-    T_phon_init = 20
+    T_mag_init = 300
+    T_phon_init = 300
     
     print(f"\nInitializing populations at thermal equilibrium:")
     print(f" -> Magnons: {T_mag_init} K")
