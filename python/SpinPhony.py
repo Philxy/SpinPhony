@@ -637,7 +637,6 @@ class CrystalDataSoA:
 
 
     def plot_hybridized_path_dispersions(self, filename="hybridized_path.png"):
-        import matplotlib.pyplot as plt
         
         # 1. Calculate piecewise k-distances
         k_distances = np.zeros(self.N_path)
