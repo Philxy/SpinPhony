@@ -1773,7 +1773,11 @@ if __name__ == "__main__":
         lattice_constant=lattice_constant
     )
 
-    crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_path_dispersions.png")
+    #crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_path_dispersions.png")
+
+    crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_character.png", color_mode='character')
+    crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_spin_AM.png", color_mode='spin_am')
+    crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_phon_AM.png", color_mode='phon_am')
 
     crystal_data.save_hybrid_path_properties("Outputs/hybrid_path_properties.csv")
 
