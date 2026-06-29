@@ -1577,13 +1577,13 @@ if __name__ == "__main__":
         lattice_constant=lattice_constant
     )
 
-    # Stop the program early
-    cuda.synchronize()
-    exit()
+
 
 
     crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_path_dispersions.png")
-
+    # Stop the program early
+    cuda.synchronize()
+    exit()
 
     # Push path data to GPU for scanning kernels
     d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
