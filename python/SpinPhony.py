@@ -324,7 +324,7 @@ class CrystalDataSoA:
                     self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
     
 
-    def _calculate_coupled_hamiltonian2(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=50.0, is_FM=True, magnetic_field_T=0.0):
+    def _calculate_coupled_hamiltonian2(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=5.0, is_FM=True, magnetic_field_T=0.0):
         print(f" -> Constructing Joint Magnon-Phonon BdG Matrix (Strict C++ Mapping)...")
         N_pts = q_cart_array.shape[0]
         num_phon = self.phon_branches
@@ -1587,7 +1587,7 @@ if __name__ == "__main__":
     mesh_CrI3 = "Inputs/CrI3/grid_12x12x12.h5"
     mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
-    Jijs_CrI3 = "Inputs/CrI3/JijCrI3.dat"
+    Jijs_CrI3 = "Inputs/CrI3/JijCrI3_sergey.dat" #"Inputs/CrI3/JijCrI3.dat"
     Jijs_CrSb = "Inputs/CrSb/Jij_stretched.csv"
     band_CrI3 = "Inputs/CrI3/band.h5"
     band_CrSb = "Inputs/CrSb/band.h5"
