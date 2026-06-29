@@ -324,7 +324,7 @@ class CrystalDataSoA:
                     self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
     
 
-    def _calculate_coupled_hamiltonian2(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=5.0, is_FM=True, magnetic_field_T=0.0):
+    def _calculate_coupled_hamiltonian2(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=50.0, is_FM=True, magnetic_field_T=0.0):
         print(f" -> Constructing Joint Magnon-Phonon BdG Matrix (Strict C++ Mapping)...")
         N_pts = q_cart_array.shape[0]
         num_phon = self.phon_branches
