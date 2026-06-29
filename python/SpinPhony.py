@@ -342,11 +342,14 @@ class CrystalDataSoA:
         CONV_FACTOR = 15.633302 * 4.135667696
         I_phon = np.eye(num_phon, dtype=np.complex128)
 
-        # --- S_eff & Constants ---
+        # --- Constants & Conversions ---
+        hbar = 0.6582119569 # meV * ps
+        DALTON_TO_meV_PS2_PER_A2 = 0.10364269
+
         moments = self.mag_moments[self.mag_indices]
         S_eff = np.abs(moments) / 2.0
         S_val = S_eff[0] if len(S_eff) > 0 else 1.0 
-        print(S_val)
+        print(f"Using S_val: {S_val}")
         anisotropy_term = S_val * 2.0 * K_anisotropy
 
         # ==========================================
@@ -362,7 +365,6 @@ class CrystalDataSoA:
             i, j = int(row[4]) - 1, int(row[5]) - 1
             mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
             if mag_i != -1 and mag_j != -1:
-            
                 J_val_scaled = row[3]
                 J_0[mag_i, mag_j] += J_val_scaled
                 valid_bonds_mag.append((mag_i, mag_j, row[0], row[1], row[2], J_val_scaled))
@@ -389,6 +391,48 @@ class CrystalDataSoA:
                 J_m_k_all[:, mi, mj] += exp_phases_m_k[:, b_idx]
 
         # ==========================================
+        # 1.5 Precalculate SLC Tensors (FM Case)
+        # ==========================================
+        V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
+        V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
+
+        if hasattr(self, 'slc_axis') and is_FM:
+            for i in range(self.slc_axis.shape[0]):
+                # 1-based indices from files mapped to 0-based arrays
+                type_i = self.slc_types[i, 0] - 1
+                type_j = self.slc_types[i, 1] - 1
+                disp_atom_idx = self.slc_types[i, 2] - 1
+                
+                n_mag_i = atom_to_mag[type_i]
+                n_mag_j = atom_to_mag[type_j]
+
+                # Ensure both referenced atoms in the exchange bond are magnetic
+                if n_mag_i == -1 or n_mag_j == -1:
+                    continue
+
+                mu = self.slc_axis[i]
+                p_idx = 3 * disp_atom_idx + mu
+
+                Jxz = self.slc_J[i, 0, 2]  # X=0, Z=2
+                Jyz = self.slc_J[i, 1, 2]  # Y=1, Z=2
+
+                # q_cart_array dot t.rik
+                phases_slc = np.dot(q_cart_array, self.slc_rik[i])
+                phase_factor = np.exp(1j * phases_slc)
+
+                V_plus_all[:, n_mag_i, p_idx] += (Jxz + 1j * Jyz) * phase_factor
+                V_minus_all[:, n_mag_i, p_idx] += (Jxz - 1j * Jyz) * phase_factor
+
+            # Apply Mass Scaling and Prefactors
+            for p in range(num_phon):
+                atom_l = p // 3
+                mass = self.atom_masses[atom_l]
+                prefactor = np.sqrt((hbar * hbar) / (S_val * mass * DALTON_TO_meV_PS2_PER_A2 * ref_omega))
+                
+                V_plus_all[:, :, p] *= prefactor
+                V_minus_all[:, :, p] *= prefactor
+
+        # ==========================================
         # 2. HAMILTONIAN ASSEMBLY
         # ==========================================
         for q_idx in range(N_pts):
@@ -400,7 +444,6 @@ class CrystalDataSoA:
 
             evals_D, evecs_D = np.linalg.eigh(D_meV2)
             if np.any(evals_D < 1e-5):
-                pass
                 evals_clamped = np.maximum(evals_D, 1e-5)
                 D_meV2 = evecs_D @ np.diag(evals_clamped) @ evecs_D.conj().T
 
@@ -412,6 +455,7 @@ class CrystalDataSoA:
             H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon
 
+            # --- Magnon Blocks ---
             J_k = J_k_all[q_idx] 
             J_m_k = J_m_k_all[q_idx] 
 
@@ -439,6 +483,24 @@ class CrystalDataSoA:
                         val_h += anisotropy_term
                     H_BdG[off_mag_h + m, off_mag_h + n] = val_h
 
+            # --- SLC Interaction Blocks ---
+            if hasattr(self, 'slc_axis') and is_FM:
+                Vp = V_plus_all[q_idx]
+                Vm = V_minus_all[q_idx]
+                
+                # Normal Particle-Particle and Hole-Hole scatterings
+                H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
+                H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
+
+                H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_h:off_ph_h+num_phon] = Vm
+                H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
+
+                # Anomalous Particle-Hole scatterings
+                H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_h:off_ph_h+num_phon] = Vp
+                H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
+
+                H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
+                H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
 
             # --- 3. Diagonalization ---
             try:
