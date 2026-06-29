@@ -1751,7 +1751,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 0.01
+    smearing = 0.2
     
     crystal_data = CrystalDataSoA(
         mesh, 
