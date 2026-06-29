@@ -635,8 +635,8 @@ class CrystalDataSoA:
         print(f"-> Evaluated {self.N_path} exact path points for magnons.")
 
 
-
     def plot_hybridized_path_dispersions(self, filename="hybridized_path.png"):
+        import matplotlib.pyplot as plt
         
         # 1. Calculate piecewise k-distances
         k_distances = np.zeros(self.N_path)
@@ -694,6 +694,58 @@ class CrystalDataSoA:
         plt.tight_layout()
         plt.savefig(filename, dpi=300)
         print(f"-> Saved hybridized band plot to '{filename}'")
+
+
+    def plot_path_dispersions(self, filename="dispersion_verification.png"):
+        """
+        Plots the exact high-resolution path dispersions using the loaded HDF5 data.
+        """
+        import matplotlib.pyplot as plt
+        
+        if not hasattr(self, 'path_w_mag'):
+            print("Error: Must call load_and_evaluate_path_hdf5() before plotting.")
+            return
+
+        k_distances = np.zeros(self.N_path)
+        for i in range(1, self.N_path):
+            dq_frac = self.path_q_frac[i] - self.path_q_frac[i-1]
+            # DECOUPLING FIX: Use the native path reciprocal lattice for the X-axis
+            dq_cart = np.dot(dq_frac, self.path_reciprocal_lattice * 2.0 * np.pi)
+            k_distances[i] = k_distances[i-1] + np.linalg.norm(dq_cart)
+
+        fig, ax = plt.subplots(figsize=(10/2.52, 12/2.52))
+        
+        for b in range(self.phon_branches):
+            label = 'Phonons' if b == 0 else ""
+            ax.plot(k_distances, self.path_w_phon[:, b], color='#1f77b4', lw=2, label=label)
+            
+        for b in range(self.n_mag_branches):
+            label = 'Magnons' if b == 0 else ""
+            ax.plot(k_distances, self.path_w_mag[:, b], color='#d62728', lw=2, linestyle='--', label=label)
+
+        ax.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
+        ax.set_xlim(0, k_distances[-1])
+        ax.set_ylim(bottom=0)
+        ax.grid(True, axis='y', linestyle=':', color='gray', alpha=0.5)
+        ax.legend(loc='upper right', fontsize=12, framealpha=1.0)
+        
+        if hasattr(self, 'path_labels') and hasattr(self, 'path_segments'):
+            tick_locs = [k_distances[0]]
+            tick_labels = [self.path_labels[0][0]]
+            
+            idx = 0
+            for i, seg_len in enumerate(self.path_segments):
+                idx += seg_len
+                tick_locs.append(k_distances[idx - 1])
+                tick_labels.append(self.path_labels[i][1])
+                
+            ax.set_xticks(tick_locs)
+            ax.set_xticklabels(tick_labels, fontsize=14)
+            ax.grid(True, axis='x', linestyle='-', color='gray', alpha=0.5)
+        
+        plt.tight_layout()
+        plt.savefig(filename, dpi=300)
+        print(f"-> Saved true path dispersion plot to '{filename}'")
 
 
     def save_path_dispersions(self, output_filename="Outputs/path_dispersions.csv"):
