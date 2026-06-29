@@ -738,7 +738,9 @@ class CrystalDataSoA:
             k_distances[i] = current_dist
 
         fig, ax = plt.subplots(figsize=(12/2.52, 14/2.52))
-        num_bands = self.path_w_hyb.shape[1]
+        
+        # Now that unpacking is fixed, this shape call will work perfectly
+        num_bands = self.path_w_hyb.shape[1] 
         
         weights = None
         cbar_label = ""
@@ -778,12 +780,12 @@ class CrystalDataSoA:
                 Operator = np.zeros_like(L_z_total)
                 
                 if color_mode == 'spin_am':
-                    cbar_label = "Spin AM $S_z$ (meV⋅ps)"
+                    cbar_label = "Spin AM S_z (meV⋅ps)"
                     cmap = 'PRGn' # Purple to Green
                     Operator[num_phon:dim_block, num_phon:dim_block] = L_z_total[num_phon:dim_block, num_phon:dim_block]
                     Operator[dim_block+num_phon:, dim_block+num_phon:] = L_z_total[dim_block+num_phon:, dim_block+num_phon:]
                 else:
-                    cbar_label = "Phonon AM $L_z$ (meV⋅ps)"
+                    cbar_label = "Phonon AM L_z (meV⋅ps)"
                     cmap = 'PiYG' # Pink to Green
                     Operator[:num_phon, :num_phon] = L_z_total[:num_phon, :num_phon]
                     Operator[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon] = L_z_total[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon]
@@ -1766,7 +1768,7 @@ if __name__ == "__main__":
     crystal_data.plot_path_dispersions("Outputs/exact_path_dispersions.png")
 
     print("\nEvaluating magnon-polaron hybridization along the high-symmetry path...")
-    crystal_data.path_w_hyb = crystal_data._calculate_coupled_hamiltonian2(
+    crystal_data.path_w_hyb, crystal_data.path_eig_hyb = crystal_data._calculate_coupled_hamiltonian2(
         q_cart_array=crystal_data.path_q_cart,
         dyn_mat=crystal_data.path_dyn_mat,
         K_anisotropy=anisotropy,
@@ -1781,7 +1783,6 @@ if __name__ == "__main__":
 
     crystal_data.save_hybrid_path_properties("Outputs/hybrid_path_properties.csv")
 
-
     # Push path data to GPU for scanning kernels
     d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
     d_path_q_cart = cuda.to_device(crystal_data.path_q_cart)
@@ -1795,8 +1796,6 @@ if __name__ == "__main__":
     # Stop the program early
     cuda.synchronize()
     exit()
-
-
 
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
