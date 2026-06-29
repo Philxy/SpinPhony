@@ -637,36 +637,36 @@ class CrystalDataSoA:
 
     def plot_hybridized_path_dispersions(self, filename="hybridized_path.png"):
         import matplotlib.pyplot as plt
-
-        # 1. Calculate piecewise k-distances
+        
         k_distances = np.zeros(self.N_path)
         current_dist = 0.0
-        idx = 0
         
-        for seg_len in self.path_segments:
-            # Calculate distance only within the current continuous segment
-            for j in range(1, seg_len):
-                global_idx = idx + j
-                dq_frac = self.path_q_frac[global_idx] - self.path_q_frac[global_idx-1]
-                dq_cart = np.dot(dq_frac, self.path_reciprocal_lattice * 2.0 * np.pi)
-                current_dist += np.linalg.norm(dq_cart)
-                k_distances[global_idx] = current_dist
+        # 1. Continuous Distance with BZ Wrapping
+        for i in range(1, self.N_path):
+            dq_frac = self.path_q_frac[i] - self.path_q_frac[i-1]
+            dq_frac = dq_frac - np.round(dq_frac) # Apply Minimal Image Convention
             
-            idx += seg_len
-            # Prevent the gap distance from accumulating into the next segment
-            if idx < self.N_path:
-                k_distances[idx] = current_dist
+            dq_cart = np.dot(dq_frac, self.path_reciprocal_lattice * 2.0 * np.pi)
+            current_dist += np.linalg.norm(dq_cart)
+            k_distances[i] = current_dist
 
         fig, ax = plt.subplots(figsize=(12/2.52, 14/2.52))
         num_bands = self.path_w_hyb.shape[1]
         
-        # 2. Plot segment by segment to avoid connecting lines across gaps
+        # 2. Overlap Segments to Close Visual Gaps
         start_idx = 0
         for seg_len in self.path_segments:
             end_idx = start_idx + seg_len
+            
+            # Draw up to end_idx + 1 to physically connect the line segments
+            plot_end = end_idx + 1 if end_idx < self.N_path else end_idx
+            
             for b in range(num_bands):
-                ax.plot(k_distances[start_idx:end_idx], self.path_w_hyb[start_idx:end_idx, b], color='#8c564b', lw=1)
+                ax.plot(k_distances[start_idx:plot_end], self.path_w_hyb[start_idx:plot_end, b], color='#8c564b', lw=1)
+                
             start_idx = end_idx
+
+        # ... (Keep your existing tick formatting logic below) ...
 
         ax.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
         ax.set_xlim(0, k_distances[-1])
@@ -1138,7 +1138,7 @@ def diagonalize_bosonic_hamiltonian(H_matrix):
     # We only return the physical, positive modes (first m elements)
 
 
-    return final_evals[:m], Q_final
+    return final_evals_squared[:m], Q_final
 
 
 
