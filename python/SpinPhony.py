@@ -339,6 +339,7 @@ class CrystalDataSoA:
         dim = 2 * (num_phon + num_mag)
         
         w_hyb = np.zeros((N_pts, num_phon + num_mag), dtype=np.float64)
+        eig_hyb = np.zeros((N_pts, dim, dim), dtype=np.complex128)
         
         # Offsets matching C++ Basis: [Phonon, Magnon, Phonon*, Magnon*]
         off_ph_p = 0
@@ -405,7 +406,6 @@ class CrystalDataSoA:
 
         if hasattr(self, 'slc_axis') and is_FM:
             for i in range(self.slc_axis.shape[0]):
-                # 1-based indices from files mapped to 0-based arrays
                 type_i = self.slc_types[i, 0] - 1
                 type_j = self.slc_types[i, 1] - 1
                 disp_atom_idx = self.slc_types[i, 2] - 1
@@ -413,7 +413,6 @@ class CrystalDataSoA:
                 n_mag_i = atom_to_mag[type_i]
                 n_mag_j = atom_to_mag[type_j]
 
-                # Ensure both referenced atoms in the exchange bond are magnetic
                 if n_mag_i == -1 or n_mag_j == -1:
                     continue
 
@@ -423,14 +422,12 @@ class CrystalDataSoA:
                 Jxz = self.slc_J[i, 0, 2]  # X=0, Z=2
                 Jyz = self.slc_J[i, 1, 2]  # Y=1, Z=2
 
-                # q_cart_array dot t.rik
                 phases_slc = np.dot(q_cart_array, self.slc_rik[i])
                 phase_factor = np.exp(1j * phases_slc)
 
                 V_plus_all[:, n_mag_i, p_idx] += (Jxz + 1j * Jyz) * phase_factor
                 V_minus_all[:, n_mag_i, p_idx] += (Jxz - 1j * Jyz) * phase_factor
 
-            # Apply Mass Scaling and Prefactors
             for p in range(num_phon):
                 atom_l = p // 3
                 mass = self.atom_masses[atom_l]
@@ -495,31 +492,24 @@ class CrystalDataSoA:
                 Vp = V_plus_all[q_idx]
                 Vm = V_minus_all[q_idx]
                 
-                # Normal Particle-Particle and Hole-Hole scatterings
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
-                #H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
-
                 H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_h:off_ph_h+num_phon] = Vm
                 H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
 
-                # Anomalous Particle-Hole scatterings
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_h:off_ph_h+num_phon] = Vp
-                #H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
-
                 H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
-
-
 
             # --- 3. Diagonalization ---
             try:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
                 w_hyb[q_idx] = energies
+                eig_hyb[q_idx] = para_unitary
             except RuntimeError as e:
                 print(f"Warning at q_idx {q_idx}: {e}")
                 w_hyb[q_idx] = np.zeros(num_phon + num_mag)
                 
-        return w_hyb
+        return w_hyb, eig_hyb
     
 
     def load_and_evaluate_path_hdf5(self, hdf5_path_file, K_anisotropy=0.01, lattice_constant=1.0):
@@ -652,6 +642,79 @@ class CrystalDataSoA:
                 self.path_w_mag[q_idx] = np.zeros(self.n_mag_branches)
                 
         print(f"-> Evaluated {self.N_path} exact path points for magnons.")
+
+
+    def save_hybrid_path_properties(self, filename="Outputs/hybrid_path_properties.csv"):
+        """
+        Extracts Spin AM, Phonon AM, and subsystem characters for all hybridized bands 
+        along the high-symmetry path using T^dagger * O * T.
+        """
+        import os
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        print(f"\nWriting hybrid path properties to {filename}...")
+        
+        # 1. Acquire full Angular Momentum matrix (Z-axis)
+        L_z_total = self.get_nambu_angular_momentum(axis=2)
+        
+        num_phon = self.phon_branches
+        num_mag = self.n_mag_branches
+        dim_block = num_phon + num_mag
+        dim_total = 2 * dim_block
+        
+        # 2. Split L into Phonon and Spin components
+        L_z_phon = np.zeros_like(L_z_total)
+        L_z_spin = np.zeros_like(L_z_total)
+        
+        # Phonon block indices
+        L_z_phon[:num_phon, :num_phon] = L_z_total[:num_phon, :num_phon]
+        L_z_phon[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon] = L_z_total[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon]
+        
+        # Spin block indices
+        L_z_spin[num_phon:dim_block, num_phon:dim_block] = L_z_total[num_phon:dim_block, num_phon:dim_block]
+        L_z_spin[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total] = L_z_total[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total]
+        
+        # 3. Create Commutation Metrics (J) to extract character weights
+        J_phon = np.zeros((dim_total, dim_total), dtype=np.float64)
+        J_spin = np.zeros((dim_total, dim_total), dtype=np.float64)
+        
+        np.fill_diagonal(J_phon[:num_phon, :num_phon], 1.0)
+        np.fill_diagonal(J_phon[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon], -1.0)
+        
+        np.fill_diagonal(J_spin[num_phon:dim_block, num_phon:dim_block], 1.0)
+        np.fill_diagonal(J_spin[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total], -1.0)
+        
+        # 4. Iterate path and compute physical expectation values
+        with open(filename, 'w') as f:
+            header = ["q_idx", "qx", "qy", "qz", "band", "energy_meV", "phon_character", "mag_character", "phon_AM_z", "spin_AM_z"]
+            f.write(",".join(header) + "\n")
+            
+            for q_idx in range(self.N_path):
+                qx, qy, qz = self.path_q_frac[q_idx]
+                T = self.path_eig_hyb[q_idx]
+                T_dag = T.conj().T
+                
+                # Transform operators into diagonal hybrid basis
+                AM_phon_q = T_dag @ L_z_phon @ T
+                AM_spin_q = T_dag @ L_z_spin @ T
+                char_phon_q = T_dag @ J_phon @ T
+                char_spin_q = T_dag @ J_spin @ T
+                
+                # Loop only over physical positive-energy bands (first half of the BdG dimension)
+                for b in range(dim_block): 
+                    energy = self.path_w_hyb[q_idx, b]
+                    
+                    # Expectation values are on the diagonal
+                    phon_char = char_phon_q[b, b].real
+                    mag_char = char_spin_q[b, b].real
+                    phon_AM = AM_phon_q[b, b].real
+                    spin_AM = AM_spin_q[b, b].real
+                    
+                    row = [f"{q_idx}", f"{qx:.6f}", f"{qy:.6f}", f"{qz:.6f}", f"{b}", 
+                           f"{energy:.6f}", f"{phon_char:.6f}", f"{mag_char:.6f}", 
+                           f"{phon_AM:.6e}", f"{spin_AM:.6e}"]
+                    f.write(",".join(row) + "\n")
+                    
+        print(f"-> Done! (Sanity check: character sum phon+mag should equal exactly 1.0 for all bands)")
 
 
     def plot_hybridized_path_dispersions(self, filename="hybridized_path.png"):
@@ -799,116 +862,78 @@ class CrystalDataSoA:
         print("-> Done!")
 
 
-
-    def plot_dispersions(self):
-            """
-            Extracts high-symmetry lines from the random SoA q-grid and plots 
-            the Magnon and Phonon dispersions to verify energy scales.
-            """
-            import matplotlib.pyplot as plt
-            
-            # 1. Define high-symmetry path for Hexagonal lattice (CrI3)
-            # Fractional coordinates [x, y, z]
-            sym_points = {
-                'Γ': [0.0, 0.0, 0.0],
-                'M': [0.5, 0.0, 0.0],
-                'K': [1/3, 1/3, 0.0],
-                'A': [0.0, 0.0, 0.5],
-                'L': [0.5, 0.0, 0.5],
-                'H': [1/3, 1/3, 0.5]
-            }
-            
-            # Standard path for 3D hexagonal systems
-            path = ['Γ', 'M', 'K', 'Γ', 'A', 'L', 'H', 'A']
-            
-            # 2. Reconstruct path matching the grid
-            k_path_indices = []
-            k_distances = []
-            tick_locs = []
-            tick_labels = []
-            
-            current_dist = 0.0
-            
-            for i in range(len(path) - 1):
-                p1 = np.array(sym_points[path[i]])
-                p2 = np.array(sym_points[path[i+1]])
-                
-                # Number of steps based on grid resolution
-                steps = np.max(self.mesh) 
-                
-                tick_locs.append(current_dist)
-                tick_labels.append(path[i])
-                
-                for step in range(steps):
-                    frac = p1 + (p2 - p1) * (step / steps)
-                    # Map to grid integers
-                    grid_pos = np.round(frac * self.mesh).astype(np.int32) % self.mesh
-                    q_idx = self.grid_map[grid_pos[0], grid_pos[1], grid_pos[2]]
-                    
-                    if q_idx != -1 and (len(k_path_indices) == 0 or q_idx != k_path_indices[-1]):
-                        k_path_indices.append(q_idx)
-                        k_distances.append(current_dist)
-                        
-                        if step > 0:
-                            dp = (p2 - p1) / steps
-                            # Dist in Cartesian space
-                            cart_dp = np.dot(dp, self.reciprocal_lattice * 2.0 * np.pi)
-                            current_dist += np.linalg.norm(cart_dp)
-
-            # Append final point
-            tick_locs.append(current_dist)
-            tick_labels.append(path[-1])
-            
-            # 3. Extract energies along the path
-            w_mag_path = self.w_mag[k_path_indices]
-            w_phon_path = self.w_phon[k_path_indices]
-            
-            # 4. Plot
-            fig, ax = plt.subplots(figsize=(10, 6))
-            
-            # Plot Phonons
-            for b in range(self.phon_branches):
-                label = 'Phonons' if b == 0 else ""
-                ax.plot(k_distances, w_phon_path[:, b], color='#1f77b4', lw=2, label=label)
-                
-            # Plot Magnons
-            for b in range(self.n_mag_branches):
-                label = 'Magnons' if b == 0 else ""
-                ax.plot(k_distances, w_mag_path[:, b], color='#d62728', lw=2, linestyle='--', label=label)
-
-            # Formatting
-            ax.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
-            ax.set_xlim(0, current_dist)
-            ax.set_ylim(bottom=0)
-            ax.set_xticks(tick_locs)
-            ax.set_xticklabels(tick_labels, fontsize=14)
-            ax.grid(True, axis='x', linestyle='-', color='gray', alpha=0.5)
-            ax.grid(True, axis='y', linestyle=':', color='gray', alpha=0.5)
-            ax.legend(loc='upper right', fontsize=12, framealpha=1.0)
-            ax.set_title('CrI3 Hexagonal Dispersion Verification', fontsize=16, fontweight='bold')
-            
-            plt.tight_layout()
-            plt.savefig('dispersion_verification.png', dpi=300)
-            print("-> Saved dispersion plot to 'dispersion_verification.png'")
-
-
-def make_positive_definite(H, epsilon=1e-6, q_info=""):
-        # 1. Diagonalize the Hermitian matrix
-        evals, evecs = np.linalg.eigh(H)
+    def get_nambu_angular_momentum(self, axis):
+        """
+        Constructs the Nambu-space Angular Momentum matrix (L) for a given axis.
+        axis: 0 for X, 1 for Y, 2 for Z
+        """
+        hbar = 0.6582119569 # meV * ps
         
-        # 2. Check and clamp
-        if np.any(evals < epsilon):
-            min_val = np.min(evals)
-            print(f"Warning: Eigenvalue {min_val:.4e} clamped to {epsilon} "
-                f"to ensure positive definiteness. (Info: {q_info})")
+        num_atoms = self.l_atoms
+        num_mag_atoms = self.n_mag_branches
+        
+        dim_block = 3 * num_atoms + num_mag_atoms
+        dim_total = 2 * dim_block
+        
+        L_matrix = np.zeros((dim_total, dim_total), dtype=np.complex128)
+        
+        # Offsets mapping to the exact basis: [Phonon, Magnon, Phonon*, Magnon*]
+        off_ph_p = 0
+        off_mag_p = 3 * num_atoms
+        off_ph_h = dim_block
+        off_mag_h = dim_block + 3 * num_atoms
+        
+        # 1. Levi-Civita Symbol Helper
+        def epsilon(alpha, beta, ax):
+            if ax == 0: # X-axis
+                if alpha == 1 and beta == 2: return 1
+                if alpha == 2 and beta == 1: return -1
+            elif ax == 1: # Y-axis
+                if alpha == 2 and beta == 0: return 1
+                if alpha == 0 and beta == 2: return -1
+            elif ax == 2: # Z-axis
+                if alpha == 0 and beta == 1: return 1
+                if alpha == 1 and beta == 0: return -1
+            return 0
+
+        # 2. Phonon Block (Orbital Angular Momentum)
+        for l in range(num_atoms):
+            base_idx_p = off_ph_p + 3 * l
+            base_idx_h = off_ph_h + 3 * l
             
-            evals_clamped = np.maximum(evals, epsilon)
-            
-            # 3. Reconstruct H_clean = U * D_clean * U^dagger
-            H_clean = evecs @ np.diag(evals_clamped) @ evecs.conj().T
-            return H_clean
-            
-        return H
+            for alpha in range(3):
+                for beta in range(3):
+                    eps = epsilon(alpha, beta, axis)
+                    if eps != 0:
+                        val = -1j * hbar * eps
+                        
+                        # Particle Block
+                        L_matrix[base_idx_p + alpha, base_idx_p + beta] = val
+                        # Hole Block: O_hole = -O_particle^* L_matrix[base_idx_h + alpha, base_idx_h + beta] = -val
+
+        # 3. Magnon Block (Spin Angular Momentum - Sz)
+        # Magnons only carry intrinsic spin angular momentum along the quantization axis
+        if axis == 2:
+            for m_idx in range(num_mag_atoms):
+                # self.mag_indices maps the magnon branch back to the original atom index
+                atom_idx = self.mag_indices[m_idx]
+                mag_moment = self.mag_moments[atom_idx]
+                
+                # In antiferromagnets:
+                # Sublattice UP (M > 0): Excitations carry -1 spin (reduces moment)
+                # Sublattice DOWN (M < 0): Excitations carry +1 spin (increases z-component)
+                spin_val = -hbar if mag_moment > 0 else hbar
+                
+                # Particle Block
+                L_matrix[off_mag_p + m_idx, off_mag_p + m_idx] = spin_val
+                
+                # Hole Block
+                # For strictly real diagonal operators: O_hole = -O_particle
+                L_matrix[off_mag_h + m_idx, off_mag_h + m_idx] = -spin_val
+                
+        return L_matrix
+
+    
 
 
 @cuda.jit(device=True)
@@ -1659,7 +1684,6 @@ if __name__ == "__main__":
     
     crystal_data.print_summary()
 
-    crystal_data.plot_dispersions()
 
     gpu_data = crystal_data.push_to_gpu()
 
@@ -1682,9 +1706,9 @@ if __name__ == "__main__":
     )
 
     crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_path_dispersions.png")
-    # Stop the program early
-    cuda.synchronize()
-    exit()
+
+    crystal_data.save_hybrid_path_properties("Outputs/hybrid_path_properties.csv")
+
 
     # Push path data to GPU for scanning kernels
     d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
@@ -1692,6 +1716,14 @@ if __name__ == "__main__":
     d_path_w_phon = cuda.to_device(crystal_data.path_w_phon)
     d_path_w_mag = cuda.to_device(crystal_data.path_w_mag)
     d_path_eig_phon = cuda.to_device(crystal_data.path_eig_phon)
+    
+    d_path_eig_mag = cuda.to_device(crystal_data.path_eig_mag)
+    d_path_eig_hyb = cuda.to_device(crystal_data.path_eig_hyb)
+
+    # Stop the program early
+    cuda.synchronize()
+    exit()
+
 
 
     # 2. Setup Phase 1 memory
