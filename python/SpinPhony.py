@@ -331,7 +331,7 @@ class CrystalDataSoA:
                 self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
     
 
-    def _calculate_coupled_hamiltonian2(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=5.0, is_FM=True, magnetic_field_T=0.0):
+    def _calculate_coupled_hamiltonian(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=5.0, is_FM=True, magnetic_field_T=0.0):
         print(f" -> Constructing Joint Magnon-Phonon BdG Matrix (Strict C++ Mapping)...")
         N_pts = q_cart_array.shape[0]
         num_phon = self.phon_branches
@@ -492,13 +492,21 @@ class CrystalDataSoA:
                 Vp = V_plus_all[q_idx]
                 Vm = V_minus_all[q_idx]
                 
-                #H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
-                #H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_h:off_ph_h+num_phon] = Vm
-                #H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
+                # 1. Normal Particle-Particle
+                H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
+                H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
 
-                #H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_h:off_ph_h+num_phon] = Vp
-                #H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
-                #H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
+                # 2. Normal Hole-Hole
+                H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_h:off_ph_h+num_phon] = Vm
+                H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
+
+                # 3. Anomalous Particle-Hole (Magnon_p, Phonon_h)
+                H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_h:off_ph_h+num_phon] = Vp
+                H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
+
+                # 4. Anomalous Hole-Particle (Magnon_h, Phonon_p)
+                H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
+                H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
 
             # --- 3. Diagonalization ---
             try:
@@ -1713,6 +1721,7 @@ def init_bose_einstein(w_distribution, temperature_K):
 
 
 if __name__ == "__main__":
+
     slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
@@ -1766,7 +1775,7 @@ if __name__ == "__main__":
     crystal_data.plot_path_dispersions("Outputs/exact_path_dispersions.png")
 
     print("\nEvaluating magnon-polaron hybridization along the high-symmetry path...")
-    crystal_data.path_w_hyb, crystal_data.path_eig_hyb = crystal_data._calculate_coupled_hamiltonian2(
+    crystal_data.path_w_hyb, crystal_data.path_eig_hyb = crystal_data._calculate_coupled_hamiltonian(
         q_cart_array=crystal_data.path_q_cart,
         dyn_mat=crystal_data.path_dyn_mat,
         K_anisotropy=anisotropy,
