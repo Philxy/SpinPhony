@@ -1576,6 +1576,11 @@ if __name__ == "__main__":
         lattice_constant=lattice_constant
     )
 
+    # Stop the program early
+    cuda.synchronize()
+    exit()
+
+
     crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_path_dispersions.png")
 
 
