@@ -685,7 +685,7 @@ class CrystalDataSoA:
         
         # 4. Iterate path and compute physical expectation values
         with open(filename, 'w') as f:
-            header = ["q_idx", "qx", "qy", "qz", "band", "energy_meV", "phon_character", "mag_character", "phon_AM_z", "spin_AM_z"]
+            header = ["q_idx", "qx", "qy", "qz", "band", "energy_meV", "phon_character", "mag_character", "phon_AM_z_hbar", "spin_AM_z_hbar"]
             f.write(",".join(header) + "\n")
             
             for q_idx in range(self.N_path):
@@ -936,9 +936,8 @@ class CrystalDataSoA:
         """
         Constructs the Nambu-space Angular Momentum matrix (L) for a given axis.
         axis: 0 for X, 1 for Y, 2 for Z
+        Output is strictly in units of ħ.
         """
-        hbar = 0.6582119569 # meV * ps
-        
         num_atoms = self.l_atoms
         num_mag_atoms = self.n_mag_branches
         
@@ -975,7 +974,7 @@ class CrystalDataSoA:
                 for beta in range(3):
                     eps = epsilon(alpha, beta, axis)
                     if eps != 0:
-                        val = -1j * hbar * eps
+                        val = -1j * eps
                         
                         # Particle Block
                         L_matrix[base_idx_p + alpha, base_idx_p + beta] = val
@@ -992,7 +991,7 @@ class CrystalDataSoA:
                 # In antiferromagnets:
                 # Sublattice UP (M > 0): Excitations carry -1 spin (reduces moment)
                 # Sublattice DOWN (M < 0): Excitations carry +1 spin (increases z-component)
-                spin_val = -hbar if mag_moment > 0 else hbar
+                spin_val = -1.0 if mag_moment > 0 else 1.0
                 
                 # Particle Block
                 L_matrix[off_mag_p + m_idx, off_mag_p + m_idx] = spin_val
@@ -1002,7 +1001,6 @@ class CrystalDataSoA:
                 L_matrix[off_mag_h + m_idx, off_mag_h + m_idx] = -spin_val
                 
         return L_matrix
-
     
 
 
