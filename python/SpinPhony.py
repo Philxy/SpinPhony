@@ -400,6 +400,7 @@ class CrystalDataSoA:
 
             evals_D, evecs_D = np.linalg.eigh(D_meV2)
             if np.any(evals_D < 1e-5):
+                pass
                 evals_clamped = np.maximum(evals_D, 1e-5)
                 D_meV2 = evecs_D @ np.diag(evals_clamped) @ evecs_D.conj().T
 
