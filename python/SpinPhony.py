@@ -853,6 +853,7 @@ class CrystalDataSoA:
         
         plt.tight_layout()
         plt.savefig(filename, dpi=300)
+        plt.show()
         print(f"-> Saved hybridized band plot to '{filename}'")
 
 
@@ -905,6 +906,7 @@ class CrystalDataSoA:
         
         plt.tight_layout()
         plt.savefig(filename, dpi=300)
+        plt.show()
         print(f"-> Saved true path dispersion plot to '{filename}'")
 
 
