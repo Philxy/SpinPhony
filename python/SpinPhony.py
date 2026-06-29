@@ -502,6 +502,9 @@ class CrystalDataSoA:
                 #H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
                 #H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
 
+            H_BdG = (H_BdG + H_BdG.conj.T) / 2.0
+
+
             # --- 3. Diagonalization ---
             try:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
