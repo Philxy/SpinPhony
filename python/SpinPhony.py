@@ -517,7 +517,240 @@ class CrystalDataSoA:
                 w_hyb[q_idx] = np.zeros(num_phon + num_mag)
                 
         return w_hyb
+    
+    
 
+    def _calculate_coupled_hamiltonian2(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=5.0, is_FM=True, magnetic_field_T=0.0):
+        print(f" -> Constructing Joint Magnon-Phonon BdG Matrix (Cartesian Basis, w_ref={ref_omega} meV)...")
+        N_pts = q_cart_array.shape[0]
+        num_phon = self.phon_branches
+        num_mag = self.n_mag_branches
+        dim = 2 * (num_phon + num_mag)
+        
+        w_hyb = np.zeros((N_pts, num_phon + num_mag), dtype=np.float64)
+        
+        # Offsets matching C++ Basis: [Phonon, Magnon, Phonon*, Magnon*]
+        off_ph_p = 0
+        off_mag_p = num_phon
+        off_ph_h = num_phon + num_mag
+        off_mag_h = 2 * num_phon + num_mag
+
+        # ==========================================
+        # PRECOMPUTATIONS & VECTORIZATION (Untouched)
+        # ==========================================
+        hbar = 0.6582119569  # meV * ps
+        DALTON_TO_meV = 0.10364269
+        CONV_FACTOR = 15.633302 * 4.135667696 # VASP to meV mapping
+        
+        atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
+        for i, m_idx in enumerate(self.mag_indices):
+            atom_to_mag[m_idx] = i
+
+        moments = self.mag_moments[self.mag_indices]
+        S_eff = np.abs(moments) / 2.0
+        sigma = np.sign(moments) 
+
+        # --- A. Precalculate Magnon Tensors ---
+        valid_bonds_mag = []
+        J_0 = np.zeros((num_mag, num_mag), dtype=np.float64)
+        for row in self.jij_interactions:
+            i, j = int(row[4]) - 1, int(row[5]) - 1
+            mag_i, mag_j = atom_to_mag[i], atom_to_mag[j]
+            if mag_i != -1 and mag_j != -1:
+                J_0[mag_i, mag_j] += row[3]
+                valid_bonds_mag.append((mag_i, mag_j, row[0], row[1], row[2], row[3]))
+
+        if valid_bonds_mag:
+            mag_i_arr = np.array([b[0] for b in valid_bonds_mag])
+            mag_j_arr = np.array([b[1] for b in valid_bonds_mag])
+            r_cart_arr = np.array([b[2:5] for b in valid_bonds_mag]) * lattice_constant
+            J_val_arr = np.array([b[5] for b in valid_bonds_mag])
+
+            phases_mag = np.dot(q_cart_array, r_cart_arr.T)
+            exp_phases_mag = np.exp(1j * phases_mag) * J_val_arr
+
+            J_q_all = np.zeros((N_pts, num_mag, num_mag), dtype=np.complex128)
+            for b_idx in range(len(valid_bonds_mag)):
+                mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
+                J_q_all[:, mi, mj] += exp_phases_mag[:, b_idx]
+        else:
+            J_q_all = np.zeros((N_pts, num_mag, num_mag), dtype=np.complex128)
+
+        # Note: The halving division (/ 2.0) has been removed here to match C++ scaling
+
+        # --- B. Precalculate Spin-Lattice Tensors (Untouched) ---
+        n_arr = atom_to_mag[self.slc_types[:, 0] - 1]
+        m_arr = atom_to_mag[self.slc_types[:, 1] - 1]
+        l_arr = self.slc_types[:, 2] - 1
+        mu_arr = self.slc_axis
+        p_arr = 3 * l_arr + mu_arr
+
+        valid_mask = (n_arr != -1) & (m_arr != -1)
+        n_v, m_v, p_v, l_v = n_arr[valid_mask], m_arr[valid_mask], p_arr[valid_mask], l_arr[valid_mask]
+        
+        rik_v = self.slc_rik[valid_mask]
+        J_v = self.slc_J[valid_mask]
+        
+        Jxz = J_v[:, 0, 2] # x, z
+        Jyz = J_v[:, 1, 2] # y, z
+
+        sigma_n = sigma[n_v]
+        sigma_m = sigma[m_v]
+        S_n = S_eff[n_v]
+        mass_l = self.atom_masses[l_v]
+
+        term_plus = sigma_m * Jxz + 1j * sigma_n * sigma_m * Jyz
+        term_minus = sigma_m * Jxz - 1j * sigma_n * sigma_m * Jyz
+
+        prefactors = np.sqrt((hbar * hbar) / (S_n * mass_l * DALTON_TO_meV * ref_omega))
+
+        D_plus = term_plus * prefactors
+        D_minus = term_minus * prefactors
+
+        phases_slc = np.dot(q_cart_array, rik_v.T)
+        exp_phases_slc = np.exp(1j * phases_slc)
+
+        inc_plus = D_plus * exp_phases_slc
+        inc_minus = D_minus * exp_phases_slc
+
+        V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
+        V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
+
+        for b_idx in range(len(n_v)):
+            n_idx = n_v[b_idx]
+            p_idx = p_v[b_idx]
+            V_plus_all[:, n_idx, p_idx] += inc_plus[:, b_idx]
+            V_minus_all[:, n_idx, p_idx] += inc_minus[:, b_idx]
+
+        I_phon = np.eye(num_phon, dtype=np.complex128)
+
+        # ==========================================
+        # HAMILTONIAN ASSEMBLY
+        # ==========================================
+        S_val = S_eff[0] if len(S_eff) > 0 else 1.0
+        anisotropy_term = S_val * 2.0 * K_anisotropy
+        muB_in_meV_T = 0.057883818060738
+        magnetic_field_term = 2.0 * muB_in_meV_T * S_val * magnetic_field_T
+
+        sum_J0_row = np.sum(J_0, axis=1)
+
+        for q_idx in range(N_pts):
+            H_BdG = np.zeros((dim, dim), dtype=np.complex128)
+            
+            # ==========================================
+            # 1. Phonon Blocks (Untouched)
+            # ==========================================
+            D_complex = dyn_mat[q_idx]
+            D_meV2 = D_complex * (CONV_FACTOR ** 2)
+
+            evals_D, evecs_D = np.linalg.eigh(D_meV2)
+            
+            if np.any(evals_D < 1e-5):
+                evals_clamped = np.maximum(evals_D, 1e-5)
+                D_meV2 = evecs_D @ np.diag(evals_clamped) @ evecs_D.conj().T
+
+            A_phon = 0.5 * (D_meV2 / ref_omega + ref_omega * I_phon)
+            B_phon = 0.5 * (D_meV2 / ref_omega - ref_omega * I_phon)
+
+            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
+            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon
+
+            # ==========================================
+            # 2. Magnon Blocks (Strict Mapping of C++ Logic)
+            # ==========================================
+            J_q = J_q_all[q_idx]
+
+            if is_FM:
+                Omega_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
+                
+                for i in range(num_mag):
+                    for j in range(num_mag):
+                        if i == j:
+                            Omega_k[i, i] = S_val * (J_q[i, i] - sum_J0_row[i])
+                        else:
+                            Omega_k[i, j] = S_val * J_q[i, j]
+                
+                A_mag = -Omega_k
+                A_mag_h = -Omega_k.conj().T 
+                
+                for m in range(num_mag):
+                    A_mag[m, m] += anisotropy_term
+                    A_mag_h[m, m] += anisotropy_term
+                
+                # Symmetrize to prevent numerical floating point noise causing Cholesky failures
+                A_mag = 0.5 * (A_mag + A_mag.conj().T)
+                A_mag_h = 0.5 * (A_mag_h + A_mag_h.conj().T)
+
+                H_BdG[off_mag_p:off_mag_p+num_mag, off_mag_p:off_mag_p+num_mag] = A_mag
+                H_BdG[off_mag_h:off_mag_h+num_mag, off_mag_h:off_mag_h+num_mag] = A_mag_h
+
+            else:
+                Omega_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
+                delta_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
+                
+                for i in range(num_mag):
+                    # i == j mapping (same-sublattice / periodic connections)
+                    Omega_k[i, i] += (2.0 / S_val) * (J_q[i, i] - J_0[i, i])
+                    
+                    # i != j mapping (cross-sublattice nearest neighbors)
+                    for j in range(num_mag):
+                        if i != j:
+                            Omega_k[i, i] += (2.0 / S_val) * J_0[i, j]
+                            delta_k[i, j] = (2.0 / S_val) * J_q[i, j]
+                
+                A_mag = -Omega_k
+                A_mag_h = -Omega_k.conj().T
+                
+                for m in range(num_mag):
+                    sign_val = 1.0 if (m % 2 == 0) else -1.0
+                    A_mag[m, m] += anisotropy_term + sign_val * magnetic_field_term
+                    A_mag_h[m, m] += anisotropy_term + sign_val * magnetic_field_term
+
+                # Symmetrize strictly to anchor the matrix
+                A_mag = 0.5 * (A_mag + A_mag.conj().T)
+                A_mag_h = 0.5 * (A_mag_h + A_mag_h.conj().T)
+                
+                H_BdG[off_mag_p:off_mag_p+num_mag, off_mag_p:off_mag_p+num_mag] = A_mag
+                H_BdG[off_mag_h:off_mag_h+num_mag, off_mag_h:off_mag_h+num_mag] = A_mag_h
+                
+                # Assign Anomalous Blocks identical to C++
+                H_BdG[off_mag_h:off_mag_h+num_mag, off_mag_p:off_mag_p+num_mag] = delta_k
+                H_BdG[off_mag_p:off_mag_p+num_mag, off_mag_h:off_mag_h+num_mag] = delta_k.conj().T
+
+            # ==========================================
+            # 3. SLC Blocks (Untouched)
+            # ==========================================
+            vp = V_plus_all[q_idx]
+            vm = V_minus_all[q_idx]
+
+            #H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = vp
+            #H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = vp.conj().T
+
+            #H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_h:off_ph_h+num_phon] = vp
+            #H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_p:off_mag_p+num_mag] = vp.conj().T
+
+            #H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = vm
+            #H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = vm.conj().T
+
+            #H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_h:off_ph_h+num_phon] = vm
+            #H_BdG[off_ph_h:off_ph_h+num_phon, off_mag_h:off_mag_h+num_mag] = vm.conj().T
+
+            # ==========================================
+            # 4. Diagonalization (Untouched)
+            # ==========================================
+            # Absolute Hermiticity guarantee for Cholesky stability
+            H_BdG = 0.5 * (H_BdG + H_BdG.conj().T)
+
+            try:
+                energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
+                w_hyb[q_idx] = energies
+            except RuntimeError as e:
+                print(f"Warning at q_idx {q_idx}: {e}")
+                w_hyb[q_idx] = np.zeros(num_phon + num_mag)
+                
+        return w_hyb
 
     
 
@@ -1593,23 +1826,28 @@ if __name__ == "__main__":
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
     mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.h5"
     mesh_CrI3 = "Inputs/CrI3/combined_band_20x20x20.h5"
+    mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
     Jijs_CrI3 = "Inputs/CrI3/JijCrI3.dat"
+    Jijs_CrSb = "Inputs/CrSb/Jij_stretched.csv"
+    band_CrI3 = "Inputs/CrI3/band.h5"
+    band_CrSb = "Inputs/CrSb/band.h5"
 
     lattice_constant_bccFe = 2.8665  # in Angstroms
     lattice_constant_CrI3 = 6.91   # in Angstroms
-
+    lattice_constant_CrSb = 4.12 
     anisotropy_bccFe = 0.01 
-    anisotropy_CrI3 = 3 * 0.49
+    anisotropy_CrI3 = 0.5 * 0.49
+    anisotropy_CrSb = 0.0001
 
-    anisotropy = anisotropy_CrI3     
-
-    lattice_constant = lattice_constant_CrI3    
+    anisotropy = anisotropy_CrI3
+    lattice_constant = lattice_constant_CrI3
     mesh = mesh_CrI3
     Jijs = Jijs_CrI3
     slc_files = slc_files_CrI3
+    band = band_CrI3
 
-    smearing = 0.02
+    smearing = 0.1
     
     crystal_data = CrystalDataSoA(
         mesh, 
@@ -1629,14 +1867,14 @@ if __name__ == "__main__":
 
 
     # Load the high-symmetry path from the HDF5 band file
-    crystal_data.load_and_evaluate_path_hdf5("Inputs/CrI3/band.h5", K_anisotropy=anisotropy, lattice_constant=lattice_constant)
+    crystal_data.load_and_evaluate_path_hdf5(band, K_anisotropy=anisotropy, lattice_constant=lattice_constant)
     # Save the exact path energies to a CSV
     crystal_data.save_path_dispersions("Outputs/path_dispersions.csv")
     # Plot the exact path
     crystal_data.plot_path_dispersions("Outputs/exact_path_dispersions.png")
 
     print("\nEvaluating magnon-polaron hybridization along the high-symmetry path...")
-    crystal_data.path_w_hyb = crystal_data._calculate_coupled_hamiltonian(
+    crystal_data.path_w_hyb = crystal_data._calculate_coupled_hamiltonian2(
         q_cart_array=crystal_data.path_q_cart,
         dyn_mat=crystal_data.path_dyn_mat,
         K_anisotropy=anisotropy,
