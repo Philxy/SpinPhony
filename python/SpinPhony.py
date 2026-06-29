@@ -781,12 +781,12 @@ class CrystalDataSoA:
                 
                 if color_mode == 'spin_am':
                     cbar_label = "Spin AM S_z (meV⋅ps)"
-                    cmap = 'PRGn' # Purple to Green
+                    cmap = 'coolwarm' # Purple to Green
                     Operator[num_phon:dim_block, num_phon:dim_block] = L_z_total[num_phon:dim_block, num_phon:dim_block]
                     Operator[dim_block+num_phon:, dim_block+num_phon:] = L_z_total[dim_block+num_phon:, dim_block+num_phon:]
                 else:
                     cbar_label = "Phonon AM L_z (meV⋅ps)"
-                    cmap = 'PiYG' # Pink to Green
+                    cmap = 'coolwarm' # Pink to Green
                     Operator[:num_phon, :num_phon] = L_z_total[:num_phon, :num_phon]
                     Operator[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon] = L_z_total[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon]
                 
@@ -1735,12 +1735,12 @@ if __name__ == "__main__":
     anisotropy_CrI3 = 0.0 * 0.49
     anisotropy_CrSb = 0.0001
 
-    anisotropy = anisotropy_bccFe
-    lattice_constant = lattice_constant_bccFe
-    mesh = mesh_bccFe
-    Jijs = Jijs_bccFe
-    slc_files = slc_files_bccFe
-    band = band_bccFe
+    anisotropy = anisotropy_CrI3
+    lattice_constant = lattice_constant_CrI3
+    mesh = mesh_CrI3
+    Jijs = Jijs_CrI3
+    slc_files = slc_files_CrI3
+    band = band_CrI3
 
     smearing = 0.001
     
