@@ -1709,10 +1709,10 @@ if __name__ == "__main__":
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
     mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.h5"
-    mesh_CrI3 = "Inputs/CrI3/grid_12x12x12.h5"
+    mesh_CrI3 = "Inputs/CrI3/combined_band_20x20x20.h5"
     mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
-    Jijs_CrI3 = "Inputs/CrI3/JijCrI3_sergey.dat" #"Inputs/CrI3/JijCrI3.dat"
+    Jijs_CrI3 = "Inputs/CrI3/JijCrI3.dat" #"Inputs/CrI3/JijCrI3_sergey.dat" #
     Jijs_CrSb = "Inputs/CrSb/Jij_stretched.csv"
     band_CrI3 = "Inputs/CrI3/band.h5"
     band_CrSb = "Inputs/CrSb/band.h5"
@@ -1724,15 +1724,15 @@ if __name__ == "__main__":
     anisotropy_bccFe = 0.005 
     anisotropy_CrI3 = 0.0 * 0.49
     anisotropy_CrSb = 0.0001
+    
+    anisotropy = anisotropy_CrI3
+    lattice_constant = lattice_constant_CrI3
+    mesh = mesh_CrI3
+    Jijs = Jijs_CrI3
+    slc_files = slc_files_CrI3
+    band = band_CrI3
 
-    anisotropy = anisotropy_bccFe
-    lattice_constant = lattice_constant_bccFe
-    mesh = mesh_bccFe
-    Jijs = Jijs_bccFe
-    slc_files = slc_files_bccFe
-    band = band_bccFe
-
-    smearing = 20.0
+    smearing = 0.1
     
     crystal_data = CrystalDataSoA(
         mesh, 
@@ -1783,7 +1783,7 @@ if __name__ == "__main__":
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
     
-    anticipated_fraction = 0.05
+    anticipated_fraction = 0.1
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
