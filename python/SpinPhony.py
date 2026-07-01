@@ -1012,68 +1012,6 @@ class CrystalDataSoA:
         return L_matrix
     
 
-
-@cuda.jit(device=True)
-def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
-    """Computes the FT tensor explicitly passing scalar Cartesian coordinates."""
-    for a in range(3):
-        for b in range(3):
-            J_tilde_out[a, b] = 0.0 + 0.0j
-
-    for i in range(slc_axis.shape[0]):
-        if slc_axis[i] == mu_type:
-            if slc_types[i, 0] == n_type and slc_types[i, 1] == m_type and slc_types[i, 2] == l_type:
-                phase_val = (kpx * slc_rij[i, 0] + kpy * slc_rij[i, 1] + kpz * slc_rij[i, 2]) + \
-                            (qx * slc_rik[i, 0] + qy * slc_rik[i, 1] + qz * slc_rik[i, 2])
-                phase_factor = cmath.exp(1j * phase_val)
-                for a in range(3):
-                    for b in range(3):
-                        J_tilde_out[a, b] += slc_J[i, a, b] * phase_factor
-
-@cuda.jit(device=True)
-def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m, 
-                    slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                    eig_phon_q, omega, atom_masses, mag_moments):
-    """Calculates the scattering vertex specifically for explicitly projected wavevectors."""
-    if omega < 1e-1: return 0.0
-    
-    hbar = 0.6582119569 # meV * ps
-    DALTON_TO_meV_PS2_PER_A2 = 0.10364269
-    
-    S_n = math.fabs(mag_moments[n] / 2.0 ) 
-    S_m = math.fabs(mag_moments[m] / 2.0 )
-    sigma_n = math.copysign(1.0, mag_moments[n]) if S_n > 0 else 0.0
-    sigma_m = math.copysign(1.0, mag_moments[m]) if S_m > 0 else 0.0
-
-    J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
-    J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
-    V_complex = 0.0 + 0.0j
-    
-    num_atoms = atom_masses.shape[0]
-    num_mag_branches = mag_moments.shape[0]
-
-    for l in range(num_atoms):
-        mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
-        disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * omega))
-        
-        for mu in range(3):
-            e_mu = eig_phon_q[lambda_phon, l, mu]
-            
-            calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
-            W_dynamic = (J_tilde_dyn[0, 0] + (sigma_n * sigma_m) * J_tilde_dyn[1, 1] - 1j * sigma_m * J_tilde_dyn[0, 1] + 1j * sigma_n * J_tilde_dyn[1, 0]) / math.sqrt(S_n * S_m)
-            
-            W_static = 0.0 + 0.0j
-            if n == m: 
-                for mp in range(num_mag_branches):
-                    if math.fabs(mag_moments[mp]) > 1e-2:
-                        sigma_mp = math.copysign(1.0, mag_moments[mp])
-                        calc_fourier_transform_vec(gammax, gammay, gammaz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
-                        W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2]
-                        
-            V_complex += disp_amp * e_mu * (W_dynamic - W_static)
-            
-    return (V_complex.real**2 + V_complex.imag**2)
-
 @cuda.jit
 def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map, 
                     path_q_frac, path_q_cart, path_w_phon, path_w_mag, path_eig_phon,
@@ -1266,6 +1204,82 @@ def diagonalize_bosonic_hamiltonian(H_matrix):
 # ==========================================
 # 1. GPU Kernels: Math Helpers
 # ==========================================
+
+@cuda.jit(device=True)
+def gpu_copysign(x, y):
+    """NVVM-safe replacement for math.copysign"""
+    if y >= 0.0:
+        return abs(x)
+    else:
+        return -abs(x)
+
+@cuda.jit(device=True)
+def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
+    """Computes the FT tensor explicitly passing scalar Cartesian coordinates."""
+    for a in range(3):
+        for b in range(3):
+            J_tilde_out[a, b] = 0.0 + 0.0j
+
+    for i in range(slc_axis.shape[0]):
+        if slc_axis[i] == mu_type:
+            if slc_types[i, 0] == n_type and slc_types[i, 1] == m_type and slc_types[i, 2] == l_type:
+                phase_val = (kpx * slc_rij[i, 0] + kpy * slc_rij[i, 1] + kpz * slc_rij[i, 2]) + \
+                            (qx * slc_rik[i, 0] + qy * slc_rik[i, 1] + qz * slc_rik[i, 2])
+                
+                # REPLACED cmath.exp with NVVM-safe math equivalents
+                phase_factor = math.cos(phase_val) + 1j * math.sin(phase_val)
+                
+                for a in range(3):
+                    for b in range(3):
+                        J_tilde_out[a, b] += slc_J[i, a, b] * phase_factor
+
+@cuda.jit(device=True)
+def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m, 
+                    slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                    eig_phon_q, omega, atom_masses, mag_moments):
+    """Calculates the scattering vertex specifically for explicitly projected wavevectors."""
+    if omega < 1e-1: return 0.0
+    
+    hbar = 0.6582119569 # meV * ps
+    DALTON_TO_meV_PS2_PER_A2 = 0.10364269
+    
+    S_n = math.fabs(mag_moments[n] / 2.0 ) 
+    S_m = math.fabs(mag_moments[m] / 2.0 )
+    
+    # REPLACED math.copysign with gpu_copysign
+    sigma_n = gpu_copysign(1.0, mag_moments[n]) if S_n > 0 else 0.0
+    sigma_m = gpu_copysign(1.0, mag_moments[m]) if S_m > 0 else 0.0
+
+    J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
+    J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
+    V_complex = 0.0 + 0.0j
+    
+    num_atoms = atom_masses.shape[0]
+    num_mag_branches = mag_moments.shape[0]
+
+    for l in range(num_atoms):
+        mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
+        disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * omega))
+        
+        for mu in range(3):
+            e_mu = eig_phon_q[lambda_phon, l, mu]
+            
+            calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+            W_dynamic = (J_tilde_dyn[0, 0] + (sigma_n * sigma_m) * J_tilde_dyn[1, 1] - 1j * sigma_m * J_tilde_dyn[0, 1] + 1j * sigma_n * J_tilde_dyn[1, 0]) / math.sqrt(S_n * S_m)
+            
+            W_static = 0.0 + 0.0j
+            if n == m: 
+                for mp in range(num_mag_branches):
+                    if math.fabs(mag_moments[mp]) > 1e-2:
+                        # REPLACED math.copysign with gpu_copysign
+                        sigma_mp = gpu_copysign(1.0, mag_moments[mp])
+                        calc_fourier_transform_vec(gammax, gammay, gammaz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2]
+                        
+            V_complex += disp_amp * e_mu * (W_dynamic - W_static)
+            
+    return (V_complex.real**2 + V_complex.imag**2)
+
 @cuda.jit(device=True)
 def calc_fourier_transform(kp_idx, q_idx, grid_cart, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
     """
@@ -1275,7 +1289,6 @@ def calc_fourier_transform(kp_idx, q_idx, grid_cart, slc_axis, slc_rij, slc_rik,
         for b in range(3):
             J_tilde_out[a, b] = 0.0 + 0.0j
 
-    # Pull directly from the precomputed Cartesian grid
     kp_vec_x = grid_cart[kp_idx, 0]
     kp_vec_y = grid_cart[kp_idx, 1]
     kp_vec_z = grid_cart[kp_idx, 2]
@@ -1294,52 +1307,36 @@ def calc_fourier_transform(kp_idx, q_idx, grid_cart, slc_axis, slc_rij, slc_rik,
                 phase_val = (kp_vec_x * slc_rij[i, 0] + kp_vec_y * slc_rij[i, 1] + kp_vec_z * slc_rij[i, 2]) + \
                             (q_vec_x * slc_rik[i, 0] + q_vec_y * slc_rik[i, 1] + q_vec_z * slc_rik[i, 2])
                             
-                # The 2*pi is omitted here because it was multiplied into q_grid_cart
-                phase_factor = cmath.exp(1j * phase_val)
+                # REPLACED cmath.exp with NVVM-safe math equivalents
+                phase_factor = math.cos(phase_val) + 1j * math.sin(phase_val)
                 
                 for a in range(3):
                     for b in range(3):
                         J_tilde_out[a, b] += slc_J[i, a, b] * phase_factor
-
-
 
 @cuda.jit(device=True)
 def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
     """
     Calculates the full scattering vertex V^{+-} combining the FT tensor and phonon eigenvectors.
     """
-
-    # Find the Gamma point (0,0,0) index
     gamma_idx = grid_map[0, 0, 0]
-
-
-
     omega = w_phon[q_idx, lambda_phon]
     
     if omega < 1e-1:
         return 0.0
 
-    # this is crucian. Now we check for the energy instead
-    #if kp_idx == gamma_idx or q_idx == gamma_idx: #maybe this is not necessary as we skip it when calling the kernel
-    #    return 0.0
-    
-
     omega = w_phon[q_idx, lambda_phon]
 
-    # --- Physical Constants & Spin Factors ---
     hbar = 0.6582119569 # meV * ps
-    DALTON_TO_meV_PS2_PER_A2 = 0.10364269 # Equivalent to 1.0 / 9.6485
+    DALTON_TO_meV_PS2_PER_A2 = 0.10364269 
     
     S_n = math.fabs(mag_moments[n] / 2.0 ) 
     S_m = math.fabs(mag_moments[m] / 2.0 )
     
-    # Sign of the moment (up/down for antiferromagnets, just 1 for FM)
-    sigma_n = math.copysign(1.0, mag_moments[n]) if S_n > 0 else 0.0
-    sigma_m = math.copysign(1.0, mag_moments[m]) if S_m > 0 else 0.0
+    # REPLACED math.copysign with gpu_copysign
+    sigma_n = gpu_copysign(1.0, mag_moments[n]) if S_n > 0 else 0.0
+    sigma_m = gpu_copysign(1.0, mag_moments[m]) if S_m > 0 else 0.0
 
-    # 1. Allocate thread-local 3x3 complex tensors
-    # J_tilde_dyn holds \tilde{J}(k-q, q)
-    # J_tilde_stat holds \tilde{J}(0, q) for the delta term
     J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
     J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
     
@@ -1347,25 +1344,15 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, grid_map, slc_a
     num_atoms = atom_masses.shape[0]
     num_mag_branches = mag_moments.shape[0]
 
-    # --- Sum over all atoms 'l' in the unit cell ---
     for l in range(num_atoms):
-        
-        # Calculate quantum displacement amplitude: \sqrt{\hbar / (2 M_l \omega)}
         mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
         disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * omega))
         
-        # Sum over Cartesian directions \mu \in {x=0, y=1, z=2}
         for mu in range(3):
-            # Phonon eigenvector e^\mu_{l\lambda}(q)
             e_mu = eig_phon[q_idx, lambda_phon, l, mu]
             
-            # --- Evaluate W^{+-,\mu}_{nml} ---
-            
-            # A) The Dynamic Term: \tilde{J}(k-q, q)
-            # Pass (n+1, m+1, l+1) to respect the 1-based indexing in the CSVs.
             calc_fourier_transform(kp_idx, q_idx, q_grid_cart, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
 
-            # Extract components for W^{+-} dynamic part
             J_xx = J_tilde_dyn[0, 0]
             J_yy = J_tilde_dyn[1, 1]
             J_xy = J_tilde_dyn[0, 1]
@@ -1376,26 +1363,20 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, grid_map, slc_a
                          1j * sigma_m * J_xy + 
                          1j * sigma_n * J_yx) / math.sqrt(S_n * S_m)
             
-            # B) The Static Term (Acoustic Sum Rule): \tilde{J}(0, q)
             W_static = 0.0 + 0.0j
             
             if n == m: 
                 for mp in range(num_mag_branches):
                     if math.fabs(mag_moments[mp]) > 1e-2:
-                        sigma_mp = math.copysign(1.0, mag_moments[mp])
+                        # REPLACED math.copysign with gpu_copysign
+                        sigma_mp = gpu_copysign(1.0, mag_moments[mp])
                         calc_fourier_transform(gamma_idx, q_idx, q_grid_cart, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                         
-                        W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] # J^{zz}
+                        W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] 
             
-            # C) Combine terms into the full W
             W_tot = W_dynamic - W_static
-            
-            # D) Add to total Vertex
             V_complex += disp_amp * e_mu * W_tot
-
-    # Note: The 1/\sqrt{N} prefactor is handled elsewhere 
-    
-    # Return |V|^2
+            
     return (V_complex.real**2 + V_complex.imag**2)
 
 
@@ -1726,7 +1707,7 @@ if __name__ == "__main__":
     slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
-    mesh_bccFe = "Inputs/bccFe/grid_40x40x40.h5"
+    mesh_bccFe = "Inputs/bccFe/combined_band_12x12x12.h5"
     mesh_CrI3 = "Inputs/CrI3/grid_12x12x12.h5"
     mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
