@@ -1732,7 +1732,7 @@ if __name__ == "__main__":
     slc_files = slc_files_CrI3
     band = band_CrI3
 
-    smearing = 0.1
+    smearing = 1.0
     
     crystal_data = CrystalDataSoA(
         mesh, 
