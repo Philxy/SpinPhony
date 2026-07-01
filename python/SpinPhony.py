@@ -1712,7 +1712,7 @@ if __name__ == "__main__":
     mesh_CrI3 = "Inputs/CrI3/combined_band_20x20x20.h5"
     mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
-    Jijs_CrI3 = "Inputs/CrI3/JijCrI3.dat" #"Inputs/CrI3/JijCrI3_sergey.dat" #
+    Jijs_CrI3 = "Inputs/CrI3/JijCrI3_sergey.dat" #"Inputs/CrI3/JijCrI3.dat" # #
     Jijs_CrSb = "Inputs/CrSb/Jij_stretched.csv"
     band_CrI3 = "Inputs/CrI3/band.h5"
     band_CrSb = "Inputs/CrSb/band.h5"
