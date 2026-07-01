@@ -1027,8 +1027,9 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
         
     n_mag = path_w_mag.shape[1]
     n_phon = path_w_phon.shape[1]
-    gaussian_norm = 1.0 / (smearing * 2.50662827463)
-    cutoff = 3.0 * smearing
+    cutoff = 2.0 * smearing
+    erf_val = math.erf(cutoff / (smearing * math.sqrt(2.0)))
+    gaussian_norm = 1.0 / (smearing * math.sqrt(2.0 * math.pi) * erf_val) # we account for cutoff when normalizing the Gaussian
     
     # 1. Kinematics mapping: q(path) - k(grid) -> p(grid nearest neighbor)
     px_int = int(math.floor(((path_q_frac[path_idx, 0] - grid_q_frac[k_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
@@ -1731,7 +1732,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 1.0
+    smearing = 2.0
     
     crystal_data = CrystalDataSoA(
         mesh, 
