@@ -1724,7 +1724,7 @@ if __name__ == "__main__":
     anisotropy_bccFe = 0.005 
     anisotropy_CrI3 = 0.0 * 0.49
     anisotropy_CrSb = 0.0001
-    
+
     anisotropy = anisotropy_CrI3
     lattice_constant = lattice_constant_CrI3
     mesh = mesh_CrI3
@@ -1799,8 +1799,8 @@ if __name__ == "__main__":
     blocks_per_grid = math.ceil(N_points / threads_per_block)
 
     # Setup temperatures and initial populations
-    T_mag_init = 300
-    T_phon_init = 300
+    T_mag_init = 30
+    T_phon_init = 30
     
     print(f"\nInitializing populations at thermal equilibrium:")
     print(f" -> Magnons: {T_mag_init} K")
@@ -2017,8 +2017,8 @@ if __name__ == "__main__":
     # ========================== Time-evolution Phase ==========================
     
     # Setup temperatures
-    T_mag_init = 600
-    T_phon_init = 300
+    T_mag_init = 40
+    T_phon_init = 30
     
     print(f"\nInitializing populations for the dynamics:")
     print(f" -> Magnons: {T_mag_init} K")
