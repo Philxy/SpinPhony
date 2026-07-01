@@ -1801,7 +1801,7 @@ if __name__ == "__main__":
     threads_per_block = 256
     blocks_per_grid = math.ceil(N_points / threads_per_block)
 
-    # Setup Phase 2 memory
+    # Setup temperatures and initial populations
     T_mag_init = 300
     T_phon_init = 300
     
@@ -2018,8 +2018,30 @@ if __name__ == "__main__":
 
 
     # ========================== Time-evolution Phase ==========================
-    steps = 10000000
-    dt = 5E-5  # ps
+    
+    # Setup temperatures
+    T_mag_init = 600
+    T_phon_init = 300
+    
+    print(f"\nInitializing populations for the dynamics:")
+    print(f" -> Magnons: {T_mag_init} K")
+    print(f" -> Phonons: {T_phon_init} K")
+
+    # Generate population profiles matching the actual branch dispersions
+    n_mag_cpu = init_bose_einstein(crystal_data.w_mag, T_mag_init)
+    n_phon_cpu = init_bose_einstein(crystal_data.w_phon, T_phon_init)
+    
+    # Set Gamma point occupations to zero to avoid singularities
+    n_mag_cpu[gamma_idx, :] = 0.0
+    n_phon_cpu[gamma_idx, :] = 0.0
+
+    # Push initial states
+    d_n_mag = cuda.to_device(n_mag_cpu)
+    d_n_phon = cuda.to_device(n_phon_cpu)
+    
+    
+    steps = 5E6
+    dt = 1E-5  # ps
     
     # Grid sizes for both kernels
     blocks_eval = math.ceil(num_channels / threads_per_block)
