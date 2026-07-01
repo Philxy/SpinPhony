@@ -2,3 +2,4 @@ numpy
 pyyaml
 numba
 matplotlib
+h5py

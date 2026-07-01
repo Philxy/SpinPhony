@@ -1,5 +1,4 @@
 import numpy as np
-import yaml
 import os
 from numba import cuda
 import cmath
@@ -1751,7 +1750,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 1
+    smearing = 1.0
     
     crystal_data = CrystalDataSoA(
         mesh, 

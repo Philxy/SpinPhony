@@ -25,7 +25,7 @@ def plot_colored_line_dispersions(csv_file, output_image='lifetime_lineplots.png
     # 3. Setup the Figure (Two subplots side-by-side)
     print("Generating lineplots...")
     # Use explicit width_ratios to make room for independent colorbars inside the grid
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6), sharey=True)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6), sharey=False)
     
     def plot_particle_lines(ax, particle_name, title, cmap_name):
         particle_df = df[df['particle'] == particle_name].copy()
@@ -79,7 +79,6 @@ def plot_colored_line_dispersions(csv_file, output_image='lifetime_lineplots.png
         
         ax.set_title(title, fontsize=15, fontweight='bold')
         ax.set_xlabel('Wavevector Path Distance', fontsize=13)
-        ax.grid(True, axis='both', linestyle=':', color='gray', alpha=0.5)
         
         # Add dedicated colorbar right next to this specific axis
         cbar = fig.colorbar(last_lc, ax=ax, orientation='vertical', pad=0.03, shrink=0.85)
