@@ -1716,7 +1716,7 @@ if __name__ == "__main__":
     band_CrI3 = "Inputs/CrI3/band.h5"
     band_CrSb = "Inputs/CrSb/band.h5"
     band_bccFe = "Inputs/bccFe/band.h5"
-
+    
     lattice_constant_bccFe = 2.8665  # in Angstroms
     lattice_constant_CrI3 = 6.91   # in Angstroms
     lattice_constant_CrSb = 4.12 
@@ -2036,7 +2036,7 @@ if __name__ == "__main__":
     d_n_phon = cuda.to_device(n_phon_cpu)
     
     
-    steps = 5E6
+    steps = int(5E6)
     dt = 1E-5  # ps
     
     # Grid sizes for both kernels
