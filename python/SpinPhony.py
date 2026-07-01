@@ -1779,14 +1779,10 @@ if __name__ == "__main__":
     d_path_eig_mag = cuda.to_device(crystal_data.path_eig_mag)
     d_path_eig_hyb = cuda.to_device(crystal_data.path_eig_hyb)
 
-    # Stop the program early
-    #cuda.synchronize()
-    #exit()
-
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
     
-    anticipated_fraction = 0.05
+    anticipated_fraction = 0.5
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
