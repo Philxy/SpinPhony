@@ -58,6 +58,8 @@ class CrystalDataSoA:
         self.w_mag = np.zeros((self.N, self.n_mag_branches), dtype=np.float64)
         self._compute_magnon_dispersions(K_anisotropy=anisotropy, lattice_constant=lattice_constant)
 
+        self._compute_group_velocities()
+
         # Cartesian conversion
         q_frac_array = self.q_grid / self.mesh
         self.q_grid_cart = np.dot(q_frac_array, self.reciprocal_lattice * 2.0 * np.pi)
@@ -217,6 +219,11 @@ class CrystalDataSoA:
         gpu_buffers["eig_mag"] = track_and_push("eig_mag", self.eig_mag)
         gpu_buffers["dyn_mat_phon"] = track_and_push("dyn_mat_phon", self.dyn_mat_phon)
         gpu_buffers["w_mag"] = track_and_push("w_mag", self.w_mag)
+
+        gpu_buffers["grad_f_phon"] = track_and_push("grad_f_phon", self.grad_f_phon)
+        gpu_buffers["grad_f_mag"] = track_and_push("grad_f_mag", self.grad_f_mag)
+
+
         gpu_buffers["jij"] = track_and_push("jij", self.jij_interactions)
         gpu_buffers["atom_masses"] = track_and_push("atom_masses", self.atom_masses)
         gpu_buffers["mag_moments"] = track_and_push("mag_moments", self.mag_moments)
@@ -518,6 +525,41 @@ class CrystalDataSoA:
                 
         return w_hyb, eig_hyb
     
+    def _compute_group_velocities(self):
+        """
+        Computes the fractional gradients of the energies ∇_f ω for magnons and phonons.
+        This is strictly required for the Adaptive Gaussian Broadening method.
+        Uses central finite differences with periodic Brillouin Zone boundaries.
+        """
+        print(" -> Computing fractional energy gradients for Adaptive Broadening...")
+        
+        self.grad_f_phon = np.zeros((self.N, self.phon_branches, 3), dtype=np.float64)
+        self.grad_f_mag = np.zeros((self.N, self.n_mag_branches, 3), dtype=np.float64)
+        
+        N_x, N_y, N_z = self.mesh
+        
+        # Vectorized Index lookups for Central Differences (Periodic wrapping via modulo)
+        idx_x_plus = self.grid_map[(self.q_grid[:, 0] + 1) % N_x, self.q_grid[:, 1], self.q_grid[:, 2]]
+        idx_x_minus = self.grid_map[(self.q_grid[:, 0] - 1) % N_x, self.q_grid[:, 1], self.q_grid[:, 2]]
+        
+        idx_y_plus = self.grid_map[self.q_grid[:, 0], (self.q_grid[:, 1] + 1) % N_y, self.q_grid[:, 2]]
+        idx_y_minus = self.grid_map[self.q_grid[:, 0], (self.q_grid[:, 1] - 1) % N_y, self.q_grid[:, 2]]
+        
+        idx_z_plus = self.grid_map[self.q_grid[:, 0], self.q_grid[:, 1], (self.q_grid[:, 2] + 1) % N_z]
+        idx_z_minus = self.grid_map[self.q_grid[:, 0], self.q_grid[:, 1], (self.q_grid[:, 2] - 1) % N_z]
+        
+        # Phonon Fractional Gradients: dω/df = (ω_plus - ω_minus) / (2 * df)
+        # Because df = 1.0 / N_i, we multiply by (N_i / 2.0)
+        self.grad_f_phon[:, :, 0] = (self.w_phon[idx_x_plus] - self.w_phon[idx_x_minus]) * (N_x / 2.0)
+        self.grad_f_phon[:, :, 1] = (self.w_phon[idx_y_plus] - self.w_phon[idx_y_minus]) * (N_y / 2.0)
+        self.grad_f_phon[:, :, 2] = (self.w_phon[idx_z_plus] - self.w_phon[idx_z_minus]) * (N_z / 2.0)
+        
+        # Magnon Fractional Gradients
+        self.grad_f_mag[:, :, 0] = (self.w_mag[idx_x_plus] - self.w_mag[idx_x_minus]) * (N_x / 2.0)
+        self.grad_f_mag[:, :, 1] = (self.w_mag[idx_y_plus] - self.w_mag[idx_y_minus]) * (N_y / 2.0)
+        self.grad_f_mag[:, :, 2] = (self.w_mag[idx_z_plus] - self.w_mag[idx_z_minus]) * (N_z / 2.0)
+
+
 
     def load_and_evaluate_path_hdf5(self, hdf5_path_file, K_anisotropy=0.01, lattice_constant=1.0):
         """
@@ -1385,10 +1427,130 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, grid_map, slc_a
 # 2. GPU Kernels: The Main Phases
 # ==========================================
 @cuda.jit
+def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon, 
+                 grad_f_phon, grad_f_mag,
+                 slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                 base_smearing, chan_indices, chan_weights, channel_count, atom_masses, mag_moments, gamma_idx):
+    """
+    Scans phase space for energy conservation using Adaptive Gaussian Broadening.
+    """
+    q_idx, k_idx = cuda.grid(2)
+    N = q_grid.shape[0]
+
+    if q_idx >= N or k_idx >= N: 
+        return
+        
+    n_mag = w_mag.shape[1]
+    n_phon = w_phon.shape[1]
+    
+    sqrt_2 = 1.41421356237
+    sqrt_2pi = 2.50662827463
+    
+    # --- Kinematic Mappings ---
+    qx_qmink = (q_grid[q_idx, 0] - q_grid[k_idx, 0] + mesh[0]) % mesh[0]
+    qy_qmink = (q_grid[q_idx, 1] - q_grid[k_idx, 1] + mesh[1]) % mesh[1]
+    qz_qmink = (q_grid[q_idx, 2] - q_grid[k_idx, 2] + mesh[2]) % mesh[2]
+    idx_qmink = grid_map[qx_qmink, qy_qmink, qz_qmink]
+    
+    qx_kminq = (q_grid[k_idx, 0] - q_grid[q_idx, 0] + mesh[0]) % mesh[0]
+    qy_kminq = (q_grid[k_idx, 1] - q_grid[q_idx, 1] + mesh[1]) % mesh[1]
+    qz_kminq = (q_grid[k_idx, 2] - q_grid[q_idx, 2] + mesh[2]) % mesh[2]
+    idx_kminq = grid_map[qx_kminq, qy_kminq, qz_kminq]
+
+    for n in range(n_mag):
+        for m in range(n_mag):
+            for lam in range(n_phon):
+                
+                # ---------------------------------------------------------
+                # Process 0: Magnon Emission
+                # ---------------------------------------------------------
+                dE_mag_emit = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
+                
+                variance = 0.0
+                for i in range(3):
+                    d_g = -grad_f_mag[k_idx, m, i] + grad_f_phon[idx_qmink, lam, i]
+                    step_width = d_g / mesh[i]
+                    variance += step_width * step_width
+                
+                sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
+                cutoff = 3.0 * sigma 
+
+                if abs(dE_mag_emit) < cutoff:
+                    erf_val = math.erf(cutoff / (sigma * sqrt_2))
+                    gaussian_norm = 1.0 / (sigma * sqrt_2pi * erf_val)
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE_mag_emit * dE_mag_emit) / (sigma * sigma))
+                    
+                    V_sq = calc_vertex_V(q_idx, idx_qmink, lam, n, m, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * delta_weight
+                        
+                # ---------------------------------------------------------
+                # Process 1: Magnon Absorption
+                # ---------------------------------------------------------
+                dE_mag_abs = w_mag[q_idx, n] - w_mag[k_idx, m] + w_phon[idx_kminq, lam]
+                
+                variance = 0.0
+                for i in range(3):
+                    d_g = grad_f_phon[idx_kminq, lam, i] - grad_f_mag[k_idx, m, i]
+                    step_width = d_g / mesh[i]
+                    variance += step_width * step_width
+                
+                sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
+                cutoff = 3.0 * sigma 
+
+                if abs(dE_mag_abs) < cutoff:
+                    erf_val = math.erf(cutoff / (sigma * sqrt_2))
+                    gaussian_norm = 1.0 / (sigma * sqrt_2pi * erf_val)
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE_mag_abs * dE_mag_abs) / (sigma * sigma))
+                    
+                    V_sq = calc_vertex_V(q_idx, idx_kminq, lam, m, n, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 1; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * delta_weight
+                        
+                # ---------------------------------------------------------
+                # Process 2: Phonon Emission
+                # ---------------------------------------------------------
+                dE_phon_emit = w_phon[q_idx, lam] + w_mag[idx_kminq, m] - w_mag[k_idx, n]
+                
+                variance = 0.0
+                for i in range(3):
+                    d_g = grad_f_mag[idx_kminq, m, i] - grad_f_mag[k_idx, n, i]
+                    step_width = d_g / mesh[i]
+                    variance += step_width * step_width
+                
+                sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
+                cutoff = 3.0 * sigma 
+
+                if abs(dE_phon_emit) < cutoff:
+                    erf_val = math.erf(cutoff / (sigma * sqrt_2))
+                    gaussian_norm = 1.0 / (sigma * sqrt_2pi * erf_val)
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE_phon_emit * dE_phon_emit) / (sigma * sigma))
+
+                    qx_minq = (-q_grid[q_idx, 0] + mesh[0]) % mesh[0]
+                    qy_minq = (-q_grid[q_idx, 1] + mesh[1]) % mesh[1]
+                    qz_minq = (-q_grid[q_idx, 2] + mesh[2]) % mesh[2]
+                    idx_minus_q = grid_map[qx_minq, qy_minq, qz_minq]
+
+                    V_sq = calc_vertex_V(k_idx, idx_minus_q, lam, n, m, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * delta_weight
+
+
+"""
+@cuda.jit
 def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon, slc_axis, slc_rij, slc_rik, slc_J, slc_types, smearing, chan_indices, chan_weights, channel_count, atom_masses, mag_moments, gamma_idx):
-    """
-    Scans phase space for energy conservation using a Gaussian delta function.
-    """
     q_idx, k_idx = cuda.grid(2)
     N = q_grid.shape[0]
 
@@ -1487,6 +1649,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon, s
                         chan_indices[5, c_idx] = m
                         chan_indices[6, c_idx] = lam
                         chan_weights[c_idx] = V_sq * delta_weight
+"""
 
 @cuda.jit
 def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, dn_mag, dn_phon, N_points, smearing):
@@ -1725,12 +1888,12 @@ if __name__ == "__main__":
     anisotropy_CrI3 = 0.0 * 0.49
     anisotropy_CrSb = 0.0001
 
-    anisotropy = anisotropy_CrI3
-    lattice_constant = lattice_constant_CrI3
-    mesh = mesh_CrI3
-    Jijs = Jijs_CrI3
-    slc_files = slc_files_CrI3
-    band = band_CrI3
+    anisotropy = anisotropy_bccFe
+    lattice_constant = lattice_constant_bccFe
+    mesh = mesh_bccFe
+    Jijs = Jijs_bccFe
+    slc_files = slc_files_bccFe
+    band = band_bccFe
 
     smearing = 1.0
     
@@ -1926,12 +2089,14 @@ if __name__ == "__main__":
         gpu_data["w_phon"], 
         gpu_data["w_mag"], 
         gpu_data["eig_phon"],
+        gpu_data["grad_f_phon"],  
+        gpu_data["grad_f_mag"],   
         gpu_data["slc_axis"], 
         gpu_data["slc_rij"], 
         gpu_data["slc_rik"], 
         gpu_data["slc_J"], 
         gpu_data["slc_types"], 
-        smearing, 
+        smearing,                 
         d_chan_indices,   
         d_chan_weights, 
         d_channel_count,
