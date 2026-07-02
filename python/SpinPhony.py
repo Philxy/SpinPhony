@@ -1799,95 +1799,27 @@ def compute_and_write_observables(step, current_time, n_mag, n_phon, w_mag, w_ph
     file_handle.flush() # Flush buffer to ensure data is saved during long runs
 
 
-"""
 @cuda.jit
 def apply_euler_and_reset(n_mag, n_phon, dn_mag, dn_phon, dt):
     idx = cuda.grid(1)
-    
-    # Maximum allowed fraction of population to change in a single step
-    max_fraction = 0.10 
     
     if idx < dn_mag.shape[0]:
         q_idx = idx // n_mag.shape[1]
         b = idx % n_mag.shape[1]
         
-        current_n = n_mag[q_idx, b]
-        delta_n = dn_mag[idx] * dt
-        
-        # Clamp the scattering step so it cannot empty the state 
-        # faster than mathematically possible without clipping
-        max_delta = current_n * max_fraction
-        
-        if delta_n > max_delta:
-            delta_n = max_delta
-        elif delta_n < -max_delta:
-            delta_n = -max_delta
-            
-        n_mag[q_idx, b] = current_n + delta_n
+        new_n = n_mag[q_idx, b] + dn_mag[idx] * dt
+        n_mag[q_idx, b] = new_n if new_n > 1e-15 else 1e-15
         dn_mag[idx] = 0.0  
         
     if idx < dn_phon.shape[0]:
         q_idx = idx // n_phon.shape[1]
         b = idx % n_phon.shape[1]
         
-        current_n = n_phon[q_idx, b]
-        delta_n = dn_phon[idx] * dt
-        
-        max_delta = current_n * max_fraction
-        
-        if delta_n > max_delta:
-            delta_n = max_delta
-        elif delta_n < -max_delta:
-            delta_n = -max_delta
-            
-        n_phon[q_idx, b] = current_n + delta_n
+        new_n = n_phon[q_idx, b] + dn_phon[idx] * dt
+        n_phon[q_idx, b] = new_n if new_n > 1e-15 else 1e-15
         dn_phon[idx] = 0.0
-"""
-
         
         
-@cuda.jit
-def apply_euler_and_reset(n_mag, n_phon, dn_mag, dn_phon, dt):
-    idx = cuda.grid(1)
-    
-    # Maximum allowed fraction of population to change in a single step
-    max_fraction = 0.01
-    
-    if idx < dn_mag.shape[0]:
-        q_idx = idx // n_mag.shape[1]
-        b = idx % n_mag.shape[1]
-        
-        current_n = n_mag[q_idx, b]
-        delta_n = dn_mag[idx] * dt
-        
-        # Clamp the scattering step so it cannot empty the state 
-        # faster than mathematically possible without clipping
-        max_delta = current_n * max_fraction
-        
-        if delta_n > max_delta:
-            delta_n = max_delta
-        elif delta_n < -max_delta:
-            delta_n = -max_delta
-            
-        n_mag[q_idx, b] = current_n + delta_n
-        dn_mag[idx] = 0.0  
-        
-    if idx < dn_phon.shape[0]:
-        q_idx = idx // n_phon.shape[1]
-        b = idx % n_phon.shape[1]
-        
-        current_n = n_phon[q_idx, b]
-        delta_n = dn_phon[idx] * dt
-        
-        max_delta = current_n * max_fraction
-        
-        if delta_n > max_delta:
-            delta_n = max_delta
-        elif delta_n < -max_delta:
-            delta_n = -max_delta
-            
-        n_phon[q_idx, b] = current_n + delta_n
-        dn_phon[idx] = 0.0
 
 
 def init_bose_einstein(w_distribution, temperature_K):
@@ -2259,22 +2191,13 @@ if __name__ == "__main__":
     
     print(f"\nStarting Phase 2: Time Integration ({steps} steps)...")
 
+    current_time = 0.0
+    base_dt = 1e-5       # Target ideal dt in ps
+    max_fraction = 0.05  # Strict limit: No population can change > 5% per step
+
     for step in range(steps):
         
-        # CPU Interaction: Only pull data across the PCIe bus every 100 steps
-        if step % 1000 == 0:
-            compute_and_write_observables(
-                step=step,
-                current_time=step * dt,
-                n_mag=d_n_mag.copy_to_host(),       # Natively returns the 2D array
-                n_phon=d_n_phon.copy_to_host(),
-                w_mag=crystal_data.w_mag,   
-                w_phon=crystal_data.w_phon,
-                file_handle=obs_file
-            )
-            
-            
-
+        # 1. Calculate derivatives (dn) on the GPU
         phase_2_time_step[blocks_eval, threads_per_block](
             d_chan_indices_active,
             d_chan_weights_active,
@@ -2286,19 +2209,52 @@ if __name__ == "__main__":
             N_points, 
             smearing
         )
+        cuda.synchronize()
+
+        # 2. ADAPTIVE TIME STEPPING (The numerical shock-absorber)
+        # Pull the arrays to the CPU to evaluate the fastest moving state
+        dn_mag_cpu = d_dn_mag.copy_to_host()
+        n_mag_cpu = d_n_mag.copy_to_host()
+        dn_phon_cpu = d_dn_phon.copy_to_host()
+        n_phon_cpu = d_n_phon.copy_to_host()
         
+        # Calculate max fractional change (rate / population)
+        # .ravel() flattens the 2D n_array to match the 1D dn_array
+        # +1e-12 prevents division by zero for empty states
+        max_rate_mag = np.max(np.abs(dn_mag_cpu) / (n_mag_cpu.ravel() + 1e-12))
+        max_rate_phon = np.max(np.abs(dn_phon_cpu) / (n_phon_cpu.ravel() + 1e-12))
+        max_rate = max(max_rate_mag, max_rate_phon)
+        
+        # Shrink dt if the fastest state is moving too quickly
+        if max_rate * base_dt > max_fraction:
+            safe_dt = max_fraction / max_rate
+        else:
+            safe_dt = base_dt
+            
+        # 3. CPU Interaction & Correctly Placed Debug Block
         if step % 1000 == 0:
-            # DEBUG: Check Physics Detailed Balance
-            dn_mag_cpu = d_dn_mag.copy_to_host()
+            compute_and_write_observables(
+                step=step,
+                current_time=current_time,
+                n_mag=n_mag_cpu,      # Reuse the pulled array to save PCIe bandwidth
+                n_phon=n_phon_cpu,
+                w_mag=crystal_data.w_mag,   
+                w_phon=crystal_data.w_phon,
+                file_handle=obs_file
+            )
+            
+            # DEBUG: Check Detailed Balance mathematically
             net_rate = np.sum(dn_mag_cpu)
-            print(f"Step {step} | Net physics rate sum(dn): {net_rate:.6e}")
+            print(f"Step {step} | safe_dt: {safe_dt:.2e} ps | Net mag rate sum(dn): {net_rate:.6e}")
             if abs(net_rate) > 1e-8:
-                print(" -> WARNING: Detailed balance is broken in the collision arrays!")
-        
-        # 2. Apply Euler integration, clip negatives, and reset derivatives to 0.0
+                print(" -> WARNING: Detailed balance is broken in the collision physics!")
+
+        # 4. Apply the safe_dt globally using the pure Euler kernel
         apply_euler_and_reset[blocks_euler, threads_per_block](
-            d_n_mag, d_n_phon, d_dn_mag, d_dn_phon, dt
+            d_n_mag, d_n_phon, d_dn_mag, d_dn_phon, safe_dt
         )
+        
+        current_time += safe_dt
 
     obs_file.close()
     print("Simulation Complete.")
