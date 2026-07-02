@@ -2272,6 +2272,13 @@ if __name__ == "__main__":
                 w_phon=crystal_data.w_phon,
                 file_handle=obs_file
             )
+            
+            # DEBUG: Check Physics Detailed Balance
+            dn_mag_cpu = d_dn_mag.copy_to_host()
+            net_rate = np.sum(dn_mag_cpu)
+            print(f"Step {step} | Net physics rate sum(dn): {net_rate:.6e}")
+            if abs(net_rate) > 1e-8:
+                print(" -> WARNING: Detailed balance is broken in the collision arrays!")
 
         phase_2_time_step[blocks_eval, threads_per_block](
             d_chan_indices_active,
