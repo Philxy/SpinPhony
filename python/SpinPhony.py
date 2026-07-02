@@ -1358,7 +1358,7 @@ def calc_fourier_transform(kp_idx, q_idx, grid_cart, slc_axis, slc_rij, slc_rik,
                         J_tilde_out[a, b] += slc_J[i, a, b] * phase_factor
 
 @cuda.jit(device=True)
-def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
+def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
     """
     Calculates the full scattering vertex V^{+-} combining the FT tensor and phonon eigenvectors.
     """
@@ -1394,7 +1394,7 @@ def calc_vertex_V(kp_idx, q_idx, lambda_phon, n, m, q_grid_cart, grid_map, slc_a
         for mu in range(3):
             e_mu = eig_phon[q_idx, lambda_phon, l, mu]
             
-            calc_fourier_transform(kp_idx, q_idx, q_grid_cart, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+            calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
 
             J_xx = J_tilde_dyn[0, 0]
             J_yy = J_tilde_dyn[1, 1]
@@ -1432,7 +1432,8 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                  slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
                  base_smearing, chan_indices, chan_weights, channel_count, atom_masses, mag_moments, gamma_idx):
     """
-    Scans phase space for energy conservation using Adaptive Gaussian Broadening.
+    Scans phase space enforcing energy conservation via Adaptive Broadening 
+    and strict Cartesian continuous vectors for exact Umklapp phase tracking.
     """
     q_idx, k_idx = cuda.grid(2)
     N = q_grid.shape[0]
@@ -1443,10 +1444,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
     n_mag = w_mag.shape[1]
     n_phon = w_phon.shape[1]
     
-    sqrt_2 = 1.41421356237
-    sqrt_2pi = 2.50662827463
-    
-    # --- Kinematic Mappings ---
+    # --- Kinematic Mappings for Discrete Lookups ---
     qx_qmink = (q_grid[q_idx, 0] - q_grid[k_idx, 0] + mesh[0]) % mesh[0]
     qy_qmink = (q_grid[q_idx, 1] - q_grid[k_idx, 1] + mesh[1]) % mesh[1]
     qz_qmink = (q_grid[q_idx, 2] - q_grid[k_idx, 2] + mesh[2]) % mesh[2]
@@ -1463,6 +1461,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 
                 # ---------------------------------------------------------
                 # Process 0: Magnon Emission
+                # k' = q, p = q - k
                 # ---------------------------------------------------------
                 dE = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
                 
@@ -1476,12 +1475,16 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 cutoff = 3.0 * sigma 
 
                 if abs(dE) < cutoff:
-
-                    # 1.0 / (2.50662827463 * 0.9973002) = 0.40003
                     gaussian_norm = 0.40003 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
-                    V_sq = calc_vertex_V(q_idx, idx_qmink, lam, n, m, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    # Exact continuous Cartesian vectors for FT
+                    kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
+                    qx = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
+                    qy = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
+                    qz = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
+                    
+                    V_sq = calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -1491,6 +1494,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                         
                 # ---------------------------------------------------------
                 # Process 1: Magnon Absorption
+                # k' = q, p = k - q
                 # ---------------------------------------------------------
                 dE = w_mag[q_idx, n] - w_mag[k_idx, m] + w_phon[idx_kminq, lam]
                 
@@ -1507,7 +1511,14 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     gaussian_norm = 0.40003 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
-                    V_sq = calc_vertex_V(q_idx, idx_kminq, lam, m, n, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    # Exact continuous Cartesian vectors for FT
+                    kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
+                    qx = q_grid_cart[k_idx, 0] - q_grid_cart[q_idx, 0]
+                    qy = q_grid_cart[k_idx, 1] - q_grid_cart[q_idx, 1]
+                    qz = q_grid_cart[k_idx, 2] - q_grid_cart[q_idx, 2]
+                    
+                    # m, n are swapped analytically for absorption
+                    V_sq = calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, idx_kminq, lam, m, n, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -1517,6 +1528,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                         
                 # ---------------------------------------------------------
                 # Process 2: Phonon Emission
+                # k' = k, p = -q
                 # ---------------------------------------------------------
                 dE = w_phon[q_idx, lam] + w_mag[idx_kminq, m] - w_mag[k_idx, n]
                 
@@ -1538,7 +1550,11 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     qz_minq = (-q_grid[q_idx, 2] + mesh[2]) % mesh[2]
                     idx_minus_q = grid_map[qx_minq, qy_minq, qz_minq]
 
-                    V_sq = calc_vertex_V(k_idx, idx_minus_q, lam, n, m, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    # Exact continuous Cartesian vectors for FT
+                    kpx, kpy, kpz = q_grid_cart[k_idx, 0], q_grid_cart[k_idx, 1], q_grid_cart[k_idx, 2]
+                    qx, qy, qz = -q_grid_cart[q_idx, 0], -q_grid_cart[q_idx, 1], -q_grid_cart[q_idx, 2]
+
+                    V_sq = calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, idx_minus_q, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -1870,7 +1886,7 @@ if __name__ == "__main__":
     slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
-    mesh_bccFe = "Inputs/bccFe/grid_40x40x40.h5"
+    mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.h5"
     mesh_CrI3 = "Inputs/CrI3/combined_band_20x20x20.h5"
     mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
