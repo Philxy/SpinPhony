@@ -1426,6 +1426,42 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
             for lam in range(n_phon):
                 
                 # ---------------------------------------------------------
+                # Process 0 (Unified): M(q) <--> M(k) + Ph(q-k)
+                # ---------------------------------------------------------
+                dE = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
+                
+                variance = 0.0
+                for i in range(3):
+                    d_g = -grad_f_mag[k_idx, m, i] + grad_f_phon[idx_qmink, lam, i]
+                    step_width = d_g / mesh[i]
+                    variance += step_width * step_width
+                
+                sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
+                cutoff = 3.0 * sigma 
+
+                if abs(dE) < cutoff:
+                    gaussian_norm = 0.40003 / sigma
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
+                    
+                    kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
+                    qx = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
+                    qy = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
+                    qz = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
+                    
+                    V_sq = calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * delta_weight
+
+    """
+    for n in range(n_mag):
+        for m in range(n_mag):
+            for lam in range(n_phon):
+                
+                # ---------------------------------------------------------
                 # Process 0: Magnon Emission
                 # k' = q, p = q - k
                 # ---------------------------------------------------------
@@ -1527,7 +1563,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                         chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
                         chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                         chan_weights[c_idx] = V_sq * delta_weight
-
+        """
 
 """
 @cuda.jit
@@ -1654,6 +1690,24 @@ def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, d
     hbar = 0.6582119569 # meV * ps
     fgr_prefactor = (2.0 * math.pi / hbar) / N_points
     
+    # ---------------------------------------------------------
+    # UNIFIED UPDATE: M(q) <--> M(k) + Ph(p)
+    # ---------------------------------------------------------
+    nk_mag = n_mag[k_idx, m]
+    nq_mag = n_mag[q_idx, n]
+    np_phon = n_phon[p_idx, lam]
+    
+    # rate_q represents dn_q / dt. 
+    # If positive, M(q) is created. If negative, M(q) is destroyed.
+    rate_q = fgr_prefactor * V_sq * ((nq_mag + 1.0) * nk_mag * np_phon - nq_mag * (nk_mag + 1.0) * (np_phon + 1.0))
+
+    # Apply identically symmetric changes to all three particles
+    cuda.atomic.add(dn_mag, q_idx * num_mag_branches + n, rate_q)
+    cuda.atomic.add(dn_mag, k_idx * num_mag_branches + m, -rate_q)
+    cuda.atomic.add(dn_phon, p_idx * num_phon_branches + lam, -rate_q)
+    
+    """
+    
     if c_type == 0: 
         # ---------------------------------------------------------
         # Magnon 1: q_idx = q, k_idx = k, p_idx = q-k
@@ -1692,7 +1746,7 @@ def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, d
 
         idx_update = q_idx * num_phon_branches + lam
         cuda.atomic.add(dn_phon, idx_update, rate)
-
+    """
 
 @cuda.jit
 def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamma_mag, gamma_phon, N_points):
