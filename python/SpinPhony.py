@@ -1851,7 +1851,7 @@ def apply_euler_and_reset(n_mag, n_phon, dn_mag, dn_phon, dt):
     idx = cuda.grid(1)
     
     # Maximum allowed fraction of population to change in a single step
-    max_fraction = 0.10 
+    max_fraction = 0.01
     
     if idx < dn_mag.shape[0]:
         q_idx = idx // n_mag.shape[1]
@@ -2247,7 +2247,7 @@ if __name__ == "__main__":
     
     
     steps = int(1E7)
-    dt = 1E-5  # ps
+    dt = 1E-6  # ps
     
     # Grid sizes for both kernels
     blocks_eval = math.ceil(num_channels / threads_per_block)
