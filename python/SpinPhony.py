@@ -1323,39 +1323,6 @@ def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda
             
     return (V_complex.real**2 + V_complex.imag**2)
 
-@cuda.jit(device=True)
-def calc_fourier_transform(kp_idx, q_idx, grid_cart, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
-    """
-    Computes the FT of the SLC tensor using Cartesian coordinate dot products.
-    """
-    for a in range(3):
-        for b in range(3):
-            J_tilde_out[a, b] = 0.0 + 0.0j
-
-    kp_vec_x = grid_cart[kp_idx, 0]
-    kp_vec_y = grid_cart[kp_idx, 1]
-    kp_vec_z = grid_cart[kp_idx, 2]
-    
-    q_vec_x = grid_cart[q_idx, 0]
-    q_vec_y = grid_cart[q_idx, 1]
-    q_vec_z = grid_cart[q_idx, 2]
-
-    for i in range(slc_axis.shape[0]):
-        if slc_axis[i] == mu_type:
-            t_i = slc_types[i, 0]
-            t_j = slc_types[i, 1]
-            t_l = slc_types[i, 2]
-            
-            if t_i == n_type and t_j == m_type and t_l == l_type:
-                phase_val = (kp_vec_x * slc_rij[i, 0] + kp_vec_y * slc_rij[i, 1] + kp_vec_z * slc_rij[i, 2]) + \
-                            (q_vec_x * slc_rik[i, 0] + q_vec_y * slc_rik[i, 1] + q_vec_z * slc_rik[i, 2])
-                            
-                # REPLACED cmath.exp with NVVM-safe math equivalents
-                phase_factor = math.cos(phase_val) + 1j * math.sin(phase_val)
-                
-                for a in range(3):
-                    for b in range(3):
-                        J_tilde_out[a, b] += slc_J[i, a, b] * phase_factor
 
 @cuda.jit(device=True)
 def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
@@ -1413,8 +1380,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
                     if math.fabs(mag_moments[mp]) > 1e-2:
                         # REPLACED math.copysign with gpu_copysign
                         sigma_mp = gpu_copysign(1.0, mag_moments[mp])
-                        calc_fourier_transform(gamma_idx, q_idx, q_grid_cart, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
-                        
+                        calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                         W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] 
             
             W_tot = W_dynamic - W_static
@@ -1910,7 +1876,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 2.0
+    smearing = 4.0
     
     crystal_data = CrystalDataSoA(
         mesh, 
@@ -2217,7 +2183,7 @@ if __name__ == "__main__":
     d_n_phon = cuda.to_device(n_phon_cpu)
     
     
-    steps = int(5E6)
+    steps = int(1E7)
     dt = 1E-5  # ps
     
     # Grid sizes for both kernels
