@@ -1464,7 +1464,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 # ---------------------------------------------------------
                 # Process 0: Magnon Emission
                 # ---------------------------------------------------------
-                dE_mag_emit = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
+                dE = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
                 
                 variance = 0.0
                 for i in range(3):
@@ -1475,10 +1475,11 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
                 cutoff = 3.0 * sigma 
 
-                if abs(dE_mag_emit) < cutoff:
-                    erf_val = math.erf(cutoff / (sigma * sqrt_2))
-                    gaussian_norm = 1.0 / (sigma * sqrt_2pi * erf_val)
-                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE_mag_emit * dE_mag_emit) / (sigma * sigma))
+                if abs(dE) < cutoff:
+
+                    # 1.0 / (2.50662827463 * 0.9973002) = 0.40003
+                    gaussian_norm = 0.40003 / sigma
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
                     V_sq = calc_vertex_V(q_idx, idx_qmink, lam, n, m, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
@@ -1491,7 +1492,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 # ---------------------------------------------------------
                 # Process 1: Magnon Absorption
                 # ---------------------------------------------------------
-                dE_mag_abs = w_mag[q_idx, n] - w_mag[k_idx, m] + w_phon[idx_kminq, lam]
+                dE = w_mag[q_idx, n] - w_mag[k_idx, m] + w_phon[idx_kminq, lam]
                 
                 variance = 0.0
                 for i in range(3):
@@ -1502,10 +1503,9 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
                 cutoff = 3.0 * sigma 
 
-                if abs(dE_mag_abs) < cutoff:
-                    erf_val = math.erf(cutoff / (sigma * sqrt_2))
-                    gaussian_norm = 1.0 / (sigma * sqrt_2pi * erf_val)
-                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE_mag_abs * dE_mag_abs) / (sigma * sigma))
+                if abs(dE) < cutoff:
+                    gaussian_norm = 0.40003 / sigma
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
                     V_sq = calc_vertex_V(q_idx, idx_kminq, lam, m, n, q_grid_cart, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
@@ -1518,7 +1518,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 # ---------------------------------------------------------
                 # Process 2: Phonon Emission
                 # ---------------------------------------------------------
-                dE_phon_emit = w_phon[q_idx, lam] + w_mag[idx_kminq, m] - w_mag[k_idx, n]
+                dE = w_phon[q_idx, lam] + w_mag[idx_kminq, m] - w_mag[k_idx, n]
                 
                 variance = 0.0
                 for i in range(3):
@@ -1529,10 +1529,9 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
                 cutoff = 3.0 * sigma 
 
-                if abs(dE_phon_emit) < cutoff:
-                    erf_val = math.erf(cutoff / (sigma * sqrt_2))
-                    gaussian_norm = 1.0 / (sigma * sqrt_2pi * erf_val)
-                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE_phon_emit * dE_phon_emit) / (sigma * sigma))
+                if abs(dE) < cutoff:
+                    gaussian_norm = 0.40003 / sigma
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
 
                     qx_minq = (-q_grid[q_idx, 0] + mesh[0]) % mesh[0]
                     qy_minq = (-q_grid[q_idx, 1] + mesh[1]) % mesh[1]
@@ -1895,7 +1894,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 1.0
+    smearing = 4.0
     
     crystal_data = CrystalDataSoA(
         mesh, 
