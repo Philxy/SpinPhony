@@ -1799,32 +1799,95 @@ def compute_and_write_observables(step, current_time, n_mag, n_phon, w_mag, w_ph
     file_handle.flush() # Flush buffer to ensure data is saved during long runs
 
 
+"""
 @cuda.jit
 def apply_euler_and_reset(n_mag, n_phon, dn_mag, dn_phon, dt):
-    """
-    Applies the explicit Euler step, clips negative populations, 
-    and zeros out the derivative buffers entirely on the GPU.
-    """
     idx = cuda.grid(1)
     
-    # 1. Update Magnons
+    # Maximum allowed fraction of population to change in a single step
+    max_fraction = 0.10 
+    
     if idx < dn_mag.shape[0]:
         q_idx = idx // n_mag.shape[1]
         b = idx % n_mag.shape[1]
         
-        new_n = n_mag[q_idx, b] + dn_mag[idx] * dt
-
-        n_mag[q_idx, b] = new_n if new_n > 1e-15 else 1e-15
-        dn_mag[idx] = 0.0  # Reset for next step
+        current_n = n_mag[q_idx, b]
+        delta_n = dn_mag[idx] * dt
         
-    # 2. Update Phonons
+        # Clamp the scattering step so it cannot empty the state 
+        # faster than mathematically possible without clipping
+        max_delta = current_n * max_fraction
+        
+        if delta_n > max_delta:
+            delta_n = max_delta
+        elif delta_n < -max_delta:
+            delta_n = -max_delta
+            
+        n_mag[q_idx, b] = current_n + delta_n
+        dn_mag[idx] = 0.0  
+        
     if idx < dn_phon.shape[0]:
         q_idx = idx // n_phon.shape[1]
         b = idx % n_phon.shape[1]
         
-        new_n = n_phon[q_idx, b] + dn_phon[idx] * dt
-        n_phon[q_idx, b] = new_n if new_n > 1e-15 else 1e-15
-        dn_phon[idx] = 0.0 # Reset for next step
+        current_n = n_phon[q_idx, b]
+        delta_n = dn_phon[idx] * dt
+        
+        max_delta = current_n * max_fraction
+        
+        if delta_n > max_delta:
+            delta_n = max_delta
+        elif delta_n < -max_delta:
+            delta_n = -max_delta
+            
+        n_phon[q_idx, b] = current_n + delta_n
+        dn_phon[idx] = 0.0
+"""
+
+        
+        
+@cuda.jit
+def apply_euler_and_reset(n_mag, n_phon, dn_mag, dn_phon, dt):
+    idx = cuda.grid(1)
+    
+    # Maximum allowed fraction of population to change in a single step
+    max_fraction = 0.10 
+    
+    if idx < dn_mag.shape[0]:
+        q_idx = idx // n_mag.shape[1]
+        b = idx % n_mag.shape[1]
+        
+        current_n = n_mag[q_idx, b]
+        delta_n = dn_mag[idx] * dt
+        
+        # Clamp the scattering step so it cannot empty the state 
+        # faster than mathematically possible without clipping
+        max_delta = current_n * max_fraction
+        
+        if delta_n > max_delta:
+            delta_n = max_delta
+        elif delta_n < -max_delta:
+            delta_n = -max_delta
+            
+        n_mag[q_idx, b] = current_n + delta_n
+        dn_mag[idx] = 0.0  
+        
+    if idx < dn_phon.shape[0]:
+        q_idx = idx // n_phon.shape[1]
+        b = idx % n_phon.shape[1]
+        
+        current_n = n_phon[q_idx, b]
+        delta_n = dn_phon[idx] * dt
+        
+        max_delta = current_n * max_fraction
+        
+        if delta_n > max_delta:
+            delta_n = max_delta
+        elif delta_n < -max_delta:
+            delta_n = -max_delta
+            
+        n_phon[q_idx, b] = current_n + delta_n
+        dn_phon[idx] = 0.0
 
 
 def init_bose_einstein(w_distribution, temperature_K):
