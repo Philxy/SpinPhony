@@ -1707,7 +1707,6 @@ def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, d
     cuda.atomic.add(dn_phon, p_idx * num_phon_branches + lam, -rate_q)
     
     """
-    
     if c_type == 0: 
         # ---------------------------------------------------------
         # Magnon 1: q_idx = q, k_idx = k, p_idx = q-k
@@ -1925,7 +1924,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 4.0
+    smearing = 2.0
     
     crystal_data = CrystalDataSoA(
         mesh, 
@@ -2004,8 +2003,8 @@ if __name__ == "__main__":
     n_phon_cpu = init_bose_einstein(crystal_data.w_phon, T_phon_init)
     
     # Set Gamma point occupations to zero to avoid singularities
-    n_mag_cpu[gamma_idx, :] = 0.0
-    n_phon_cpu[gamma_idx, :] = 0.0
+    #n_mag_cpu[gamma_idx, :] = 0.0
+    #n_phon_cpu[gamma_idx, :] = 0.0
 
     # Push initial states
     d_n_mag = cuda.to_device(n_mag_cpu)
@@ -2232,7 +2231,7 @@ if __name__ == "__main__":
     d_n_phon = cuda.to_device(n_phon_cpu)
     
     
-    steps = int(1E7)
+    steps = int(3E7)
     dt = 1E-6  # ps
     
     # Grid sizes for both kernels
@@ -2267,26 +2266,29 @@ if __name__ == "__main__":
 
         # 2. ADAPTIVE TIME STEPPING (The numerical shock-absorber)
         # Pull the arrays to the CPU to evaluate the fastest moving state
-        dn_mag_cpu = d_dn_mag.copy_to_host()
-        n_mag_cpu = d_n_mag.copy_to_host()
-        dn_phon_cpu = d_dn_phon.copy_to_host()
-        n_phon_cpu = d_n_phon.copy_to_host()
+        #dn_mag_cpu = d_dn_mag.copy_to_host()
+        #n_mag_cpu = d_n_mag.copy_to_host()
+        #dn_phon_cpu = d_dn_phon.copy_to_host()
+        #n_phon_cpu = d_n_phon.copy_to_host()
         
-        # Calculate max fractional change (rate / population)
-        # .ravel() flattens the 2D n_array to match the 1D dn_array
-        # +1e-12 prevents division by zero for empty states
-        max_rate_mag = np.max(np.abs(dn_mag_cpu) / (n_mag_cpu.ravel() + 1e-12))
-        max_rate_phon = np.max(np.abs(dn_phon_cpu) / (n_phon_cpu.ravel() + 1e-12))
-        max_rate = max(max_rate_mag, max_rate_phon)
-        
-        # Shrink dt if the fastest state is moving too quickly
-        if max_rate * base_dt > max_fraction:
-            safe_dt = max_fraction / max_rate
-        else:
-            safe_dt = base_dt
+        # FIX: Introduce a population floor (e.g., 0.01) so empty states don't cause infinite fractional rates
+        pop_floor = 1e-2
+        #max_rate_mag = np.max(np.abs(dn_mag_cpu) / np.maximum(n_mag_cpu.ravel(), pop_floor))
+        #max_rate_phon = np.max(np.abs(dn_phon_cpu) / np.maximum(n_phon_cpu.ravel(), pop_floor))
+        #max_rate = max(max_rate_mag, max_rate_phon)
+
+        #if max_rate * base_dt > max_fraction:
+        #    safe_dt = max_fraction / max_rate
+        #else:
+        #   safe_dt = base_dt
+            
+            
+        safe_dt = 1E-5    
             
         # 3. CPU Interaction & Correctly Placed Debug Block
-        if step % 1000 == 0:
+        if step % 10000 == 0:
+            n_mag_cpu = d_n_mag.copy_to_host()
+            n_phon_cpu = d_n_phon.copy_to_host()
             compute_and_write_observables(
                 step=step,
                 current_time=current_time,
@@ -2298,10 +2300,10 @@ if __name__ == "__main__":
             )
             
             # DEBUG: Check Detailed Balance mathematically
-            net_rate = np.sum(dn_mag_cpu)
-            print(f"Step {step} | safe_dt: {safe_dt:.2e} ps | Net mag rate sum(dn): {net_rate:.6e}")
-            if abs(net_rate) > 1e-8:
-                print(" -> WARNING: Detailed balance is broken in the collision physics!")
+            #net_rate = np.sum(dn_mag_cpu)
+            #print(f"Step {step} | safe_dt: {safe_dt:.2e} ps | Net mag rate sum(dn): {net_rate:.6e}")
+            #if abs(net_rate) > 1e-8:
+            #    print(" -> WARNING: Detailed balance is broken in the collision physics!")
 
         # 4. Apply the safe_dt globally using the pure Euler kernel
         apply_euler_and_reset[blocks_euler, threads_per_block](

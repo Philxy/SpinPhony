@@ -113,5 +113,6 @@ axes[3, 1].set_title('Fractional Magnon Relaxation', fontsize=12, fontweight='bo
 # Optimize plot formatting and save
 plt.tight_layout()
 output_image = "observables_extended_analysis.png"
+plt.show()
 plt.savefig(output_image, dpi=300, bbox_inches='tight')
 print(f"Comprehensive analysis plot successfully saved to {output_image}")
