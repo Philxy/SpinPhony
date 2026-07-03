@@ -125,3 +125,37 @@ plt.legend()
 plt.tight_layout()
 plt.savefig("Outputs/lifetimes_vs_energy.png", dpi=300)
 plt.show()
+
+def plot_group_velocities(filename="Outputs/equilibrium_lifetimes.csv"):
+    df = pd.read_csv(filename)
+    
+    # Calculate group velocity magnitude |v| = sqrt(vx^2 + vy^2 + vz^2)
+    df['v_mag'] = np.sqrt(df['vx']**2 + df['vy']**2 + df['vz']**2)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # 1. Magnon Plot
+    df_mag = df[df["particle"] == "magnon"]
+    axes[0].scatter(df_mag["energy_meV"], df_mag["v_mag"], s=5, alpha=0.5, c=df_mag["branch"])
+    axes[0].set_title("Magnon Group Velocity")
+    axes[0].set_xlabel("Energy (meV)")
+    axes[0].set_ylabel(r"|$\nabla_f \omega$| (meV)")
+    axes[0].set_yscale("log")
+    axes[0].grid(True, which="both", ls="--", lw=0.5)
+    
+    # 2. Phonon Plot
+    df_phon = df[df["particle"] == "phonon"]
+    axes[1].scatter(df_phon["energy_meV"], df_phon["v_mag"], s=5, alpha=0.5, c=df_phon["branch"])
+    axes[1].set_title("Phonon Group Velocity")
+    axes[1].set_xlabel("Energy (meV)")
+    axes[1].set_ylabel(r"|$\nabla_f \omega$| (meV)")
+    axes[1].set_yscale("log")
+    axes[1].grid(True, which="both", ls="--", lw=0.5)
+    
+    plt.tight_layout()
+    plt.savefig("Outputs/group_velocities.png", dpi=300)
+    print("-> Saved group velocity plots to Outputs/group_velocities.png")
+    plt.show()
+
+# Run the plotting function
+plot_group_velocities()

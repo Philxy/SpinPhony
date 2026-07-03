@@ -245,7 +245,6 @@ class CrystalDataSoA:
         self.eig_mag = np.zeros((self.N, 2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
         
         self.grad_f_mag = np.zeros((self.N, self.n_mag_branches, 3), dtype=np.float64)
-        
         atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
         for i, m_idx in enumerate(self.mag_indices):
             atom_to_mag[m_idx] = i
@@ -300,6 +299,14 @@ class CrystalDataSoA:
             mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
             J_k_all[:, mi, mj] += exp_phases_k[:, b_idx]
             J_m_k_all[:, mi, mj] += exp_phases_m_k[:, b_idx]
+            
+            # ANALYTICAL GRADIENT FILLING:
+            # You must multiply the phase factor by (i * B_dot_r) for each Cartesian axis alpha
+            for alpha in range(3):
+                # The derivative of exp(i * q * R) with respect to fractional index f_alpha
+                # is (i * B_dot_r[alpha]) * exp(...)
+                dJ_k_all[alpha, :, mi, mj] += 1j * B_dot_r[alpha, b_idx] * exp_phases_k[:, b_idx]
+                dJ_m_k_all[alpha, :, mi, mj] += -1j * B_dot_r[alpha, b_idx] * exp_phases_m_k[:, b_idx]
 
         # 5. Build BdG and Diagonalize 
         for q_idx in range(self.N):
