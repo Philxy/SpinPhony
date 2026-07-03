@@ -1335,7 +1335,6 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     if omega < 1e-1:
         return 0.0
 
-    omega = w_phon[q_idx, lambda_phon]
 
     hbar = 0.6582119569 # meV * ps
     DALTON_TO_meV_PS2_PER_A2 = 0.10364269 
@@ -1425,7 +1424,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
         for m in range(n_mag):
             for lam in range(n_phon):
                 
-                # ---------------------------------------------------------
+                #---------------------------------------------------------
                 # Process 0 (Unified): M(q) <--> M(k) + Ph(q-k)
                 # ---------------------------------------------------------
                 dE = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
@@ -1436,11 +1435,16 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     step_width = d_g / mesh[i]
                     variance += step_width * step_width
                 
-                sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
+                # ShengBTE Eq 18: Multiplicative scalebroad (base_smearing)
+                sigma_grid = math.sqrt(variance / 12.0)
+                
+                # Apply scaling and a strict minimum floor to protect flat bands
+                sigma = max(base_smearing * sigma_grid, 1e-5)
                 cutoff = 3.0 * sigma 
 
                 if abs(dE) < cutoff:
-                    gaussian_norm = 0.40003 / sigma
+                    #  normalizes the 4-sigma truncated Gaussian
+                    gaussian_norm = 0.40002167 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
                     kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
@@ -1455,7 +1459,6 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                         chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
                         chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                         chan_weights[c_idx] = V_sq * delta_weight
-
     """
     for n in range(n_mag):
         for m in range(n_mag):
@@ -1753,6 +1756,7 @@ def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamm
     if idx >= num_channels[0] or idx >= chan_weights.shape[0]: 
         return
         
+    # We no longer need c_type, but we read it to maintain memory alignment
     c_type = chan_indices[0, idx]
     q_idx  = chan_indices[1, idx] 
     k_idx  = chan_indices[2, idx] 
@@ -1768,43 +1772,28 @@ def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamm
     hbar = 0.6582119569 # meV * ps
     fgr_prefactor = (2.0 * math.pi / hbar) / N_points
     
-    if c_type == 0: 
-        # ---------------------------------------------------------
-        # Magnon Emission: q_idx = q, k_idx = k, p_idx = q-k
-        # Term: [1 + n_ph(q-k) + n_mag(k)]
-        # ---------------------------------------------------------
-        nk_mag = n_mag[k_idx, m]
-        n_qmink_ph = n_phon[p_idx, lam]
-        
-        scattering_rate = fgr_prefactor * V_sq * (1.0 + n_qmink_ph + nk_mag)
-
-        idx_update = q_idx * num_mag_branches + n
-        cuda.atomic.add(gamma_mag, idx_update, scattering_rate)
-        
-    elif c_type == 1:
-        # ---------------------------------------------------------
-        # Magnon Absorption: q_idx = q, k_idx = k, p_idx = k-q
-        # Term: [n_ph(k-q) - n_mag(k)]
-        # ---------------------------------------------------------
-        nk_mag = n_mag[k_idx, m]
-        n_kminq_ph = n_phon[p_idx, lam]
-        
-        scattering_rate = fgr_prefactor * V_sq * (n_kminq_ph - nk_mag)
-
-        idx_update = q_idx * num_mag_branches + n
-        cuda.atomic.add(gamma_mag, idx_update, scattering_rate)
-        
-    elif c_type == 2:
-        # ---------------------------------------------------------
-        # Phonon Scattering: q_idx = q (phonon), k_idx = k, p_idx = k-q
-        # ---------------------------------------------------------
-        nk_mag = n_mag[k_idx, n]
-        n_kminq_mag = n_mag[p_idx, m]
-        
-        scattering_rate = fgr_prefactor * V_sq * (n_kminq_mag - nk_mag)
-
-        idx_update = q_idx * num_phon_branches + lam
-        cuda.atomic.add(gamma_phon, idx_update, scattering_rate)
+    # Populations (evaluated at the equilibrium T_0 passed to the kernel)
+    nk_mag = n_mag[k_idx, m]
+    nq_mag = n_mag[q_idx, n]
+    np_phon = n_phon[p_idx, lam]
+    
+    # ---------------------------------------------------------
+    # 1. M(q) Out-Scattering (via Emission: M_q -> M_k + Ph_p)
+    # ---------------------------------------------------------
+    gamma_q = fgr_prefactor * V_sq * (1.0 + np_phon + nk_mag)
+    cuda.atomic.add(gamma_mag, q_idx * num_mag_branches + n, gamma_q)
+    
+    # ---------------------------------------------------------
+    # 2. M(k) Out-Scattering (via Absorption: M_k + Ph_p -> M_q)
+    # ---------------------------------------------------------
+    gamma_k = fgr_prefactor * V_sq * (np_phon - nq_mag)
+    cuda.atomic.add(gamma_mag, k_idx * num_mag_branches + m, gamma_k)
+    
+    # ---------------------------------------------------------
+    # 3. Ph(p) Out-Scattering (via Absorption: Ph_p + M_k -> M_q)
+    # ---------------------------------------------------------
+    gamma_p = fgr_prefactor * V_sq * (nk_mag - nq_mag)
+    cuda.atomic.add(gamma_phon, p_idx * num_phon_branches + lam, gamma_p)
 
 
 
@@ -1900,7 +1889,7 @@ if __name__ == "__main__":
     slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
-    mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.h5"
+    mesh_bccFe = "Inputs/bccFe/combined_band_12x12x12.h5"
     mesh_CrI3 = "Inputs/CrI3/combined_band_20x20x20.h5"
     mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
@@ -1917,14 +1906,14 @@ if __name__ == "__main__":
     anisotropy_CrI3 = 0.0 * 0.49
     anisotropy_CrSb = 0.0001
 
-    anisotropy = anisotropy_bccFe
-    lattice_constant = lattice_constant_bccFe
-    mesh = mesh_bccFe
-    Jijs = Jijs_bccFe
-    slc_files = slc_files_bccFe
-    band = band_bccFe
+    anisotropy = anisotropy_CrI3
+    lattice_constant = lattice_constant_CrI3
+    mesh = mesh_CrI3
+    Jijs = Jijs_CrI3
+    slc_files = slc_files_CrI3
+    band = band_CrI3
 
-    smearing = 2.0
+    smearing = 1.0
     
     crystal_data = CrystalDataSoA(
         mesh, 
@@ -1975,7 +1964,7 @@ if __name__ == "__main__":
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
     
-    anticipated_fraction = 0.07
+    anticipated_fraction = 0.01
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
@@ -1991,8 +1980,8 @@ if __name__ == "__main__":
     blocks_per_grid = math.ceil(N_points / threads_per_block)
 
     # Setup temperatures and initial populations
-    T_mag_init = 300
-    T_phon_init = 300
+    T_mag_init = 40
+    T_phon_init = 40
     
     print(f"\nInitializing populations at thermal equilibrium:")
     print(f" -> Magnons: {T_mag_init} K")
@@ -2211,8 +2200,8 @@ if __name__ == "__main__":
     # ========================== Time-evolution Phase ==========================
     
     # Setup temperatures
-    T_mag_init = 600
-    T_phon_init = 300
+    T_mag_init = 50
+    T_phon_init = 40
     
     print(f"\nInitializing populations for the dynamics:")
     print(f" -> Magnons: {T_mag_init} K")
