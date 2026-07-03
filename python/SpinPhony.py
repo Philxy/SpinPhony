@@ -1058,10 +1058,11 @@ class CrystalDataSoA:
 def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map, 
                     path_q_frac, path_q_cart, path_w_phon, path_w_mag, path_eig_phon,
                     w_phon_grid, w_mag_grid, eig_phon_grid,
+                    grad_f_phon, grad_f_mag,
                     slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
                     smearing, chan_indices, chan_weights, channel_count, 
                     atom_masses, mag_moments, gamma_idx):
-    """Scans phase space integrating exact path points against the BZ grid."""
+    """Scans phase space integrating exact path points against the BZ grid using Adaptive Broadening."""
     path_idx, k_idx = cuda.grid(2)
     
     if path_idx >= path_q_frac.shape[0] or k_idx >= grid_q_frac.shape[0]: 
@@ -1069,9 +1070,6 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
         
     n_mag = path_w_mag.shape[1]
     n_phon = path_w_phon.shape[1]
-    cutoff = 2.0 * smearing
-    erf_val = math.erf(cutoff / (smearing * math.sqrt(2.0)))
-    gaussian_norm = 1.0 / (smearing * math.sqrt(2.0 * math.pi) * erf_val) # we account for cutoff when normalizing the Gaussian
     
     # 1. Kinematics mapping: q(path) - k(grid) -> p(grid nearest neighbor)
     px_int = int(math.floor(((path_q_frac[path_idx, 0] - grid_q_frac[k_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
@@ -1091,48 +1089,75 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
         for m in range(n_mag):
             for lam in range(n_phon):
                 
+                # ---------------------------------------------------------
                 # 0: Magnon Emission (Magnon on path -> Magnon + Phonon on grid)
-                dE = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] - w_phon_grid[idx_qmink, lam]
-                if abs(dE) < cutoff:
-                    weight = gaussian_norm * math.exp(-0.5 * (dE*dE) / (smearing*smearing))
+                # ---------------------------------------------------------
+                dE_0 = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] - w_phon_grid[idx_qmink, lam]
+                var_0 = 0.0
+                for i in range(3):
+                    d_g = -grad_f_mag[k_idx, m, i] + grad_f_phon[idx_qmink, lam, i]
+                    step_w = d_g / mesh[i]
+                    var_0 += step_w * step_w
+                
+                sigma_raw_0 = smearing * math.sqrt(var_0 / 12.0)
+                sigma_0 = sigma_raw_0 if sigma_raw_0 > 1e-5 else 1e-5
+                cutoff_0 = 3.0 * sigma_0
+                
+                if abs(dE_0) < cutoff_0:
+                    weight = (0.40003 / sigma_0) * math.exp(-0.5 * (dE_0*dE_0) / (sigma_0*sigma_0))
                     kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
                     qx, qy, qz = grid_q_cart[idx_qmink, 0], grid_q_cart[idx_qmink, 1], grid_q_cart[idx_qmink, 2]
-                    
-                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m,
-                                            slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                                            eig_phon_grid[idx_qmink], w_phon_grid[idx_qmink, lam], atom_masses, mag_moments)
+                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_qmink], w_phon_grid[idx_qmink, lam], atom_masses, mag_moments)
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
                         chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
                         chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                         chan_weights[c_idx] = V_sq * weight
 
+                # ---------------------------------------------------------
                 # 1: Magnon Absorption (Magnon on path + Phonon on grid -> Magnon on grid)
-                dE = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] + w_phon_grid[idx_kminq, lam]
-                if abs(dE) < cutoff:
-                    weight = gaussian_norm * math.exp(-0.5 * (dE*dE) / (smearing*smearing))
+                # ---------------------------------------------------------
+                dE_1 = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] + w_phon_grid[idx_kminq, lam]
+                var_1 = 0.0
+                for i in range(3):
+                    d_g = -grad_f_mag[k_idx, m, i] + grad_f_phon[idx_kminq, lam, i]
+                    step_w = d_g / mesh[i]
+                    var_1 += step_w * step_w
+                
+                sigma_raw_1 = smearing * math.sqrt(var_1 / 12.0)
+                sigma_1 = sigma_raw_1 if sigma_raw_1 > 1e-5 else 1e-5
+                cutoff_1 = 3.0 * sigma_1
+                
+                if abs(dE_1) < cutoff_1:
+                    weight = (0.40003 / sigma_1) * math.exp(-0.5 * (dE_1*dE_1) / (sigma_1*sigma_1))
                     kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
                     qx, qy, qz = grid_q_cart[idx_kminq, 0], grid_q_cart[idx_kminq, 1], grid_q_cart[idx_kminq, 2]
-                    
-                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, m, n,
-                                            slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                                            eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
+                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, m, n, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
                         chan_indices[0, c_idx] = 1; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
                         chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                         chan_weights[c_idx] = V_sq * weight
 
+                # ---------------------------------------------------------
                 # 2: Phonon Scattering (Phonon on path + Magnon on grid -> Magnon on grid)
-                dE = path_w_phon[path_idx, lam] + w_mag_grid[idx_kminq, m] - w_mag_grid[k_idx, n]
-                if abs(dE) < cutoff:
-                    weight = gaussian_norm * math.exp(-0.5 * (dE*dE) / (smearing*smearing))
+                # ---------------------------------------------------------
+                dE_2 = path_w_phon[path_idx, lam] + w_mag_grid[idx_kminq, m] - w_mag_grid[k_idx, n]
+                var_2 = 0.0
+                for i in range(3):
+                    d_g = grad_f_mag[idx_kminq, m, i] - grad_f_mag[k_idx, n, i]
+                    step_w = d_g / mesh[i]
+                    var_2 += step_w * step_w
+                
+                sigma_raw_2 = smearing * math.sqrt(var_2 / 12.0)
+                sigma_2 = sigma_raw_2 if sigma_raw_2 > 1e-5 else 1e-5
+                cutoff_2 = 3.0 * sigma_2
+                
+                if abs(dE_2) < cutoff_2:
+                    weight = (0.40003 / sigma_2) * math.exp(-0.5 * (dE_2*dE_2) / (sigma_2*sigma_2))
                     kpx, kpy, kpz = grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2]
                     qx, qy, qz = -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2]
-                    
-                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m,
-                                            slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                                            path_eig_phon[path_idx], path_w_phon[path_idx, lam], atom_masses, mag_moments)
+                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, path_eig_phon[path_idx], path_w_phon[path_idx, lam], atom_masses, mag_moments)
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
                         chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
@@ -1414,17 +1439,12 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
     qy_qmink = (q_grid[q_idx, 1] - q_grid[k_idx, 1] + mesh[1]) % mesh[1]
     qz_qmink = (q_grid[q_idx, 2] - q_grid[k_idx, 2] + mesh[2]) % mesh[2]
     idx_qmink = grid_map[qx_qmink, qy_qmink, qz_qmink]
-    
-    qx_kminq = (q_grid[k_idx, 0] - q_grid[q_idx, 0] + mesh[0]) % mesh[0]
-    qy_kminq = (q_grid[k_idx, 1] - q_grid[q_idx, 1] + mesh[1]) % mesh[1]
-    qz_kminq = (q_grid[k_idx, 2] - q_grid[q_idx, 2] + mesh[2]) % mesh[2]
-    idx_kminq = grid_map[qx_kminq, qy_kminq, qz_kminq]
 
     for n in range(n_mag):
         for m in range(n_mag):
             for lam in range(n_phon):
                 
-                #---------------------------------------------------------
+                # ---------------------------------------------------------
                 # Process 0 (Unified): M(q) <--> M(k) + Ph(q-k)
                 # ---------------------------------------------------------
                 dE = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
@@ -1435,16 +1455,14 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     step_width = d_g / mesh[i]
                     variance += step_width * step_width
                 
-                # ShengBTE Eq 18: Multiplicative scalebroad (base_smearing)
-                sigma_grid = math.sqrt(variance / 12.0)
-                
-                # Apply scaling and a strict minimum floor to protect flat bands
-                sigma = max(base_smearing * sigma_grid, 1e-5)
+                # Numba-safe replacement for max() to prevent Signature Mismatch
+                sigma_raw = base_smearing * math.sqrt(variance / 12.0)
+                sigma = sigma_raw if sigma_raw > 1e-5 else 1e-5
                 cutoff = 3.0 * sigma 
 
                 if abs(dE) < cutoff:
-                    #  normalizes the 4-sigma truncated Gaussian
-                    gaussian_norm = 0.40002167 / sigma
+                    # 0.40003 normalizes the 3-sigma truncated Gaussian
+                    gaussian_norm = 0.40003 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
                     kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
@@ -1459,114 +1477,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                         chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
                         chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                         chan_weights[c_idx] = V_sq * delta_weight
-    """
-    for n in range(n_mag):
-        for m in range(n_mag):
-            for lam in range(n_phon):
-                
-                # ---------------------------------------------------------
-                # Process 0: Magnon Emission
-                # k' = q, p = q - k
-                # ---------------------------------------------------------
-                dE = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
-                
-                variance = 0.0
-                for i in range(3):
-                    d_g = -grad_f_mag[k_idx, m, i] + grad_f_phon[idx_qmink, lam, i]
-                    step_width = d_g / mesh[i]
-                    variance += step_width * step_width
-                
-                sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
-                cutoff = 3.0 * sigma 
 
-                if abs(dE) < cutoff:
-                    gaussian_norm = 0.40003 / sigma
-                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
-                    
-                    # Exact continuous Cartesian vectors for FT
-                    kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
-                    qx = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
-                    qy = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
-                    qz = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
-                    
-                    V_sq = calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
-
-                    c_idx = cuda.atomic.add(channel_count, 0, 1)
-                    if c_idx < chan_indices.shape[1]:
-                        chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
-                        chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
-                        chan_weights[c_idx] = V_sq * delta_weight
-                        
-                # ---------------------------------------------------------
-                # Process 1: Magnon Absorption
-                # k' = q, p = k - q
-                # ---------------------------------------------------------
-                dE = w_mag[q_idx, n] - w_mag[k_idx, m] + w_phon[idx_kminq, lam]
-                
-                variance = 0.0
-                for i in range(3):
-                    d_g = grad_f_phon[idx_kminq, lam, i] - grad_f_mag[k_idx, m, i]
-                    step_width = d_g / mesh[i]
-                    variance += step_width * step_width
-                
-                sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
-                cutoff = 3.0 * sigma 
-
-                if abs(dE) < cutoff:
-                    gaussian_norm = 0.40003 / sigma
-                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
-                    
-                    # Exact continuous Cartesian vectors for FT
-                    kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
-                    qx = q_grid_cart[k_idx, 0] - q_grid_cart[q_idx, 0]
-                    qy = q_grid_cart[k_idx, 1] - q_grid_cart[q_idx, 1]
-                    qz = q_grid_cart[k_idx, 2] - q_grid_cart[q_idx, 2]
-                    
-                    # m, n are swapped analytically for absorption
-                    V_sq = calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, idx_kminq, lam, m, n, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
-
-                    c_idx = cuda.atomic.add(channel_count, 0, 1)
-                    if c_idx < chan_indices.shape[1]:
-                        chan_indices[0, c_idx] = 1; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
-                        chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
-                        chan_weights[c_idx] = V_sq * delta_weight
-                        
-                # ---------------------------------------------------------
-                # Process 2: Phonon Emission
-                # k' = k, p = -q
-                # ---------------------------------------------------------
-                dE = w_phon[q_idx, lam] + w_mag[idx_kminq, m] - w_mag[k_idx, n]
-                
-                variance = 0.0
-                for i in range(3):
-                    d_g = grad_f_mag[idx_kminq, m, i] - grad_f_mag[k_idx, n, i]
-                    step_width = d_g / mesh[i]
-                    variance += step_width * step_width
-                
-                sigma = math.sqrt(variance / 12.0 + base_smearing * base_smearing)
-                cutoff = 3.0 * sigma 
-
-                if abs(dE) < cutoff:
-                    gaussian_norm = 0.40003 / sigma
-                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
-
-                    qx_minq = (-q_grid[q_idx, 0] + mesh[0]) % mesh[0]
-                    qy_minq = (-q_grid[q_idx, 1] + mesh[1]) % mesh[1]
-                    qz_minq = (-q_grid[q_idx, 2] + mesh[2]) % mesh[2]
-                    idx_minus_q = grid_map[qx_minq, qy_minq, qz_minq]
-
-                    # Exact continuous Cartesian vectors for FT
-                    kpx, kpy, kpz = q_grid_cart[k_idx, 0], q_grid_cart[k_idx, 1], q_grid_cart[k_idx, 2]
-                    qx, qy, qz = -q_grid_cart[q_idx, 0], -q_grid_cart[q_idx, 1], -q_grid_cart[q_idx, 2]
-
-                    V_sq = calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, idx_minus_q, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
-
-                    c_idx = cuda.atomic.add(channel_count, 0, 1)
-                    if c_idx < chan_indices.shape[1]:
-                        chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
-                        chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
-                        chan_weights[c_idx] = V_sq * delta_weight
-        """
 
 """
 @cuda.jit
@@ -2029,10 +1940,12 @@ if __name__ == "__main__":
         gpu_data["mesh"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
         d_path_q_frac, d_path_q_cart, d_path_w_phon, d_path_w_mag, d_path_eig_phon,
         gpu_data["w_phon"], gpu_data["w_mag"], gpu_data["eig_phon"],
+        gpu_data["grad_f_phon"], gpu_data["grad_f_mag"], # <--- INSERTED THESE TWO HERE
         gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"], 
         smearing, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
         gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
     )
+    
     cuda.synchronize()
     
     path_num_channels = d_path_channel_count.copy_to_host()[0]
