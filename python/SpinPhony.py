@@ -525,13 +525,8 @@ class CrystalDataSoA:
                 
         return w_hyb, eig_hyb
     
+    """
     def _compute_group_velocities(self):
-        """
-        Computes the fractional gradients of the energies ∇_f ω for magnons and phonons.
-        This is strictly required for the Adaptive Gaussian Broadening method.
-        Uses central finite differences with periodic Brillouin Zone boundaries.
-        """
-        print(" -> Computing fractional energy gradients for Adaptive Broadening...")
         
         self.grad_f_phon = np.zeros((self.N, self.phon_branches, 3), dtype=np.float64)
         self.grad_f_mag = np.zeros((self.N, self.n_mag_branches, 3), dtype=np.float64)
@@ -558,7 +553,86 @@ class CrystalDataSoA:
         self.grad_f_mag[:, :, 0] = (self.w_mag[idx_x_plus] - self.w_mag[idx_x_minus]) * (N_x / 2.0)
         self.grad_f_mag[:, :, 1] = (self.w_mag[idx_y_plus] - self.w_mag[idx_y_minus]) * (N_y / 2.0)
         self.grad_f_mag[:, :, 2] = (self.w_mag[idx_z_plus] - self.w_mag[idx_z_minus]) * (N_z / 2.0)
+        """
 
+        
+
+    def _compute_group_velocities(self):
+        """
+        Computes the fractional gradients of the energies ∇_f ω for magnons and phonons.
+        Uses central finite differences with periodic Brillouin Zone boundaries, 
+        incorporating an Eigenvector Band Tracking algorithm to completely solve the 
+        band-crossing/sorting problem and stabilize adaptive smearing.
+        """
+        from scipy.optimize import linear_sum_assignment
+        print(" -> Computing fractional energy gradients using Eigenvector Band Tracking...")
+        
+        self.grad_f_phon = np.zeros((self.N, self.phon_branches, 3), dtype=np.float64)
+        self.grad_f_mag = np.zeros((self.N, self.n_mag_branches, 3), dtype=np.float64)
+        
+        N_x, N_y, N_z = self.mesh
+        
+        # 1. Prepare eigenvector matrices for tracking (Reshape to [N, Dimension, Branches])
+        # Phonons: Flatten the atomic XYZ components into a single vector dimension
+        eig_phon_mat = self.eig_phon.reshape(self.N, self.phon_branches, -1).transpose(0, 2, 1)
+        
+        # Magnons: Extract only the positive physical states (first half of columns)
+        if self.n_mag_branches > 0:
+            eig_mag_mat = self.eig_mag[:, :, :self.n_mag_branches]
+
+        # 2. Helper function to map continuous energies across grid points
+        def get_tracked_w(q_idx, neighbor_idx, w_array, eig_mat):
+            e_q = eig_mat[q_idx]          # Shape: (Dim, Branches)
+            e_n = eig_mat[neighbor_idx]   # Shape: (Dim, Branches)
+            
+            # Compute cross-overlap matrix between all branches
+            overlap = np.abs(np.dot(e_q.conj().T, e_n))**2
+            
+            # Hungarian algorithm finds the optimal 1-to-1 branch mapping maximizing overlap
+            # (We minimize negative overlap)
+            row_ind, col_ind = linear_sum_assignment(-overlap)
+            
+            # Return the neighbor energies sorted to perfectly match the branch order at q_idx
+            return w_array[neighbor_idx, col_ind]
+
+        # 3. Calculate tracked finite differences
+        for q_idx in range(self.N):
+            qx, qy, qz = self.q_grid[q_idx]
+            
+            # Identify periodic neighbors
+            idx_x_plus = self.grid_map[(qx + 1) % N_x, qy, qz]
+            idx_x_minus = self.grid_map[(qx - 1) % N_x, qy, qz]
+            idx_y_plus = self.grid_map[qx, (qy + 1) % N_y, qz]
+            idx_y_minus = self.grid_map[qx, (qy - 1) % N_y, qz]
+            idx_z_plus = self.grid_map[qx, qy, (qz + 1) % N_z]
+            idx_z_minus = self.grid_map[qx, qy, (qz - 1) % N_z]
+            
+            # --- Track Phonon Gradients ---
+            w_x_p = get_tracked_w(q_idx, idx_x_plus, self.w_phon, eig_phon_mat)
+            w_x_m = get_tracked_w(q_idx, idx_x_minus, self.w_phon, eig_phon_mat)
+            self.grad_f_phon[q_idx, :, 0] = (w_x_p - w_x_m) * (N_x / 2.0)
+            
+            w_y_p = get_tracked_w(q_idx, idx_y_plus, self.w_phon, eig_phon_mat)
+            w_y_m = get_tracked_w(q_idx, idx_y_minus, self.w_phon, eig_phon_mat)
+            self.grad_f_phon[q_idx, :, 1] = (w_y_p - w_y_m) * (N_y / 2.0)
+            
+            w_z_p = get_tracked_w(q_idx, idx_z_plus, self.w_phon, eig_phon_mat)
+            w_z_m = get_tracked_w(q_idx, idx_z_minus, self.w_phon, eig_phon_mat)
+            self.grad_f_phon[q_idx, :, 2] = (w_z_p - w_z_m) * (N_z / 2.0)
+            
+            # --- Track Magnon Gradients ---
+            if self.n_mag_branches > 0:
+                w_x_p = get_tracked_w(q_idx, idx_x_plus, self.w_mag, eig_mag_mat)
+                w_x_m = get_tracked_w(q_idx, idx_x_minus, self.w_mag, eig_mag_mat)
+                self.grad_f_mag[q_idx, :, 0] = (w_x_p - w_x_m) * (N_x / 2.0)
+                
+                w_y_p = get_tracked_w(q_idx, idx_y_plus, self.w_mag, eig_mag_mat)
+                w_y_m = get_tracked_w(q_idx, idx_y_minus, self.w_mag, eig_mag_mat)
+                self.grad_f_mag[q_idx, :, 1] = (w_y_p - w_y_m) * (N_y / 2.0)
+                
+                w_z_p = get_tracked_w(q_idx, idx_z_plus, self.w_mag, eig_mag_mat)
+                w_z_m = get_tracked_w(q_idx, idx_z_minus, self.w_mag, eig_mag_mat)
+                self.grad_f_mag[q_idx, :, 2] = (w_z_p - w_z_m) * (N_z / 2.0)
 
 
     def load_and_evaluate_path_hdf5(self, hdf5_path_file, K_anisotropy=0.01, lattice_constant=1.0):
