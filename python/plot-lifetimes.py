@@ -4,8 +4,7 @@ import numpy as np
 
 filename = "Outputs/equilibrium_lifetimes.csv"
 
-# header of file: "q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps"
-
+# header of file: "q_idx,qx,qy,qz,particle,branch,energy_meV,vx,vy,vz,gamma_ps-1,tau_ps"
 
 literature_scattering_rates = """3.5330366949927345, 0.09102981779915223
 7.1097094323124335, 0.21363397911526588
@@ -52,27 +51,31 @@ literature_scattering_rates = """3.5330366949927345, 0.09102981779915223
 446.0491499417328, 5.9852192324297695
 491.3127387829667, 7.708505252846041"""
 
-
-# plot energy of magnons vs lifetime. Only lines with particle="magnon" should be plotted. Use log-log scale for better visualization.
+# Load full dataset
 df = pd.read_csv(filename)
-df = df[df["particle"] == "magnon"]
-plt.figure(figsize=(8, 6))
+df_mag = df[df["particle"] == "magnon"]
+df_phon = df[df["particle"] == "phonon"]
 
-plt.scatter(
-    df["energy_meV"], df["tau_ps"], s=10, alpha=0.7, label="Current work"
+# Create 1x2 subplots for Lifetimes
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+# ==========================================
+# 1. Magnon Lifetime Plot
+# ==========================================
+axes[0].scatter(
+    df_mag["energy_meV"], df_mag["tau_ps"], s=10, alpha=0.7, label="Current work"
 )
 
-
-# plot the literature lifetimes in the same plot for comparison
+# Plot the literature lifetimes in the same plot for comparison
 literature_data = pd.DataFrame(
     [line.split(",") for line in literature_scattering_rates.split("\n")],
     columns=["energy_meV", "gamma_pps"],
 )
 literature_data["energy_meV"] = literature_data["energy_meV"].astype(float)
 literature_data["gamma_pps"] = literature_data["gamma_pps"].astype(float)
-tau_lit = 1.0 / literature_data["gamma_pps"].astype(float)
+tau_lit = 1.0 / literature_data["gamma_pps"]
 
-plt.scatter(
+axes[0].scatter(
     literature_data["energy_meV"],
     tau_lit,
     s=10,
@@ -81,19 +84,14 @@ plt.scatter(
     label="Literature",
 )
 
-
 # --- ADD POWER LAW SCALING COMPARISON LINES ---
-# Define an energy range to display the reference lines
 E_min, E_max = 5.0, 300.0
 E_line = np.logspace(np.log10(E_min), np.log10(E_max), 100)
-
-# Anchor point to position lines visually alongside the data
 E_ref = 10.0
 tau_ref = 3.0
 
-# E^-2 scaling line (corresponding to scattering rate gamma proportional to E^2)
 tau_E2 = tau_ref * (E_line / E_ref) ** (-2)
-plt.plot(
+axes[0].plot(
     E_line,
     tau_E2,
     label=r"$\tau \propto E^{-2}$ ($\gamma \propto E^2$)",
@@ -102,9 +100,8 @@ plt.plot(
     linewidth=1.5,
 )
 
-# E^-1 scaling line (corresponding to scattering rate gamma proportional to E^1)
 tau_E1 = tau_ref * (E_line / E_ref) ** (-1)
-plt.plot(
+axes[0].plot(
     E_line,
     tau_E1,
     label=r"$\tau \propto E^{-1}$ ($\gamma \propto E^1$)",
@@ -112,20 +109,39 @@ plt.plot(
     linestyle="-.",
     linewidth=1.5,
 )
-# ----------------------------------------------
 
+axes[0].set_xscale("log")
+axes[0].set_yscale("log")
+axes[0].set_xlabel("Energy (meV)")
+axes[0].set_ylabel("Lifetime (ps)")
+axes[0].set_title("Magnon Lifetimes vs Energy")
+axes[0].grid(True, which="both", ls="--", lw=0.5)
+axes[0].legend()
 
-plt.xscale("log")
-plt.yscale("log")
-plt.xlabel("Energy (meV)")
-plt.ylabel("Lifetime (ps)")
-plt.title("Magnon Lifetimes vs Energy")
-plt.grid(True, which="both", ls="--", lw=0.5)
-plt.legend()
+# ==========================================
+# 2. Phonon Lifetime Plot
+# ==========================================
+axes[1].scatter(
+    df_phon["energy_meV"], df_phon["tau_ps"], s=10, alpha=0.5, color="green", label="Current work"
+)
+
+axes[1].set_xscale("log")
+axes[1].set_yscale("log")
+axes[1].set_xlabel("Energy (meV)")
+axes[1].set_ylabel("Lifetime (ps)")
+axes[1].set_title("Phonon Lifetimes vs Energy")
+axes[1].grid(True, which="both", ls="--", lw=0.5)
+axes[1].legend()
+
 plt.tight_layout()
 plt.savefig("Outputs/lifetimes_vs_energy.png", dpi=300)
+print("-> Saved lifetime plots to Outputs/lifetimes_vs_energy.png")
 plt.show()
 
+
+# ==========================================
+# Group Velocities Plotting Function
+# ==========================================
 def plot_group_velocities(filename="Outputs/equilibrium_lifetimes.csv"):
     df = pd.read_csv(filename)
     
