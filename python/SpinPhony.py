@@ -1800,7 +1800,7 @@ if __name__ == "__main__":
     slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
-    mesh_bccFe = "Inputs/bccFe/combined_band_12x12x12.h5"
+    mesh_bccFe = "Inputs/bccFe/grid_40x40x40.h5"
     mesh_CrI3 = "Inputs/CrI3/grid_12x12x12.h5"
     mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
@@ -1817,12 +1817,12 @@ if __name__ == "__main__":
     anisotropy_CrI3 = 0.0 * 0.49
     anisotropy_CrSb = 0.0001
 
-    anisotropy = anisotropy_CrI3
-    lattice_constant = lattice_constant_CrI3
-    mesh = mesh_CrI3
-    Jijs = Jijs_CrI3
-    slc_files = slc_files_CrI3
-    band = band_CrI3
+    anisotropy = anisotropy_bccFe
+    lattice_constant = lattice_constant_bccFe
+    mesh = mesh_bccFe
+    Jijs = Jijs_bccFe
+    slc_files = slc_files_bccFe
+    band = band_bccFe
 
     smearing = 1.0
     
