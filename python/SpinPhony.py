@@ -1801,7 +1801,7 @@ if __name__ == "__main__":
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
     mesh_bccFe = "Inputs/bccFe/combined_band_12x12x12.h5"
-    mesh_CrI3 = "Inputs/CrI3/combined_band_20x20x20.h5"
+    mesh_CrI3 = "Inputs/CrI3/grid_12x12x12.h5"
     mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
     Jijs_CrI3 = "Inputs/CrI3/JijCrI3_sergey.dat" #"Inputs/CrI3/JijCrI3.dat" # #
@@ -2149,6 +2149,8 @@ if __name__ == "__main__":
     current_time = 0.0
     base_dt = 1e-5       # Target ideal dt in ps
     max_fraction = 0.05  # Strict limit: No population can change > 5% per step
+    safe_dt = 1E-6    
+
 
     for step in range(steps):
         
@@ -2174,7 +2176,7 @@ if __name__ == "__main__":
         #n_phon_cpu = d_n_phon.copy_to_host()
         
         # FIX: Introduce a population floor (e.g., 0.01) so empty states don't cause infinite fractional rates
-        pop_floor = 1e-2
+        #pop_floor = 1e-2
         #max_rate_mag = np.max(np.abs(dn_mag_cpu) / np.maximum(n_mag_cpu.ravel(), pop_floor))
         #max_rate_phon = np.max(np.abs(dn_phon_cpu) / np.maximum(n_phon_cpu.ravel(), pop_floor))
         #max_rate = max(max_rate_mag, max_rate_phon)
@@ -2185,10 +2187,9 @@ if __name__ == "__main__":
         #   safe_dt = base_dt
             
             
-        safe_dt = 1E-5    
             
         # 3. CPU Interaction & Correctly Placed Debug Block
-        if step % 10000 == 0:
+        if step % 1000 == 0:
             n_mag_cpu = d_n_mag.copy_to_host()
             n_phon_cpu = d_n_phon.copy_to_host()
             compute_and_write_observables(
