@@ -283,9 +283,16 @@ class CrystalDataSoA:
         exp_phases_k = np.exp(1j * phases) * J_val_arr
         exp_phases_m_k = np.exp(-1j * phases) * J_val_arr
 
+        # Prepare base matrices and analytical derivative matrices
+        B = self.reciprocal_lattice * 2.0 * np.pi
+        B_dot_r = np.dot(B, r_cart_arr.T) # Shape: (3, num_bonds)
+        
+
         # 4. Accumulate J_k and J_m_k for all q-points
         J_k_all = np.zeros((self.N, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
         J_m_k_all = np.zeros((self.N, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+        dJ_k_all = np.zeros((3, self.N, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+        dJ_m_k_all = np.zeros((3, self.N, self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
         
         for b_idx in range(len(valid_bonds)):
             mi, mj = mag_i_arr[b_idx], mag_j_arr[b_idx]
@@ -332,6 +339,26 @@ class CrystalDataSoA:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
                 self.w_mag[q_idx] = energies
                 self.eig_mag[q_idx] = para_unitary
+
+                # --- Hellmann-Feynman Analytical Gradient ---
+                for alpha in range(3):
+                    dOmega_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+                    dOmega_m_k = np.zeros((self.n_mag_branches, self.n_mag_branches), dtype=np.complex128)
+                    for i in range(self.n_mag_branches):
+                        for j in range(self.n_mag_branches):
+                            dOmega_k[i, j] = S_val * dJ_k_all[alpha, q_idx, i, j]
+                            dOmega_m_k[i, j] = S_val * dJ_m_k_all[alpha, q_idx, i, j]
+                            
+                    dH_BdG = np.zeros((2*self.n_mag_branches, 2*self.n_mag_branches), dtype=np.complex128)
+                    for m in range(self.n_mag_branches):
+                        for n in range(self.n_mag_branches):
+                            dH_BdG[m, n] = -dOmega_k[m, n]
+                            dH_BdG[self.n_mag_branches + m, self.n_mag_branches + n] = -dOmega_m_k[n, m]
+                    
+                    # Project exact operator derivative onto unperturbed eigenvectors
+                    grad_w = np.diag(para_unitary.conj().T @ dH_BdG @ para_unitary).real
+                    self.grad_f_mag[q_idx, :, alpha] = grad_w[:self.n_mag_branches]
+                    
             except RuntimeError as e:
                 print(f"Warning at q_idx {q_idx}: {e}")
                 self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
@@ -559,43 +586,17 @@ class CrystalDataSoA:
 
     def _compute_group_velocities(self):
         """
-        Computes the fractional gradients of the energies ∇_f ω for magnons and phonons.
-        Uses central finite differences with periodic Brillouin Zone boundaries, 
-        incorporating an Eigenvector Band Tracking algorithm to completely solve the 
-        band-crossing/sorting problem and stabilize adaptive smearing.
+        Computes the fractional gradients of the phonon energies ∇_f ω.
+        Instead of differentiating sorted eigenvalues (which causes massive artificial 
+        spikes at band crossings), we differentiate the dynamical matrix operator D(q) 
+        and project it onto the unperturbed eigenvectors using the Hellmann-Feynman theorem.
         """
-        from scipy.optimize import linear_sum_assignment
-        print(" -> Computing fractional energy gradients using Eigenvector Band Tracking...")
-        
+        print(" -> Computing phonon energy gradients via Hellmann-Feynman operator projection...", flush=True)
         self.grad_f_phon = np.zeros((self.N, self.phon_branches, 3), dtype=np.float64)
-        self.grad_f_mag = np.zeros((self.N, self.n_mag_branches, 3), dtype=np.float64)
         
         N_x, N_y, N_z = self.mesh
+        CONV_FACTOR = 15.633302 * 4.135667696 # Converts raw VASP D(q) unit directly to meV
         
-        # 1. Prepare eigenvector matrices for tracking (Reshape to [N, Dimension, Branches])
-        # Phonons: Flatten the atomic XYZ components into a single vector dimension
-        eig_phon_mat = self.eig_phon.reshape(self.N, self.phon_branches, -1).transpose(0, 2, 1)
-        
-        # Magnons: Extract only the positive physical states (first half of columns)
-        if self.n_mag_branches > 0:
-            eig_mag_mat = self.eig_mag[:, :, :self.n_mag_branches]
-
-        # 2. Helper function to map continuous energies across grid points
-        def get_tracked_w(q_idx, neighbor_idx, w_array, eig_mat):
-            e_q = eig_mat[q_idx]          # Shape: (Dim, Branches)
-            e_n = eig_mat[neighbor_idx]   # Shape: (Dim, Branches)
-            
-            # Compute cross-overlap matrix between all branches
-            overlap = np.abs(np.dot(e_q.conj().T, e_n))**2
-            
-            # Hungarian algorithm finds the optimal 1-to-1 branch mapping maximizing overlap
-            # (We minimize negative overlap)
-            row_ind, col_ind = linear_sum_assignment(-overlap)
-            
-            # Return the neighbor energies sorted to perfectly match the branch order at q_idx
-            return w_array[neighbor_idx, col_ind]
-
-        # 3. Calculate tracked finite differences
         for q_idx in range(self.N):
             qx, qy, qz = self.q_grid[q_idx]
             
@@ -607,32 +608,38 @@ class CrystalDataSoA:
             idx_z_plus = self.grid_map[qx, qy, (qz + 1) % N_z]
             idx_z_minus = self.grid_map[qx, qy, (qz - 1) % N_z]
             
-            # --- Track Phonon Gradients ---
-            w_x_p = get_tracked_w(q_idx, idx_x_plus, self.w_phon, eig_phon_mat)
-            w_x_m = get_tracked_w(q_idx, idx_x_minus, self.w_phon, eig_phon_mat)
-            self.grad_f_phon[q_idx, :, 0] = (w_x_p - w_x_m) * (N_x / 2.0)
+            # Get dynamical matrices at neighbors
+            D_x_p = self.dyn_mat_phon[idx_x_plus]
+            D_x_m = self.dyn_mat_phon[idx_x_minus]
+            D_y_p = self.dyn_mat_phon[idx_y_plus]
+            D_y_m = self.dyn_mat_phon[idx_y_minus]
+            D_z_p = self.dyn_mat_phon[idx_z_plus]
+            D_z_m = self.dyn_mat_phon[idx_z_minus]
             
-            w_y_p = get_tracked_w(q_idx, idx_y_plus, self.w_phon, eig_phon_mat)
-            w_y_m = get_tracked_w(q_idx, idx_y_minus, self.w_phon, eig_phon_mat)
-            self.grad_f_phon[q_idx, :, 1] = (w_y_p - w_y_m) * (N_y / 2.0)
+            # Finite difference of the OPERATOR (smooth, completely avoids sorting issues)
+            dD_dfx = (D_x_p - D_x_m) * (N_x / 2.0) * (CONV_FACTOR**2)
+            dD_dfy = (D_y_p - D_y_m) * (N_y / 2.0) * (CONV_FACTOR**2)
+            dD_dfz = (D_z_p - D_z_m) * (N_z / 2.0) * (CONV_FACTOR**2)
             
-            w_z_p = get_tracked_w(q_idx, idx_z_plus, self.w_phon, eig_phon_mat)
-            w_z_m = get_tracked_w(q_idx, idx_z_minus, self.w_phon, eig_phon_mat)
-            self.grad_f_phon[q_idx, :, 2] = (w_z_p - w_z_m) * (N_z / 2.0)
-            
-            # --- Track Magnon Gradients ---
-            if self.n_mag_branches > 0:
-                w_x_p = get_tracked_w(q_idx, idx_x_plus, self.w_mag, eig_mag_mat)
-                w_x_m = get_tracked_w(q_idx, idx_x_minus, self.w_mag, eig_mag_mat)
-                self.grad_f_mag[q_idx, :, 0] = (w_x_p - w_x_m) * (N_x / 2.0)
+            # Project using the eigenvector to extract the exact branch derivative
+            for b in range(self.phon_branches):
+                omega = self.w_phon[q_idx, b]
+                if omega < 1e-3:
+                    self.grad_f_phon[q_idx, b, :] = 0.0
+                    continue
+                    
+                # Reconstruct flat eigenvector from the (natom, 3) layout
+                e_b = self.eig_phon[q_idx, b].flatten()
                 
-                w_y_p = get_tracked_w(q_idx, idx_y_plus, self.w_mag, eig_mag_mat)
-                w_y_m = get_tracked_w(q_idx, idx_y_minus, self.w_mag, eig_mag_mat)
-                self.grad_f_mag[q_idx, :, 1] = (w_y_p - w_y_m) * (N_y / 2.0)
+                # Hellmann-Feynman: d(omega^2)/dx = e^\dagger dD/dx e
+                # Chain rule: d(omega)/dx = 1/(2*omega) * d(omega^2)/dx
+                grad_x2 = np.dot(e_b.conj().T, np.dot(dD_dfx, e_b)).real
+                grad_y2 = np.dot(e_b.conj().T, np.dot(dD_dfy, e_b)).real
+                grad_z2 = np.dot(e_b.conj().T, np.dot(dD_dfz, e_b)).real
                 
-                w_z_p = get_tracked_w(q_idx, idx_z_plus, self.w_mag, eig_mag_mat)
-                w_z_m = get_tracked_w(q_idx, idx_z_minus, self.w_mag, eig_mag_mat)
-                self.grad_f_mag[q_idx, :, 2] = (w_z_p - w_z_m) * (N_z / 2.0)
+                self.grad_f_phon[q_idx, b, 0] = grad_x2 / (2.0 * omega)
+                self.grad_f_phon[q_idx, b, 1] = grad_y2 / (2.0 * omega)
+                self.grad_f_phon[q_idx, b, 2] = grad_z2 / (2.0 * omega)
 
 
     def load_and_evaluate_path_hdf5(self, hdf5_path_file, K_anisotropy=0.01, lattice_constant=1.0):
