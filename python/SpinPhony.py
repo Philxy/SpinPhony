@@ -365,6 +365,7 @@ class CrystalDataSoA:
                             dH_BdG[self.n_mag_branches + m, self.n_mag_branches + n] = -dOmega_m_k[n, m]
                     
                     # Project exact operator derivative onto unperturbed eigenvectors
+                    # Removed J_metric to enforce true para-unitary projection
                     grad_w = np.diag(para_unitary.conj().T @ dH_BdG @ para_unitary).real
                     self.grad_f_mag[q_idx, :, alpha] = grad_w[:self.n_mag_branches]
 
@@ -596,11 +597,11 @@ class CrystalDataSoA:
     def _compute_group_velocities(self):
         """
         Computes the fractional gradients of the phonon energies ∇_f ω.
-        Instead of differentiating sorted eigenvalues (which causes massive artificial 
-        spikes at band crossings), we differentiate the dynamical matrix operator D(q) 
-        and project it onto the unperturbed eigenvectors using the Hellmann-Feynman theorem.
+        Instead of differentiating sorted eigenvalues, we differentiate the 
+        dynamical matrix operator D(q) and project it onto the unperturbed 
+        eigenvectors using the Hellmann-Feynman theorem.
         """
-        print(" -> Computing phonon energy gradients via Hellmann-Feynman operator projection...", flush=True)
+        print(" -> Computing exact phonon energy gradients via Hellmann-Feynman projection...", flush=True)
         self.grad_f_phon = np.zeros((self.N, self.phon_branches, 3), dtype=np.float64)
         
         N_x, N_y, N_z = self.mesh
@@ -618,17 +619,25 @@ class CrystalDataSoA:
             idx_z_minus = self.grid_map[qx, qy, (qz - 1) % N_z]
             
             # Get dynamical matrices at neighbors
+            # If wrapped across BZ boundary (e.g. qx - 1 < 0), D(-q) = D*(q)
             D_x_p = self.dyn_mat_phon[idx_x_plus]
-            D_x_m = self.dyn_mat_phon[idx_x_minus]
-            D_y_p = self.dyn_mat_phon[idx_y_plus]
-            D_y_m = self.dyn_mat_phon[idx_y_minus]
-            D_z_p = self.dyn_mat_phon[idx_z_plus]
-            D_z_m = self.dyn_mat_phon[idx_z_minus]
+            D_x_m = self.dyn_mat_phon[idx_x_minus].conj() if qx == 0 else self.dyn_mat_phon[idx_x_minus]
             
-            # Finite difference of the OPERATOR (smooth, completely avoids sorting issues)
+            D_y_p = self.dyn_mat_phon[idx_y_plus]
+            D_y_m = self.dyn_mat_phon[idx_y_minus].conj() if qy == 0 else self.dyn_mat_phon[idx_y_minus]
+            
+            D_z_p = self.dyn_mat_phon[idx_z_plus]
+            D_z_m = self.dyn_mat_phon[idx_z_minus].conj() if qz == 0 else self.dyn_mat_phon[idx_z_minus]
+            
+            # Central finite difference of the DYNAMICAL MATRIX
             dD_dfx = (D_x_p - D_x_m) * (N_x / 2.0) * (CONV_FACTOR**2)
             dD_dfy = (D_y_p - D_y_m) * (N_y / 2.0) * (CONV_FACTOR**2)
             dD_dfz = (D_z_p - D_z_m) * (N_z / 2.0) * (CONV_FACTOR**2)
+            
+            # Enforce hermiticity on the gradient operators to prevent imaginary noise
+            dD_dfx = 0.5 * (dD_dfx + dD_dfx.conj().T)
+            dD_dfy = 0.5 * (dD_dfy + dD_dfy.conj().T)
+            dD_dfz = 0.5 * (dD_dfz + dD_dfz.conj().T)
             
             # Project using the eigenvector to extract the exact branch derivative
             for b in range(self.phon_branches):
@@ -649,6 +658,9 @@ class CrystalDataSoA:
                 self.grad_f_phon[q_idx, b, 0] = grad_x2 / (2.0 * omega)
                 self.grad_f_phon[q_idx, b, 1] = grad_y2 / (2.0 * omega)
                 self.grad_f_phon[q_idx, b, 2] = grad_z2 / (2.0 * omega)
+        
+
+
 
 
     def load_and_evaluate_path_hdf5(self, hdf5_path_file, K_anisotropy=0.01, lattice_constant=1.0):
@@ -2202,8 +2214,8 @@ if __name__ == "__main__":
     # ========================== Time-evolution Phase ==========================
     
     # Setup temperatures
-    T_mag_init = 50
-    T_phon_init = 40
+    T_mag_init = 500
+    T_phon_init = 300
     
     print(f"\nInitializing populations for the dynamics:")
     print(f" -> Magnons: {T_mag_init} K")
@@ -2238,7 +2250,7 @@ if __name__ == "__main__":
     current_time = 0.0
     base_dt = 1e-5       # Target ideal dt in ps
     max_fraction = 0.05  # Strict limit: No population can change > 5% per step
-    safe_dt = 1E-6    
+    safe_dt = 1E-5    
 
 
     for step in range(steps):
