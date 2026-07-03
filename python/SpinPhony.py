@@ -358,7 +358,7 @@ class CrystalDataSoA:
                     # Project exact operator derivative onto unperturbed eigenvectors
                     grad_w = np.diag(para_unitary.conj().T @ dH_BdG @ para_unitary).real
                     self.grad_f_mag[q_idx, :, alpha] = grad_w[:self.n_mag_branches]
-                    
+
             except RuntimeError as e:
                 print(f"Warning at q_idx {q_idx}: {e}")
                 self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
@@ -2163,19 +2163,18 @@ if __name__ == "__main__":
     # 2. Write to CSV
     os.makedirs("Outputs", exist_ok=True)
     with open("Outputs/equilibrium_lifetimes.csv", "w") as f:
-        f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps\n")
-        
+        f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,vx,vy,vz,gamma_ps-1,tau_ps\n")
         # Write Magnon Lifetimes
         for q_idx in range(N_points):
             qx, qy, qz = crystal_data.q_grid[q_idx]
             for branch in range(crystal_data.n_mag_branches):
                 energy = crystal_data.w_mag[q_idx, branch]
                 gamma = gamma_mag_cpu[q_idx, branch]
-                
-                # Protect against divide-by-zero for non-scattering modes (or Gamma point)
+                vx = crystal_data.grad_f_mag[q_idx, branch, 0]
+                vy = crystal_data.grad_f_mag[q_idx, branch, 1]
+                vz = crystal_data.grad_f_mag[q_idx, branch, 2]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                
-                f.write(f"{q_idx},{qx},{qy},{qz},magnon,{branch},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
+                f.write(f"{q_idx},{qx},{qy},{qz},magnon,{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{gamma:.6e},{tau:.6e}\n")
                 
         # Write Phonon Lifetimes
         for q_idx in range(N_points):
@@ -2183,13 +2182,13 @@ if __name__ == "__main__":
             for branch in range(crystal_data.phon_branches):
                 energy = crystal_data.w_phon[q_idx, branch]
                 gamma = gamma_phon_cpu[q_idx, branch]
-                
+                vx = crystal_data.grad_f_phon[q_idx, branch, 0]
+                vy = crystal_data.grad_f_phon[q_idx, branch, 1]
+                vz = crystal_data.grad_f_phon[q_idx, branch, 2]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                
-                f.write(f"{q_idx},{qx},{qy},{qz},phonon,{branch},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
+                f.write(f"{q_idx},{qx},{qy},{qz},phonon,{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{gamma:.6e},{tau:.6e}\n")
 
-    print("-> Saved lifetimes to Outputs/equilibrium_lifetimes.csv")
-
+    print(f"-> Saved equilibrium lifetimes.", flush=True)
 
     # ========================== Time-evolution Phase ==========================
     
