@@ -2041,8 +2041,8 @@ if __name__ == "__main__":
     
     # Extract the final count BEFORE slicing
     num_channels = d_channel_count.copy_to_host()[0]
-    print(f"Allowed Channels found: {num_channels:,}")
-    print(f" -> Percentage of phase space allowed: {num_channels / total_loops:.2%}")
+    print(f"Allowed Channels found: {num_channels:,}", flush=True)
+    print(f" -> Percentage of phase space allowed: {num_channels / total_loops:.2%}", flush=True)
 
     # Slice the device arrays so Phase 2 ONLY iterates over valid channels
     # Slicing along the 2nd axis preserves the C-contiguous layout
