@@ -62,7 +62,9 @@ class CrystalDataSoA:
 
         # Cartesian conversion
         q_frac_array = self.q_grid / self.mesh
-        self.q_grid_cart = np.dot(q_frac_array, self.reciprocal_lattice * 2.0 * np.pi)
+        # Fold fractional coordinates strictly to [-0.5, 0.5) before Cartesian mapping
+        q_frac_centered = q_frac_array - np.round(q_frac_array)
+        self.q_grid_cart = np.dot(q_frac_centered, self.reciprocal_lattice * 2.0 * np.pi)
         
         # 4. Parse SLC Tensors
         if slc_files and len(slc_files) == 3:
@@ -1206,7 +1208,7 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                 cutoff_0 = 2.0 * sigma_0
                 
                 if abs(dE_0) < cutoff_0:
-                    weight = (0.40003 / sigma_0) * math.exp(-0.5 * (dE_0*dE_0) / (sigma_0*sigma_0))
+                    weight = (0.4179 / sigma_0) * math.exp(-0.5 * (dE_0*dE_0) / (sigma_0*sigma_0))
                     kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
                     qx, qy, qz = grid_q_cart[idx_qmink, 0], grid_q_cart[idx_qmink, 1], grid_q_cart[idx_qmink, 2]
                     V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_qmink], w_phon_grid[idx_qmink, lam], atom_masses, mag_moments)
@@ -1231,7 +1233,7 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                 cutoff_1 = 3.0 * sigma_1
                 
                 if abs(dE_1) < cutoff_1:
-                    weight = (0.40003 / sigma_1) * math.exp(-0.5 * (dE_1*dE_1) / (sigma_1*sigma_1))
+                    weight = (0.4179 / sigma_1) * math.exp(-0.5 * (dE_1*dE_1) / (sigma_1*sigma_1))
                     kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
                     qx, qy, qz = grid_q_cart[idx_kminq, 0], grid_q_cart[idx_kminq, 1], grid_q_cart[idx_kminq, 2]
                     V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, m, n, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
@@ -1256,7 +1258,7 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                 cutoff_2 = 3.0 * sigma_2
                 
                 if abs(dE_2) < cutoff_2:
-                    weight = (0.40003 / sigma_2) * math.exp(-0.5 * (dE_2*dE_2) / (sigma_2*sigma_2))
+                    weight = (0.4179 / sigma_2) * math.exp(-0.5 * (dE_2*dE_2) / (sigma_2*sigma_2))
                     kpx, kpy, kpz = grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2]
                     qx, qy, qz = -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2]
                     V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, path_eig_phon[path_idx], path_w_phon[path_idx, lam], atom_masses, mag_moments)
@@ -1408,7 +1410,7 @@ def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda
                     slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
                     eig_phon_q, omega, atom_masses, mag_moments):
     """Calculates the scattering vertex specifically for explicitly projected wavevectors."""
-    if omega < 1e-1: return 0.0
+    if omega < 0.5: return 0.0
     
     hbar = 0.6582119569 # meV * ps
     DALTON_TO_meV_PS2_PER_A2 = 0.10364269
@@ -1459,7 +1461,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     gamma_idx = grid_map[0, 0, 0]
     omega = w_phon[q_idx, lambda_phon]
     
-    if omega < 1e-1:
+    if omega < 0.5:
         return 0.0
 
 
@@ -1560,17 +1562,22 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 # Numba-safe replacement for max() to prevent Signature Mismatch
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
                 sigma = sigma_raw if sigma_raw > 1e-5 else 1e-5
-                cutoff = 3.0 * sigma 
+                cutoff = 2.0 * sigma
 
                 if abs(dE) < cutoff:
-                    # 0.40003 normalizes the 3-sigma truncated Gaussian
-                    gaussian_norm = 0.40003 / sigma
+                    # 0.4179 normalizes the 2-sigma Gaussian
+                    gaussian_norm = 0.4179 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
                     kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
-                    qx = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
-                    qy = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
-                    qz = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
+                    qx = q_grid_cart[idx_qmink, 0]
+                    qy = q_grid_cart[idx_qmink, 1]
+                    qz = q_grid_cart[idx_qmink, 2]
+
+
+                    #qx = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
+                    #qy = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
+                    #qz = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
                     
                     V_sq = calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
@@ -1926,7 +1933,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 50.0
+    smearing = 2.0
     
     crystal_data = CrystalDataSoA(
         mesh, 
