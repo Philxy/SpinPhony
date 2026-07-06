@@ -644,7 +644,7 @@ class CrystalDataSoA:
             # Project using the eigenvector to extract the exact branch derivative
             for b in range(self.phon_branches):
                 omega = self.w_phon[q_idx, b]
-                if omega < 1e-3:
+                if omega < 0.5:
                     self.grad_f_phon[q_idx, b, :] = 0.0
                     continue
                     
