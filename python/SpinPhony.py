@@ -1435,7 +1435,6 @@ def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda
         
         for mu in range(3):
             e_mu = eig_phon_q[lambda_phon, l, mu]
-            
             calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
             W_dynamic = (J_tilde_dyn[0, 0] + (sigma_n * sigma_m) * J_tilde_dyn[1, 1] - 1j * sigma_m * J_tilde_dyn[0, 1] + 1j * sigma_n * J_tilde_dyn[1, 0]) / math.sqrt(S_n * S_m)
             
@@ -1443,9 +1442,9 @@ def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda
             if n == m: 
                 for mp in range(num_mag_branches):
                     if math.fabs(mag_moments[mp]) > 1e-2:
-                        # REPLACED math.copysign with gpu_copysign
                         sigma_mp = gpu_copysign(1.0, mag_moments[mp])
                         calc_fourier_transform_vec(gammax, gammay, gammaz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        
                         W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2]
                         
             V_complex += disp_amp * e_mu * (W_dynamic - W_static)
@@ -1506,9 +1505,8 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
             if n == m: 
                 for mp in range(num_mag_branches):
                     if math.fabs(mag_moments[mp]) > 1e-2:
-                        # REPLACED math.copysign with gpu_copysign
                         sigma_mp = gpu_copysign(1.0, mag_moments[mp])
-                        calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                         W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] 
             
             W_tot = W_dynamic - W_static
