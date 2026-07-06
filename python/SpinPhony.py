@@ -1492,8 +1492,8 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
 
             J_xx = J_tilde_dyn[0, 0]
             J_yy = J_tilde_dyn[1, 1]
-            J_xy = J_tilde_dyn[0, 1]
-            J_yx = J_tilde_dyn[1, 0]
+            J_xy = 0.0 * J_tilde_dyn[0, 1]
+            J_yx = 0.0 * J_tilde_dyn[1, 0]
             
             W_dynamic = (J_xx + 
                          (sigma_n * sigma_m) * J_yy - 
@@ -1559,7 +1559,8 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 
                 # Numba-safe replacement for max() to prevent Signature Mismatch
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
-                sigma = sigma_raw if sigma_raw > 1e-5 else 1e-5
+                MIN_SIGMA = 0.1  # meV
+                sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
                 cutoff = 2.0 * sigma
 
                 if abs(dE) < cutoff:
