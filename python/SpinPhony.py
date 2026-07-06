@@ -1926,7 +1926,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 2.0
+    smearing = 1.5
     
     crystal_data = CrystalDataSoA(
         mesh, 
@@ -1975,8 +1975,7 @@ if __name__ == "__main__":
     d_path_eig_hyb = cuda.to_device(crystal_data.path_eig_hyb)
 
     # 2. Setup Phase 1 memory
-    N_points = crystal_data.N
-    
+    N_points = crystal_data.N 
 
     anticipated_fraction = 0.06
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
@@ -1988,7 +1987,7 @@ if __name__ == "__main__":
     # Row 4: n      | Row 5: m     | Row 6: lam
     d_chan_indices = cuda.device_array((7, max_channels), dtype=np.int32)
     d_chan_weights = cuda.device_array(max_channels, dtype=np.float64)
-    d_channel_count = cuda.to_device(np.zeros(1, dtype=np.int32))
+    d_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))
     
     threads_per_block = 256
     blocks_per_grid = math.ceil(N_points / threads_per_block)
