@@ -1926,7 +1926,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 0.5
+    smearing = 2.0
     
     crystal_data = CrystalDataSoA(
         mesh, 
@@ -1978,7 +1978,7 @@ if __name__ == "__main__":
     N_points = crystal_data.N
     
 
-    anticipated_fraction = 0.05
+    anticipated_fraction = 0.06
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
