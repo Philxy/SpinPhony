@@ -250,7 +250,7 @@ fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 # 1. Magnon Lifetime Plot
 # ==========================================
 axes[0].scatter(
-    df_mag["energy_meV"], df_mag["tau_ps"], s=10, alpha=0.7, label="Current work"
+    df_mag["energy_meV"], 2 * df_mag["tau_ps"], s=10, alpha=0.7, label="Current work"
 )
 
 # Plot the literature lifetimes in the same plot for comparison
@@ -309,7 +309,7 @@ axes[0].legend()
 # 2. Phonon Lifetime Plot
 # ==========================================
 axes[1].scatter(
-    df_phon["energy_meV"], df_phon["tau_ps"], s=10, alpha=0.5, color="green", label="Current work"
+    df_phon["energy_meV"], 2 * df_phon["tau_ps"], s=10, alpha=0.5, color="green", label="Current work"
 )
 
 # Plot the phonon literature lifetimes
