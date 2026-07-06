@@ -1570,8 +1570,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     gaussian_norm = 0.4179 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
-                    #kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
-                    kpx, kpy, kpz = q_grid_cart[k_idx, 0], q_grid_cart[k_idx, 1], q_grid_cart[k_idx, 2]
+                    kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
                     qx = q_grid_cart[idx_qmink, 0]
                     qy = q_grid_cart[idx_qmink, 1]
                     qz = q_grid_cart[idx_qmink, 2]
@@ -1911,7 +1910,7 @@ if __name__ == "__main__":
     slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
-    mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.h5"
+    mesh_bccFe = "Inputs/bccFe/grid_40x40x40.h5"
     mesh_CrI3 = "Inputs/CrI3/grid_12x12x12.h5"
     mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
@@ -1935,7 +1934,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 1.5
+    smearing = 0.2
     
     crystal_data = CrystalDataSoA(
         mesh, 
@@ -1986,7 +1985,7 @@ if __name__ == "__main__":
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N 
 
-    anticipated_fraction = 0.4 # for 40x40x40 0.06
+    anticipated_fraction = 0.7 # for 40x40x40 0.06
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
