@@ -69,6 +69,7 @@ class CrystalDataSoA:
         # 4. Parse SLC Tensors
         if slc_files and len(slc_files) == 3:
             self._parse_slc_tensors(slc_files[0], slc_files[1], slc_files[2], lattice_constant)
+            self._enforce_acoustic_sum_rule()
 
 
     def print_summary(self):
@@ -147,6 +148,45 @@ class CrystalDataSoA:
         self.slc_rik = np.array(temp_rik, dtype=np.float64) * lattice_constant
         self.slc_J = np.array(temp_J, dtype=np.float64) / BOHR_TO_ANGSTROM
         self.slc_types = np.array(temp_types, dtype=np.int32)
+
+    def _enforce_acoustic_sum_rule(self):
+        """
+        Enforces translational invariance (Acoustic Sum Rule) on the SLC tensors.
+        For any interacting pair (i, j) and displacement direction mu, 
+        the sum over all displaced atoms l must be exactly a zero matrix.
+        """
+        from collections import defaultdict
+        print(" -> Enforcing Acoustic Sum Rule (ASR) on SLC tensors...")
+        
+        # Group row indices by the key: (axis_mu, type_i, type_j)
+        groups = defaultdict(list)
+        
+        for row in range(self.slc_axis.shape[0]):
+            mu = self.slc_axis[row]
+            type_i = self.slc_types[row, 0]
+            type_j = self.slc_types[row, 1]
+            groups[(mu, type_i, type_j)].append(row)
+            
+        max_violation = 0.0
+        
+        for key, row_indices in groups.items():
+            # 1. Sum the 3x3 matrices over all displaced atoms l for this group
+            tensor_sum = np.zeros((3, 3), dtype=np.float64)
+            for r in row_indices:
+                tensor_sum += self.slc_J[r]
+                
+            # Track the maximum violation for diagnostic printing
+            violation_norm = np.max(np.abs(tensor_sum))
+            if violation_norm > max_violation:
+                max_violation = violation_norm
+                
+            # 2. Distribute the negative of the error equally across all members 
+            # to force the net sum to evaluate to exactly 0.0
+            correction = tensor_sum / len(row_indices)
+            for r in row_indices:
+                self.slc_J[r] -= correction
+                
+        print(f"    Maximum ASR violation before correction: {max_violation:.6e} meV/A")
 
     def _parse_phonons(self, phonon_list):
         for q_idx, p_node in enumerate(phonon_list):
@@ -1559,7 +1599,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 
                 # Numba-safe replacement for max() to prevent Signature Mismatch
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
-                MIN_SIGMA = 1.0  # meV
+                MIN_SIGMA = 0.1  # meV
                 sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
                 cutoff = 2.0 * sigma
 
