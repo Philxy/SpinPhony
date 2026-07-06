@@ -1508,7 +1508,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
                     if math.fabs(mag_moments[mp]) > 1e-2:
                         # REPLACED math.copysign with gpu_copysign
                         sigma_mp = gpu_copysign(1.0, mag_moments[mp])
-                        calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                         W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] 
             
             W_tot = W_dynamic - W_static
@@ -1933,7 +1933,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 10.0
+    smearing = 1.5
     
     crystal_data = CrystalDataSoA(
         mesh, 
