@@ -644,7 +644,7 @@ class CrystalDataSoA:
             # Project using the eigenvector to extract the exact branch derivative
             for b in range(self.phon_branches):
                 omega = self.w_phon[q_idx, b]
-                if omega < 0.5:
+                if omega < 1.0e-3:
                     self.grad_f_phon[q_idx, b, :] = 0.0
                     continue
                     
@@ -1410,7 +1410,7 @@ def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda
                     slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
                     eig_phon_q, omega, atom_masses, mag_moments):
     """Calculates the scattering vertex specifically for explicitly projected wavevectors."""
-    if omega < 0.5: return 0.0
+    if omega < 1.0: return 0.0
     
     hbar = 0.6582119569 # meV * ps
     DALTON_TO_meV_PS2_PER_A2 = 0.10364269
@@ -1460,7 +1460,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     gamma_idx = grid_map[0, 0, 0]
     omega = w_phon[q_idx, lambda_phon]
     
-    if omega < 0.5:
+    if omega < 1.0:
         return 0.0
 
 
