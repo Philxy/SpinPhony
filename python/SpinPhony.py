@@ -1203,7 +1203,7 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                 
                 sigma_raw_0 = smearing * math.sqrt(var_0 / 12.0)
                 sigma_0 = sigma_raw_0 if sigma_raw_0 > 1e-5 else 1e-5
-                cutoff_0 = 3.0 * sigma_0
+                cutoff_0 = 2.0 * sigma_0
                 
                 if abs(dE_0) < cutoff_0:
                     weight = (0.40003 / sigma_0) * math.exp(-0.5 * (dE_0*dE_0) / (sigma_0*sigma_0))
@@ -1902,7 +1902,7 @@ if __name__ == "__main__":
     slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
-    mesh_bccFe = "Inputs/bccFe/grid_40x40x40.h5"
+    mesh_bccFe = "Inputs/bccFe/combined_band_20x20x20.yaml"
     mesh_CrI3 = "Inputs/CrI3/grid_12x12x12.h5"
     mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
     Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
@@ -1926,7 +1926,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 5.0
+    smearing = 10.0
     
     crystal_data = CrystalDataSoA(
         mesh, 
