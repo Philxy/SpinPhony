@@ -1561,11 +1561,11 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 
                 # Numba-safe replacement for max() to prevent Signature Mismatch
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
-                MIN_SIGMA = 0.1  # meV
+                MIN_SIGMA = 0.5  # meV
                 sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
-                cutoff = 2.0 * sigma
 
-                if abs(dE) < cutoff:
+
+                if abs(dE) < 2.0 * sigma:
                     # 0.4179 normalizes the 2-sigma Gaussian
                     gaussian_norm = 0.4179 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
@@ -1934,7 +1934,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 3.0
+    smearing = 1.5
     
     crystal_data = CrystalDataSoA(
         mesh, 
@@ -1970,7 +1970,6 @@ if __name__ == "__main__":
     crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_character.png", color_mode='character')
     crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_spin_AM.png", color_mode='spin_am')
     crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_phon_AM.png", color_mode='phon_am')
-
     crystal_data.save_hybrid_path_properties("Outputs/hybrid_path_properties.csv")
 
     # Push path data to GPU for scanning kernels
@@ -1985,7 +1984,7 @@ if __name__ == "__main__":
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N 
 
-    anticipated_fraction = 0.06 # for 40x40x40 0.06
+    anticipated_fraction = 0.08 # for 40x40x40 0.06
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
