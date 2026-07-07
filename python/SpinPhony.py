@@ -1571,14 +1571,14 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
                     kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
-                    qx = q_grid_cart[idx_qmink, 0]
-                    qy = q_grid_cart[idx_qmink, 1]
-                    qz = q_grid_cart[idx_qmink, 2]
+                    #qx = q_grid_cart[idx_qmink, 0]
+                    #qy = q_grid_cart[idx_qmink, 1]
+                    #qz = q_grid_cart[idx_qmink, 2]
 
 
-                    #qx = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
-                    #qy = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
-                    #qz = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
+                    qx = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
+                    qy = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
+                    qz = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
                     
                     V_sq = calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
@@ -1984,7 +1984,7 @@ if __name__ == "__main__":
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N 
 
-    anticipated_fraction = 0.07 # for 40x40x40 0.06
+    anticipated_fraction = 0.07 # for 40x40x40 0.07 seems to be the max
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
