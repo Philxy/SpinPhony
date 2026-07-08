@@ -2092,8 +2092,6 @@ if __name__ == "__main__":
     
     anticipated_fraction = sim_config["anticipated_fraction"]
     dt = sim_config["dt"]
-    max_fraction = sim_config["max_fraction"]
-    safe_dt = sim_config["safe_dt"]
 
     lattice_constant = mat_config["lattice_constant"]
     anisotropy = mat_config["anisotropy"]
