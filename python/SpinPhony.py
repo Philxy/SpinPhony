@@ -1851,7 +1851,134 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                             chan_weights[c_idx] = V_sq * delta_weight
 
 
+@cuda.jit
+def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, Qmatrix,
+                        slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                        eig_phon, w_phon, atom_masses, mag_moments,
+                        smearing, chan_indices, chan_weights, channel_count, num_phon, num_mag):
+    """
+    Unified hybridized phase space scan. Because all particles are identical polarons, 
+    every collision is mathematically represented by a single splitting topology.
+    """
+    q_idx, k_idx = cuda.grid(2)
+    N = q_grid.shape[0]
 
+    if q_idx >= N or k_idx >= N:
+        return
+
+    # Derive p_idx = q_idx - k_idx
+    qx_p = (q_grid[q_idx, 0] - q_grid[k_idx, 0] + mesh[0]) % mesh[0]
+    qy_p = (q_grid[q_idx, 1] - q_grid[k_idx, 1] + mesh[1]) % mesh[1]
+    qz_p = (q_grid[q_idx, 2] - q_grid[k_idx, 2] + mesh[2]) % mesh[2]
+    p_idx = grid_map[qx_p, qy_p, qz_p]
+
+    # Required Minus Indices
+    mx_k = (-q_grid[k_idx, 0] + mesh[0]) % mesh[0]
+    my_k = (-q_grid[k_idx, 1] + mesh[1]) % mesh[1]
+    mz_k = (-q_grid[k_idx, 2] + mesh[2]) % mesh[2]
+    minus_k_idx = grid_map[mx_k, my_k, mz_k]
+
+    mx_p = (-q_grid[p_idx, 0] + mesh[0]) % mesh[0]
+    my_p = (-q_grid[p_idx, 1] + mesh[1]) % mesh[1]
+    mz_p = (-q_grid[p_idx, 2] + mesh[2]) % mesh[2]
+    minus_p_idx = grid_map[mx_p, my_p, mz_p]
+
+    mx_q = (-q_grid[q_idx, 0] + mesh[0]) % mesh[0]
+    my_q = (-q_grid[q_idx, 1] + mesh[1]) % mesh[1]
+    mz_q = (-q_grid[q_idx, 2] + mesh[2]) % mesh[2]
+    minus_q_idx = grid_map[mx_q, my_q, mz_q]
+
+    # Required Cartesian Vectors
+    kx, ky, kz = q_grid_cart[k_idx, 0], q_grid_cart[k_idx, 1], q_grid_cart[k_idx, 2]
+    px, py, pz = q_grid_cart[p_idx, 0], q_grid_cart[p_idx, 1], q_grid_cart[p_idx, 2]
+    mqx, mqy, mqz = q_grid_cart[minus_q_idx, 0], q_grid_cart[minus_q_idx, 1], q_grid_cart[minus_q_idx, 2]
+
+    num_bands = num_phon + num_mag
+    cutoff = 3.0 * smearing
+    gaussian_norm = 1.0 / (smearing * 2.50662827463)
+
+    # 1 Unified Loop matching the physics of three indistinguishable polarons
+    for b_q in range(num_bands):
+        w_q = w_hyb[q_idx, b_q]
+        for b_k in range(num_bands):
+            w_k = w_hyb[k_idx, b_k]
+            for b_p in range(num_bands):
+                dE = w_q - w_k - w_hyb[p_idx, b_p]
+
+                if abs(dE) < cutoff:
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (smearing * smearing))
+
+                    V_sq = calc_symmetrized_hybrid_vertex_squared(
+                        k_idx, p_idx, q_idx, minus_k_idx, minus_p_idx, minus_q_idx,
+                        kx, ky, kz, px, py, pz, mqx, mqy, mqz,
+                        b_q, b_k, b_p,
+                        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+                    )
+
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = q_idx
+                        chan_indices[1, c_idx] = k_idx
+                        chan_indices[2, c_idx] = p_idx
+                        chan_indices[3, c_idx] = b_q
+                        chan_indices[4, c_idx] = b_k
+                        chan_indices[5, c_idx] = b_p
+                        chan_weights[c_idx] = V_sq * delta_weight
+
+
+@cuda.jit
+def phase_lifetime_hybrid(chan_indices, chan_weights, num_channels, n_hyb, gamma_hyb, N_points):
+    """
+    Computes SMRTA lifetimes dynamically applying splitting and coalescence kinematics.
+    """
+    idx = cuda.grid(1)
+    if idx >= num_channels[0] or idx >= chan_weights.shape[0]: 
+        return
+
+    q_idx = chan_indices[1, idx]
+    k_idx = chan_indices[2, idx]
+    p_idx = chan_indices[3, idx]
+    b_q   = chan_indices[4, idx]
+    b_k   = chan_indices[5, idx]
+    b_p   = chan_indices[6, idx]
+
+    V_sq = chan_weights[idx]
+
+    hbar = 0.6582119569 # meV * ps
+    prefactor_split = (math.pi / hbar) / N_points
+    prefactor_coal  = (2.0 * math.pi / hbar) / N_points
+
+    n_q = n_hyb[q_idx, b_q]
+    n_k = n_hyb[k_idx, b_k]
+    n_p = n_hyb[p_idx, b_p]
+
+    num_bands = n_hyb.shape[1]
+
+    # 1. Splitting contribution to parent state (q)
+    rate_q = prefactor_split * V_sq * (n_k + n_p + 1.0)
+    cuda.atomic.add(gamma_hyb, q_idx * num_bands + b_q, rate_q)
+
+    # 2. Coalescence contribution to child 1 state (k)
+    rate_k = prefactor_coal * V_sq * (n_p - n_q)
+    cuda.atomic.add(gamma_hyb, k_idx * num_bands + b_k, rate_k)
+
+    # 3. Coalescence contribution to child 2 state (p)
+    rate_p = prefactor_coal * V_sq * (n_k - n_q)
+    cuda.atomic.add(gamma_hyb, p_idx * num_bands + b_p, rate_p)
+
+
+def init_bose_einstein(w_distribution, temperature_K):
+    if temperature_K <= 0.0:
+        return np.zeros_like(w_distribution, dtype=np.float64)
+        
+    kB = 0.08617333262  # meV/K
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        occ = 1.0 / (np.exp(w_distribution / (kB * temperature_K)) - 1.0)
+        
+    occ[~np.isfinite(occ)] = 0.0
+    return occ
 
 
 """
@@ -2256,34 +2383,6 @@ if __name__ == "__main__":
     print(f" Steps     : {steps:,}")
     print(f"==================================================")
 
-    """
-        slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
-    slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
-    slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
-    mesh_bccFe = "Inputs/bccFe/grid_40x40x40.h5"
-    mesh_CrI3 = "Inputs/CrI3/grid_12x12x12.h5"
-    mesh_CrSb = "Inputs/CrSb/grid_12x12x12.h5"
-    Jijs_bccFe = "Inputs/bccFe/Fe_Jij_scaled.csv"
-    Jijs_CrI3 = "Inputs/CrI3/JijCrI3_sergey.dat" #"Inputs/CrI3/JijCrI3.dat" # #
-    Jijs_CrSb = "Inputs/CrSb/Jij_stretched.csv"
-    band_CrI3 = "Inputs/CrI3/band.h5"
-    band_CrSb = "Inputs/CrSb/band.h5"
-    band_bccFe = "Inputs/bccFe/band.h5"
-    
-    lattice_constant_bccFe = 2.8665  # in Angstroms
-    lattice_constant_CrI3 = 6.91   # in Angstroms
-    lattice_constant_CrSb = 4.12 
-    anisotropy_bccFe = 0.005 
-    anisotropy_CrI3 = 0.0 * 0.49
-    anisotropy_CrSb = 0.0001
-
-    anisotropy = anisotropy_bccFe
-    lattice_constant = lattice_constant_bccFe
-    mesh = mesh_bccFe
-    Jijs = Jijs_bccFe
-    slc_files = slc_files_bccFe
-    band = band_bccFe"""
-    
     crystal_data = CrystalDataSoA(
         mesh, 
         Jijs,
@@ -2370,6 +2469,101 @@ if __name__ == "__main__":
     # STRIP FIX: Initialize derivatives to strict zeros ONCE before the loop
     d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
     d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
+
+    # =============== Hybrid Lifetimes ===============
+
+    num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
+
+    total_loops = N_points**2 * num_hyb_branches**3
+    max_channels = int(total_loops * anticipated_fraction)
+    
+    # 7 Rows format exactly maps the generic triad coordinates
+    d_chan_indices = cuda.device_array((7, max_channels), dtype=np.int32)
+    d_chan_weights = cuda.device_array(max_channels, dtype=np.float64)
+    d_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))
+
+    print(f"\nInitializing global Bose-Einstein populations at {T_mag_init} K...")
+    n_hyb_cpu = init_bose_einstein(crystal_data.w_hyb, T_mag_init)
+    d_n_hyb = cuda.to_device(n_hyb_cpu)
+
+    # 2. Execute Phase 1
+    print("\nStarting Phase 1: Scanning Hybrid Phase Space and Computing Vertices...")
+
+    threads_per_block_2d = (16, 16) 
+    blocks_x = math.ceil(N_points / threads_per_block_2d[0])
+    blocks_y = math.ceil(N_points / threads_per_block_2d[1])
+    blocks_per_grid_2d = (blocks_x, blocks_y)
+
+    phase_1_scan_hybrid[blocks_per_grid_2d, threads_per_block_2d](
+        gpu_data["mesh"], 
+        gpu_data["q_grid"], 
+        gpu_data["q_grid_cart"],
+        gpu_data["grid_map"], 
+        gpu_data["w_hyb"], 
+        gpu_data["Qmatrix"],
+        gpu_data["slc_axis"], 
+        gpu_data["slc_rij"], 
+        gpu_data["slc_rik"], 
+        gpu_data["slc_J"], 
+        gpu_data["slc_types"], 
+        gpu_data["eig_phon"],
+        gpu_data["w_phon"],
+        gpu_data["atom_masses"], 
+        gpu_data["mag_moments"],
+        smearing,                 
+        d_chan_indices,   
+        d_chan_weights, 
+        d_channel_count,
+        crystal_data.phon_branches,
+        crystal_data.n_mag_branches
+    )
+
+    cuda.synchronize()
+    
+    num_channels = d_channel_count.copy_to_host()[0]
+    print(f"Allowed Hybrid Channels found: {num_channels:,}")
+    print(f" -> Phase space ratio captured: {num_channels / total_loops:.2%}")
+
+    d_chan_indices_active = d_chan_indices[:, :num_channels]
+    d_chan_weights_active = d_chan_weights[:num_channels]
+    
+    # 3. Lifetimes Evaluation Phase 
+    print("\nCalculating equilibrium SMRTA relaxation rates...")
+    d_gamma_hyb = cuda.to_device(np.zeros(N_points * num_hyb_branches, dtype=np.float64))
+
+    threads_per_block = 256
+    blocks_eval = math.ceil(num_channels / threads_per_block)
+
+    phase_lifetime_hybrid[blocks_eval, threads_per_block](
+        d_chan_indices_active,
+        d_chan_weights_active,
+        d_channel_count, 
+        d_n_hyb,      
+        d_gamma_hyb, 
+        N_points
+    )
+    
+    cuda.synchronize()
+
+    # 4. Save Extracted Data
+    gamma_hyb_cpu = d_gamma_hyb.copy_to_host().reshape((N_points, num_hyb_branches))
+
+    os.makedirs("Outputs", exist_ok=True)
+    out_file = "Outputs/hybrid_equilibrium_lifetimes.csv"
+    with open(out_file, "w") as f:
+        f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps\n")
+        
+        for q_idx in range(N_points):
+            qx, qy, qz = crystal_data.q_grid[q_idx]
+            for branch in range(num_hyb_branches):
+                energy = crystal_data.w_hyb[q_idx, branch]
+                gamma = gamma_hyb_cpu[q_idx, branch]
+                tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
+                f.write(f"{q_idx},{qx},{qy},{qz},{branch},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
+
+    print(f"-> Saved equilibrium hybrid lifetimes to {out_file}.")
+    print("Simulation Complete.")
+
 
     # ========================== Path Lifetime Evaluation ==========================
     print("\nStarting Path Lifetime Evaluation...")
