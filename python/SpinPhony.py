@@ -4,6 +4,13 @@ from numba import cuda
 import cmath
 import math
 import h5py
+import argparse
+import sys
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 
 
 class CrystalDataSoA:
@@ -2051,7 +2058,61 @@ def init_bose_einstein(w_distribution, temperature_K):
 
 if __name__ == "__main__":
 
-    slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
+    # --- CLI Argument Parsing ---
+    parser = argparse.ArgumentParser(description="SpinPhony Boltzmann Transport Simulation")
+    parser.add_argument("--config", type=str, default="config.toml", help="Path to the TOML configuration file.")
+    parser.add_argument("--material", type=str, default="bccFe", help="Target material defined in the config file.")
+    
+    # Optional overrides 
+    parser.add_argument("--smearing", type=float, help="Override default smearing (meV)")
+    parser.add_argument("--tmag", type=float, help="Override initial Magnon temperature (K)")
+    parser.add_argument("--tphon", type=float, help="Override initial Phonon temperature (K)")
+    parser.add_argument("--steps", type=int, help="Override total integration steps")
+    
+    args = parser.parse_args()
+
+    # --- Load Configuration ---
+    if not os.path.exists(args.config):
+        raise FileNotFoundError(f"Configuration file '{args.config}' not found.")
+        
+    with open(args.config, "rb") as f:
+        config = tomllib.load(f)
+
+    if args.material not in config["materials"]:
+        raise ValueError(f"Material '{args.material}' not found in {args.config}. Available: {list(config['materials'].keys())}")
+
+    sim_config = config["simulation"]
+    mat_config = config["materials"][args.material]
+
+    # --- Apply Settings and Overrides ---
+    smearing = args.smearing if args.smearing is not None else sim_config["smearing"]
+    T_mag_init = args.tmag if args.tmag is not None else sim_config["T_mag_init"]
+    T_phon_init = args.tphon if args.tphon is not None else sim_config["T_phon_init"]
+    steps = args.steps if args.steps is not None else int(sim_config["steps"])
+    
+    anticipated_fraction = sim_config["anticipated_fraction"]
+    dt = sim_config["dt"]
+    max_fraction = sim_config["max_fraction"]
+    safe_dt = sim_config["safe_dt"]
+
+    lattice_constant = mat_config["lattice_constant"]
+    anisotropy = mat_config["anisotropy"]
+    mesh = mat_config["mesh"]
+    Jijs = mat_config["jij"]
+    band = mat_config["band"]
+    slc_files = mat_config["slc_files"]
+
+    print(f"==================================================")
+    print(f" Initializing Run: {args.material}")
+    print(f"==================================================")
+    print(f" Smearing  : {smearing} meV")
+    print(f" Temp Mag  : {T_mag_init} K")
+    print(f" Temp Phon : {T_phon_init} K")
+    print(f" Steps     : {steps:,}")
+    print(f"==================================================")
+
+    """
+        slc_files_CrSb = ['Inputs/CrSb/transformed_SLC_tensor_x_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_y_scaled.csv', 'Inputs/CrSb/transformed_SLC_tensor_z_scaled.csv']
     slc_files_bccFe = ['Inputs/bccFe/Fe_full_tensor_ij-uk_x_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_y_displacement.csv', 'Inputs/bccFe/Fe_full_tensor_ij-uk_z_displacement.csv']
     slc_files_CrI3 = ['Inputs/CrI3/transformed_SLC_tensor_x_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_y_filtered.csv', 'Inputs/CrI3/transformed_SLC_tensor_z_filtered.csv']
     mesh_bccFe = "Inputs/bccFe/grid_40x40x40.h5"
@@ -2076,9 +2137,7 @@ if __name__ == "__main__":
     mesh = mesh_bccFe
     Jijs = Jijs_bccFe
     slc_files = slc_files_bccFe
-    band = band_bccFe
-
-    smearing = 1.5
+    band = band_bccFe"""
     
     crystal_data = CrystalDataSoA(
         mesh, 
@@ -2328,11 +2387,11 @@ if __name__ == "__main__":
     )
     cuda.synchronize()
 
-    # 1. Pull back and reshape
+    # Pull back and reshape
     gamma_mag_cpu = d_gamma_mag.copy_to_host().reshape((N_points, crystal_data.n_mag_branches))
     gamma_phon_cpu = d_gamma_phon.copy_to_host().reshape((N_points, crystal_data.phon_branches))
 
-    # 2. Write to CSV
+    # Write to CSV
     os.makedirs("Outputs", exist_ok=True)
     with open("Outputs/equilibrium_lifetimes.csv", "w") as f:
         f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,vx,vy,vz,gamma_ps-1,tau_ps\n")
@@ -2384,10 +2443,6 @@ if __name__ == "__main__":
     d_n_mag = cuda.to_device(n_mag_cpu)
     d_n_phon = cuda.to_device(n_phon_cpu)
     
-    
-    steps = int(3E7)
-    dt = 1E-6  # ps
-    
     # Grid sizes for both kernels
     blocks_eval = math.ceil(num_channels / threads_per_block)
     max_elements = max(N_points * crystal_data.n_mag_branches, N_points * crystal_data.phon_branches)
@@ -2399,9 +2454,6 @@ if __name__ == "__main__":
     print(f"\nStarting Phase 2: Time Integration ({steps} steps)...")
 
     current_time = 0.0
-    base_dt = 1e-5       # Target ideal dt in ps
-    max_fraction = 0.05  # Strict limit: No population can change > 5% per step
-    safe_dt = 1E-5    
 
 
     for step in range(steps):
@@ -2420,27 +2472,8 @@ if __name__ == "__main__":
         )
         cuda.synchronize()
 
-        # 2. ADAPTIVE TIME STEPPING (The numerical shock-absorber)
-        # Pull the arrays to the CPU to evaluate the fastest moving state
-        #dn_mag_cpu = d_dn_mag.copy_to_host()
-        #n_mag_cpu = d_n_mag.copy_to_host()
-        #dn_phon_cpu = d_dn_phon.copy_to_host()
-        #n_phon_cpu = d_n_phon.copy_to_host()
-        
-        # FIX: Introduce a population floor (e.g., 0.01) so empty states don't cause infinite fractional rates
-        #pop_floor = 1e-2
-        #max_rate_mag = np.max(np.abs(dn_mag_cpu) / np.maximum(n_mag_cpu.ravel(), pop_floor))
-        #max_rate_phon = np.max(np.abs(dn_phon_cpu) / np.maximum(n_phon_cpu.ravel(), pop_floor))
-        #max_rate = max(max_rate_mag, max_rate_phon)
-
-        #if max_rate * base_dt > max_fraction:
-        #    safe_dt = max_fraction / max_rate
-        #else:
-        #   safe_dt = base_dt
             
-            
-            
-        # 3. CPU Interaction & Correctly Placed Debug Block
+        # CPU Interaction & Correctly Placed Debug Block
         if step % 1000 == 0:
             n_mag_cpu = d_n_mag.copy_to_host()
             n_phon_cpu = d_n_phon.copy_to_host()
@@ -2465,7 +2498,7 @@ if __name__ == "__main__":
             d_n_mag, d_n_phon, d_dn_mag, d_dn_phon, safe_dt
         )
         
-        current_time += safe_dt
+        current_time += dt
 
     obs_file.close()
     print("Simulation Complete.")
