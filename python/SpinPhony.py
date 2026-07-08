@@ -1672,7 +1672,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
 
                     variance = 0.0
                     for i in range(3):
-                        d_g = -grad_f_mag[k_idx, m, i] + grad_f_mag[q_idx, lam, i]
+                        d_g = grad_f_mag[idx_kminq, n, i] - grad_f_mag[k_idx, m, i]
                         step_width = d_g / mesh[i]
                         variance += step_width * step_width
                     
@@ -1691,7 +1691,12 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                         qy_cart = q_grid_cart[q_idx, 1]
                         qz_cart = q_grid_cart[q_idx, 2]
 
+
                         # index of the negative of q:
+                        qx_minq = (-q_grid[q_idx, 0] + mesh[0]) % mesh[0]
+                        qy_minq = (-q_grid[q_idx, 1] + mesh[1]) % mesh[1]
+                        qz_minq = (-q_grid[q_idx, 2] + mesh[2]) % mesh[2]
+                        neg_q_idx = grid_map[qx_minq, qy_minq, qz_minq]
                         neg_q_idx = q_idx
 
                         V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, -qx_cart, -qy_cart, -qz_cart, neg_q_idx, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
@@ -1935,7 +1940,7 @@ def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamm
     #dE = w_mag[idx_kminq, n] - w_mag[k_idx, m] + w_phon[q_idx, lam]
     if c_type == 2:
         nk_mag = n_mag[k_idx, m]
-        np_mag = n_phon[p_idx, lam]
+        np_mag = n_mag[p_idx, lam]
         
         gamma_q = fgr_prefactor * V_sq * (np_mag - nk_mag)
         cuda.atomic.add(gamma_phon, q_idx * num_phon_branches + lam, gamma_q)
