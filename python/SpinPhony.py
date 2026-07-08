@@ -78,6 +78,15 @@ class CrystalDataSoA:
             self._parse_slc_tensors(slc_files[0], slc_files[1], slc_files[2], lattice_constant)
 
 
+        self.w_hyb, self.Qmatrix, self.H_BdG_pre_diagonalized, self.H_BdG_diagonalized = self._calculate_coupled_hamiltonian(
+            q_cart_array=self.q_grid_cart,
+            dyn_mat=self.dyn_mat_phon,
+            K_anisotropy=anisotropy,
+            lattice_constant=lattice_constant,
+            return_full_matrices=True
+        )
+
+
     def print_summary(self):
         """Prints a verification summary of the loaded SoA data."""
         print("\n" + "="*50)
@@ -237,6 +246,9 @@ class CrystalDataSoA:
         gpu_buffers["jij"] = track_and_push("jij", self.jij_interactions)
         gpu_buffers["atom_masses"] = track_and_push("atom_masses", self.atom_masses)
         gpu_buffers["mag_moments"] = track_and_push("mag_moments", self.mag_moments)
+
+        gpu_buffers["w_hyb"] = track_and_push("w_hyb", self.w_hyb)
+        gpu_buffers["Qmatrix"] = track_and_push("Qmatrix", self.Qmatrix)
         
         if hasattr(self, 'slc_axis'):
             gpu_buffers["slc_axis"] = track_and_push("slc_axis", self.slc_axis)
@@ -384,15 +396,20 @@ class CrystalDataSoA:
                 self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
     
 
-    def _calculate_coupled_hamiltonian(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=5.0, is_FM=True, magnetic_field_T=0.0):
+    def _calculate_coupled_hamiltonian(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=5.0, is_FM=True, return_full_matrices=True):
         print(f" -> Constructing Joint Magnon-Phonon BdG Matrix (Strict C++ Mapping)...")
         N_pts = q_cart_array.shape[0]
         num_phon = self.phon_branches
         num_mag = self.n_mag_branches
         dim = 2 * (num_phon + num_mag)
-        
+
         w_hyb = np.zeros((N_pts, num_phon + num_mag), dtype=np.float64)
         eig_hyb = np.zeros((N_pts, dim, dim), dtype=np.complex128)
+        
+        # Prepare optional storage arrays
+        if return_full_matrices:
+            H_pre = np.zeros((N_pts, dim, dim), dtype=np.complex128)
+            H_diag = np.zeros((N_pts, dim, dim), dtype=np.complex128)
         
         # Offsets matching C++ Basis: [Phonon, Magnon, Phonon*, Magnon*]
         off_ph_p = 0
@@ -562,14 +579,28 @@ class CrystalDataSoA:
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
 
             # --- 3. Diagonalization ---
+            if return_full_matrices:
+                H_pre[q_idx] = H_BdG  # Save state prior to Cholesky projection
+
             try:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
                 w_hyb[q_idx] = energies
                 eig_hyb[q_idx] = para_unitary
+
+                if return_full_matrices:
+                    # Construct the diagonalized energy matrix representation
+                    # (Physical modes on the particle and hole blocks)
+                    for idx in range(num_phon + num_mag):
+                        H_diag[q_idx, idx, idx] = energies[idx]
+                        H_diag[q_idx, (num_phon + num_mag) + idx, (num_phon + num_mag) + idx] = energies[idx]
+
             except RuntimeError as e:
                 print(f"Warning at q_idx {q_idx}: {e}")
                 w_hyb[q_idx] = np.zeros(num_phon + num_mag)
                 
+        if return_full_matrices:
+            return w_hyb, eig_hyb, H_pre, H_diag
+        
         return w_hyb, eig_hyb
     
     """
