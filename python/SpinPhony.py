@@ -1681,25 +1681,14 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
 
                     if abs(dE) < 2.0 * sigma:
-                        # Exact Gaussian Normalization: 1 / sqrt(2*pi)
-                        gaussian_norm = 0.39894228 / sigma
+                        gaussian_norm = 0.4179 / sigma
                         delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                         
                         kpx_cart, kpy_cart, kpz_cart = q_grid_cart[k_idx, 0], q_grid_cart[k_idx, 1], q_grid_cart[k_idx, 2]
-
-                        # Calculate index of the negative of q:
-                        qx_minq = (-q_grid[q_idx, 0] + mesh[0]) % mesh[0]
-                        qy_minq = (-q_grid[q_idx, 1] + mesh[1]) % mesh[1]
-                        qz_minq = (-q_grid[q_idx, 2] + mesh[2]) % mesh[2]
-                        neg_q_idx = grid_map[qx_minq, qy_minq, qz_minq]
-
-                        # FIX: Extract strictly FOLDED Cartesian coordinates for -q
-                        neg_qx_cart = q_grid_cart[neg_q_idx, 0]
-                        neg_qy_cart = q_grid_cart[neg_q_idx, 1]
-                        neg_qz_cart = q_grid_cart[neg_q_idx, 2]
-
-                        # Pass the folded neg_q_xyz_cart instead of manually negating continuous vectors
-                        V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, neg_qx_cart, neg_qy_cart, neg_qz_cart, neg_q_idx, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                        qx_cart_cont = q_grid_cart[k_idx, 0] - q_grid_cart[idx_kminq, 0]
+                        qy_cart_cont = q_grid_cart[k_idx, 1] - q_grid_cart[idx_kminq, 1]
+                        qz_cart_cont = q_grid_cart[k_idx, 2] - q_grid_cart[idx_kminq, 2]
+                        V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, qx_cart_cont, qy_cart_cont, qz_cart_cont, q_idx, lam, m, n, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                         c_idx = cuda.atomic.add(channel_count, 0, 1)
                         if c_idx < chan_indices.shape[1]:
