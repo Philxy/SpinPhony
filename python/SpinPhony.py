@@ -199,7 +199,6 @@ class CrystalDataSoA:
             raise ValueError("Grid map initialization failed: Incomplete q-point mesh.")
             
     def push_to_gpu(self):
-        from numba import cuda
         
         # Dictionary to store pointers
         gpu_buffers = {}
@@ -1472,9 +1471,8 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     S_n = math.fabs(mag_moments[n] / 2.0 ) 
     S_m = math.fabs(mag_moments[m] / 2.0 )
     
-    # REPLACED math.copysign with gpu_copysign
-    sigma_n = gpu_copysign(1.0, mag_moments[n]) if S_n > 0 else 0.0
-    sigma_m = gpu_copysign(1.0, mag_moments[m]) if S_m > 0 else 0.0
+    sigma_n = gpu_copysign(1.0, mag_moments[n]) if math.fabs(S_n) > 1E-3 else 0.0
+    sigma_m = gpu_copysign(1.0, mag_moments[m]) if math.fabs(S_m) > 1E-3 else 0.0
 
     J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
     J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
@@ -1494,6 +1492,8 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
 
             J_xx = J_tilde_dyn[0, 0]
             J_yy = J_tilde_dyn[1, 1]
+
+            # we will turn off relativistic spin-orbit effects for now, so these terms are zero
             J_xy = 0.0 * J_tilde_dyn[0, 1]
             J_yx = 0.0 * J_tilde_dyn[1, 0]
             
@@ -1538,16 +1538,23 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
     n_mag = w_mag.shape[1]
     n_phon = w_phon.shape[1]
     
-    # --- Kinematic Mappings for Discrete Lookups ---
+    # --- Mappings for Lookups ---
     qx_qmink = (q_grid[q_idx, 0] - q_grid[k_idx, 0] + mesh[0]) % mesh[0]
     qy_qmink = (q_grid[q_idx, 1] - q_grid[k_idx, 1] + mesh[1]) % mesh[1]
     qz_qmink = (q_grid[q_idx, 2] - q_grid[k_idx, 2] + mesh[2]) % mesh[2]
     idx_qmink = grid_map[qx_qmink, qy_qmink, qz_qmink]
 
+    qx_kminq = (q_grid[k_idx, 0] - q_grid[q_idx, 0] + mesh[0]) % mesh[0]
+    qy_kminq = (q_grid[k_idx, 1] - q_grid[q_idx, 1] + mesh[1]) % mesh[1]
+    qz_kminq = (q_grid[k_idx, 2] - q_grid[q_idx, 2] + mesh[2]) % mesh[2]
+    idx_kminq = grid_map[qx_kminq, qy_kminq, qz_kminq]
+
     for n in range(n_mag):
         for m in range(n_mag):
             for lam in range(n_phon):
                 
+
+                """
                 # ---------------------------------------------------------
                 # Process 0 (Unified): M(q) <--> M(k) + Ph(q-k)
                 # ---------------------------------------------------------
@@ -1559,7 +1566,6 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     step_width = d_g / mesh[i]
                     variance += step_width * step_width
                 
-                # Numba-safe replacement for max() to prevent Signature Mismatch
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
                 MIN_SIGMA = 0.5  # meV
                 sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
@@ -1570,23 +1576,134 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     gaussian_norm = 0.4179 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
-                    kpx, kpy, kpz = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
+                    kpx_cart, kpy_cart, kpz_cart = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
+
                     #qx = q_grid_cart[idx_qmink, 0]
                     #qy = q_grid_cart[idx_qmink, 1]
                     #qz = q_grid_cart[idx_qmink, 2]
 
 
-                    qx = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
-                    qy = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
-                    qz = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
+                    x_qmink_cart = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
+                    y_qmink_cart = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
+                    z_qmink_cart = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
                     
-                    V_sq = calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+
+                    V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
                         chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
                         chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                         chan_weights[c_idx] = V_sq * delta_weight
+                """
+
+                # Process 1
+                dE = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
+
+                variance = 0.0
+                for i in range(3):
+                    d_g = -grad_f_mag[k_idx, m, i] + grad_f_phon[idx_qmink, lam, i]
+                    step_width = d_g / mesh[i]
+                    variance += step_width * step_width
+                
+                sigma_raw = base_smearing * math.sqrt(variance / 12.0)
+                MIN_SIGMA = 0.5  # meV
+                sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
+
+
+                if abs(dE) < 2.0 * sigma:
+                    # 0.4179 normalizes the 2-sigma Gaussian
+                    gaussian_norm = 0.4179 / sigma
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
+                    
+                    kpx_cart, kpy_cart, kpz_cart = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
+
+                    #qx = q_grid_cart[idx_qmink, 0]
+                    #qy = q_grid_cart[idx_qmink, 1]
+                    #qz = q_grid_cart[idx_qmink, 2]
+
+                    x_qmink_cart = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
+                    y_qmink_cart = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
+                    z_qmink_cart = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
+
+                    V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * delta_weight
+
+
+                    # Process 2
+                    dE = w_mag[q_idx, n] - w_mag[k_idx, m] + w_phon[idx_kminq, lam]
+
+                    variance = 0.0
+                    for i in range(3):
+                        d_g = -grad_f_mag[k_idx, m, i] + grad_f_phon[idx_kminq, lam, i]
+                        step_width = d_g / mesh[i]
+                        variance += step_width * step_width
+                    
+                    sigma_raw = base_smearing * math.sqrt(variance / 12.0)
+                    sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
+
+
+                    if abs(dE) < 2.0 * sigma:
+                        # 0.4179 normalizes the 2-sigma Gaussian
+                        gaussian_norm = 0.4179 / sigma
+                        delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
+                        
+                        kpx_cart, kpy_cart, kpz_cart = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
+
+                        x_kminq_cart = q_grid_cart[k_idx, 0] - q_grid_cart[q_idx, 0]
+                        y_kminq_cart = q_grid_cart[k_idx, 1] - q_grid_cart[q_idx, 1]
+                        z_kminq_cart = q_grid_cart[k_idx, 2] - q_grid_cart[q_idx, 2]
+
+                        V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_kminq_cart, y_kminq_cart, z_kminq_cart, idx_kminq, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+
+                        c_idx = cuda.atomic.add(channel_count, 0, 1)
+                        if c_idx < chan_indices.shape[1]:
+                            chan_indices[0, c_idx] = 1; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
+                            chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                            chan_weights[c_idx] = V_sq * delta_weight
+
+                    # Process 3 
+                    dE = w_mag[idx_kminq, n] - w_mag[k_idx, m] + w_phon[q_idx, lam]
+
+                    variance = 0.0
+                    for i in range(3):
+                        d_g = -grad_f_mag[k_idx, m, i] + grad_f_mag[q_idx, lam, i]
+                        step_width = d_g / mesh[i]
+                        variance += step_width * step_width
+                    
+                    sigma_raw = base_smearing * math.sqrt(variance / 12.0)
+                    sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
+
+
+                    if abs(dE) < 2.0 * sigma:
+                        # 0.4179 normalizes the 2-sigma Gaussian
+                        gaussian_norm = 0.4179 / sigma
+                        delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
+                        
+                        kpx_cart, kpy_cart, kpz_cart = q_grid_cart[k_idx, 0], q_grid_cart[k_idx, 1], q_grid_cart[k_idx, 2]
+
+                        qx_cart = q_grid_cart[q_idx, 0]
+                        qy_cart = q_grid_cart[q_idx, 1]
+                        qz_cart = q_grid_cart[q_idx, 2]
+
+                        # index of the negative of q:
+                        neg_q_idx = grid_map[(-qx_cart + mesh[0]) % mesh[0], (-qy_cart + mesh[1]) % mesh[1], (-qz_cart + mesh[2]) % mesh[2]]
+
+                        V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, -qx_cart, -qy_cart, -qz_cart, neg_q_idx, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+
+                        c_idx = cuda.atomic.add(channel_count, 0, 1)
+                        if c_idx < chan_indices.shape[1]:
+                            chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
+                            chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                            chan_weights[c_idx] = V_sq * delta_weight
+
+
+
 
 
 """
@@ -1793,6 +1910,38 @@ def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamm
     hbar = 0.6582119569 # meV * ps
     fgr_prefactor = (2.0 * math.pi / hbar) / N_points
     
+
+    # Channel 1
+    # dE = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
+    
+    if c_type == 0:
+        nk_mag = n_mag[k_idx, m]
+        np_phon = n_phon[p_idx, lam]
+        
+        gamma_q = fgr_prefactor * V_sq * (1.0 + np_phon + nk_mag)
+        cuda.atomic.add(gamma_mag, q_idx * num_mag_branches + n, gamma_q)
+
+    # Phase 2
+    #dE = w_mag[q_idx, n] - w_mag[k_idx, m] + w_phon[idx_kminq, lam]
+
+    if c_type == 1:
+        nk_mag = n_mag[k_idx, m]
+        np_phon = n_phon[p_idx, lam]
+        
+        gamma_q = fgr_prefactor * V_sq * (np_phon - nk_mag)
+        cuda.atomic.add(gamma_mag, q_idx * num_mag_branches + n, gamma_q)
+    
+    # Phase 3
+    #dE = w_mag[idx_kminq, n] - w_mag[k_idx, m] + w_phon[q_idx, lam]
+    if c_type == 2:
+        nk_mag = n_mag[k_idx, m]
+        np_mag = n_phon[p_idx, lam]
+        
+        gamma_q = fgr_prefactor * V_sq * (np_mag - nk_mag)
+        cuda.atomic.add(gamma_phon, q_idx * num_phon_branches + lam, gamma_q)
+
+
+    """
     # Populations (evaluated at the equilibrium T_0 passed to the kernel)
     nk_mag = n_mag[k_idx, m]
     nq_mag = n_mag[q_idx, n]
@@ -1815,6 +1964,7 @@ def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamm
     # ---------------------------------------------------------
     gamma_p = fgr_prefactor * V_sq * (nk_mag - nq_mag)
     cuda.atomic.add(gamma_phon, p_idx * num_phon_branches + lam, gamma_p)
+    """
 
 
 
@@ -1946,11 +2096,9 @@ if __name__ == "__main__":
     
     crystal_data.print_summary()
 
-
     gpu_data = crystal_data.push_to_gpu()
 
     gamma_idx = int(crystal_data.grid_map[0, 0, 0])
-
 
     # Load the high-symmetry path from the HDF5 band file
     crystal_data.load_and_evaluate_path_hdf5(band, K_anisotropy=anisotropy, lattice_constant=lattice_constant)
@@ -1996,6 +2144,8 @@ if __name__ == "__main__":
     d_chan_weights = cuda.device_array(max_channels, dtype=np.float64)
     d_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))
     
+    #Q: the chan_indices are int32. The channel_count is int64. Hence, there can be more channels than can be indexed by int32. This is a potential issue if the number of channels exceeds int32. Should I be concerned? What is the memory impact of using int64 for the channel indices?
+
     threads_per_block = 256
     blocks_per_grid = math.ceil(N_points / threads_per_block)
 
@@ -2049,7 +2199,7 @@ if __name__ == "__main__":
         gpu_data["mesh"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
         d_path_q_frac, d_path_q_cart, d_path_w_phon, d_path_w_mag, d_path_eig_phon,
         gpu_data["w_phon"], gpu_data["w_mag"], gpu_data["eig_phon"],
-        gpu_data["grad_f_phon"], gpu_data["grad_f_mag"], # <--- INSERTED THESE TWO HERE
+        gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
         gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"], 
         smearing, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
         gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
