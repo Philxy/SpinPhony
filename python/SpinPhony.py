@@ -1125,6 +1125,57 @@ class CrystalDataSoA:
                 f.write(",".join(row) + "\n")
         print("-> Done!")
 
+    def extract_full_grid_hybrid_properties(self):
+        """
+        Extracts Spin AM, Phonon AM, and subsystem characters for all hybridized bands 
+        across the entire BZ grid using T^dagger * O * T.
+        """
+        print(" -> Extracting Angular Momentum and Character for the full BZ...")
+        L_z_total = self.get_nambu_angular_momentum(axis=2)
+        
+        num_phon = self.phon_branches
+        num_mag = self.n_mag_branches
+        dim_block = num_phon + num_mag
+        dim_total = 2 * dim_block
+        
+        # Isolate blocks
+        L_z_phon = np.zeros_like(L_z_total)
+        L_z_spin = np.zeros_like(L_z_total)
+        
+        L_z_phon[:num_phon, :num_phon] = L_z_total[:num_phon, :num_phon]
+        L_z_phon[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon] = L_z_total[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon]
+        
+        L_z_spin[num_phon:dim_block, num_phon:dim_block] = L_z_total[num_phon:dim_block, num_phon:dim_block]
+        L_z_spin[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total] = L_z_total[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total]
+        
+        # Commutation Metrics
+        J_phon = np.zeros((dim_total, dim_total), dtype=np.float64)
+        J_spin = np.zeros((dim_total, dim_total), dtype=np.float64)
+        
+        np.fill_diagonal(J_phon[:num_phon, :num_phon], 1.0)
+        np.fill_diagonal(J_phon[dim_block:dim_block+num_phon, dim_block:dim_block+num_phon], -1.0)
+        
+        np.fill_diagonal(J_spin[num_phon:dim_block, num_phon:dim_block], 1.0)
+        np.fill_diagonal(J_spin[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total], -1.0)
+        
+        # Allocate output arrays mapped to (N_points, physical_branches)
+        phon_chars = np.zeros((self.N, dim_block), dtype=np.float64)
+        mag_chars = np.zeros((self.N, dim_block), dtype=np.float64)
+        phon_ams = np.zeros((self.N, dim_block), dtype=np.float64)
+        spin_ams = np.zeros((self.N, dim_block), dtype=np.float64)
+        
+        for q_idx in range(self.N):
+            T = self.Qmatrix[q_idx]
+            T_dag = T.conj().T
+            
+            # Diagonal components for the physical (particle) block
+            phon_chars[q_idx, :] = np.diag(T_dag @ J_phon @ T).real[:dim_block]
+            mag_chars[q_idx, :]  = np.diag(T_dag @ J_spin @ T).real[:dim_block]
+            phon_ams[q_idx, :]   = np.diag(T_dag @ L_z_phon @ T).real[:dim_block]
+            spin_ams[q_idx, :]   = np.diag(T_dag @ L_z_spin @ T).real[:dim_block]
+            
+        return phon_chars, mag_chars, phon_ams, spin_ams
+
 
     def get_nambu_angular_momentum(self, axis):
         """
@@ -2548,10 +2599,14 @@ if __name__ == "__main__":
     # 4. Save Extracted Data
     gamma_hyb_cpu = d_gamma_hyb.copy_to_host().reshape((N_points, num_hyb_branches))
 
+    phon_chars, mag_chars, phon_ams, spin_ams = crystal_data.extract_full_grid_hybrid_properties()
+
     os.makedirs("Outputs", exist_ok=True)
     out_file = "Outputs/hybrid_equilibrium_lifetimes.csv"
+    
     with open(out_file, "w") as f:
-        f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps\n")
+        # Appended specific structural headers
+        f.write("q_idx,qx,qy,qz,branch,energy_meV,phon_char,mag_char,phon_AM,spin_AM,gamma_ps-1,tau_ps\n")
         
         for q_idx in range(N_points):
             qx, qy, qz = crystal_data.q_grid[q_idx]
@@ -2559,9 +2614,16 @@ if __name__ == "__main__":
                 energy = crystal_data.w_hyb[q_idx, branch]
                 gamma = gamma_hyb_cpu[q_idx, branch]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                f.write(f"{q_idx},{qx},{qy},{qz},{branch},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
+                
+                # Retrieve local characters
+                pc = phon_chars[q_idx, branch]
+                mc = mag_chars[q_idx, branch]
+                pa = phon_ams[q_idx, branch]
+                sa = spin_ams[q_idx, branch]
+                
+                f.write(f"{q_idx},{qx},{qy},{qz},{branch},{energy:.6f},{pc:.6f},{mc:.6f},{pa:.6e},{sa:.6e},{gamma:.6e},{tau:.6e}\n")
 
-    print(f"-> Saved equilibrium hybrid lifetimes to {out_file}.")
+    print(f"-> Saved equilibrium hybrid lifetimes and characters to {out_file}.")
     print("Simulation Complete.")
 
 
