@@ -2524,7 +2524,7 @@ if __name__ == "__main__":
 
         # 4. Apply the safe_dt globally using the pure Euler kernel
         apply_euler_and_reset[blocks_euler, threads_per_block](
-            d_n_mag, d_n_phon, d_dn_mag, d_dn_phon, safe_dt
+            d_n_mag, d_n_phon, d_dn_mag, d_dn_phon, dt
         )
         
         current_time += dt
