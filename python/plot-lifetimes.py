@@ -309,7 +309,7 @@ axes[0].legend()
 # 2. Phonon Lifetime Plot
 # ==========================================
 axes[1].scatter(
-    df_phon["energy_meV"], 2 * df_phon["tau_ps"], s=10, alpha=0.5, color="green", label="Current work"
+    df_phon["energy_meV"], df_phon["tau_ps"], s=10, alpha=0.5, color="green", label="Current work"
 )
 
 # Plot the phonon literature lifetimes
