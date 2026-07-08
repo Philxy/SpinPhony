@@ -1552,8 +1552,121 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
             W_tot = W_dynamic - W_static
             V_complex += disp_amp * e_mu * W_tot
             
-    return (V_complex.real**2 + V_complex.imag**2)
+    return V_complex
 
+
+@cuda.jit(device=True)
+def calc_hybrid_vertex_Gamma(
+    k_idx, q_idx, k_plus_q_idx, minus_k_idx, minus_q_idx, minus_k_plus_q_idx,
+    kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
+    alpha, alpha_prime, alpha_double_prime,
+    Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+):
+    """
+    Computes the highly-coupled 3-particle hybridized vertex Gamma.
+    """
+    Gamma = 0.0 + 0.0j
+    
+    # N is the dimension block size: total number of physical bosonic modes
+    N_half = num_phon + num_mag
+
+    for n in range(num_mag):
+        I_n = num_phon + n
+        for m in range(num_mag):
+            I_m = num_phon + m
+            for lam in range(num_phon):
+                
+                # ---------------------------------------------------------
+                # Term 1: V^{+-}_{k+q, q} 
+                # kpx = k_in - q_in = (k+q) - q = k
+                # qx  = q_in = q
+                # ---------------------------------------------------------
+                V1 = calc_vertex_V(
+                    kx, ky, kz, qx, qy, qz, 
+                    q_idx, lam, n, m, 
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+                P1 = Qmatrix[q_idx, lam, alpha_double_prime] + Qmatrix[q_idx, lam + N_half, alpha_double_prime]
+                Q1_n = Qmatrix[k_plus_q_idx, I_n, alpha].conjugate()
+                Q1_m = Qmatrix[k_idx, I_m, alpha_prime]
+                
+                term1 = V1 * P1 * Q1_n * Q1_m
+
+                # ---------------------------------------------------------
+                # Term 2: V^{+-}_{-q, -(k+q)} 
+                # kpx = k_in - q_in = -q - (-(k+q)) = k
+                # qx  = q_in = -(k+q)
+                # ---------------------------------------------------------
+                V2 = calc_vertex_V(
+                    kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, 
+                    minus_k_plus_q_idx, lam, n, m, 
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+                P2 = Qmatrix[minus_k_plus_q_idx, lam, alpha].conjugate() + Qmatrix[minus_k_plus_q_idx, lam + N_half, alpha].conjugate()
+                Q2_n = Qmatrix[minus_q_idx, I_n, alpha_double_prime + N_half].conjugate()
+                Q2_m = Qmatrix[k_idx, I_m, alpha_prime]
+                
+                term2 = V2 * P2 * Q2_n * Q2_m
+
+                # ---------------------------------------------------------
+                # Term 3: V^{+-}_{-k, q}
+                # kpx = k_in - q_in = -k - q = -(k+q)
+                # qx  = q_in = q
+                # ---------------------------------------------------------
+                V3 = calc_vertex_V(
+                    minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, qx, qy, qz, 
+                    q_idx, lam, n, m, 
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+                P3 = Qmatrix[q_idx, lam, alpha_double_prime] + Qmatrix[q_idx, lam + N_half, alpha_double_prime]
+                Q3_n = Qmatrix[minus_k_idx, I_n, alpha_prime + N_half].conjugate()
+                Q3_m = Qmatrix[minus_k_plus_q_idx, I_m, alpha + N_half]
+                
+                term3 = V3 * P3 * Q3_n * Q3_m
+
+                # Accumulate the total hybridized vertex
+                Gamma += (term1 + term2 + term3)
+
+    return Gamma
+
+
+@cuda.jit(device=True)
+def calc_symmetrized_hybrid_vertex_squared(
+    k_idx, q_idx, k_plus_q_idx, minus_k_idx, minus_q_idx, minus_k_plus_q_idx,
+    kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
+    alpha, alpha_prime, alpha_double_prime,
+    Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+):
+    """
+    Computes the squared absolute value of the symmetrized hybridized vertex.
+    """
+    
+    # Gamma(k, q, alpha, alpha', alpha'')
+    Gamma_kq = calc_hybrid_vertex_Gamma(
+        k_idx, q_idx, k_plus_q_idx, minus_k_idx, minus_q_idx, minus_k_plus_q_idx,
+        kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
+        alpha, alpha_prime, alpha_double_prime,
+        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+    )
+    
+    # 2. Swapped configuration: Gamma(q, k, alpha, alpha'', alpha')
+    Gamma_qk = calc_hybrid_vertex_Gamma(
+        q_idx, k_idx, k_plus_q_idx, minus_q_idx, minus_k_idx, minus_k_plus_q_idx,
+        qx, qy, qz, kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
+        alpha, alpha_double_prime, alpha_prime,
+        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+    )
+    
+    # 3. Symmetrize and return the squared absolute value |Gamma_sym|^2
+    Gamma_sym = 0.5 * (Gamma_kq + Gamma_qk)
+    return Gamma_sym.real**2 + Gamma_sym.imag**2
 
 # ==========================================
 # 2. GPU Kernels: The Main Phases
@@ -1664,7 +1777,8 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     y_qmink_cart = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
                     z_qmink_cart = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
 
-                    V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq = V.real**2 + V.imag**2
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -1697,7 +1811,8 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                         y_kminq_cart = q_grid_cart[k_idx, 1] - q_grid_cart[q_idx, 1]
                         z_kminq_cart = q_grid_cart[k_idx, 2] - q_grid_cart[q_idx, 2]
 
-                        V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_kminq_cart, y_kminq_cart, z_kminq_cart, idx_kminq, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                        V = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_kminq_cart, y_kminq_cart, z_kminq_cart, idx_kminq, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                        V_sq = V.real**2 + V.imag**2
 
                         c_idx = cuda.atomic.add(channel_count, 0, 1)
                         if c_idx < chan_indices.shape[1]:
@@ -1726,7 +1841,8 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                         qx_cart_cont = q_grid_cart[k_idx, 0] - q_grid_cart[idx_kminq, 0]
                         qy_cart_cont = q_grid_cart[k_idx, 1] - q_grid_cart[idx_kminq, 1]
                         qz_cart_cont = q_grid_cart[k_idx, 2] - q_grid_cart[idx_kminq, 2]
-                        V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, qx_cart_cont, qy_cart_cont, qz_cart_cont, q_idx, lam, m, n, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                        V = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, qx_cart_cont, qy_cart_cont, qz_cart_cont, q_idx, lam, m, n, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                        V_sq = V.real**2 + V.imag**2
 
                         c_idx = cuda.atomic.add(channel_count, 0, 1)
                         if c_idx < chan_indices.shape[1]:
