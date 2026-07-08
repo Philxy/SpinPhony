@@ -1607,7 +1607,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     variance += step_width * step_width
                 
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
-                MIN_SIGMA = 0.5  # meV
+                MIN_SIGMA = 0.1  # meV
                 sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
 
 
@@ -2084,7 +2084,7 @@ if __name__ == "__main__":
     slc_files = slc_files_bccFe
     band = band_bccFe
 
-    smearing = 1.5
+    smearing = 1.0
     
     crystal_data = CrystalDataSoA(
         mesh, 
