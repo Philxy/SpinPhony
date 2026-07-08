@@ -1692,7 +1692,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                         qz_cart = q_grid_cart[q_idx, 2]
 
                         # index of the negative of q:
-                        neg_q_idx = grid_map[(-qx_cart + mesh[0]) % mesh[0], (-qy_cart + mesh[1]) % mesh[1], (-qz_cart + mesh[2]) % mesh[2]]
+                        neg_q_idx = q_idx
 
                         V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, -qx_cart, -qy_cart, -qz_cart, neg_q_idx, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
