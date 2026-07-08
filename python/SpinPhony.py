@@ -1918,12 +1918,12 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, Qmatrix,
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
-                        chan_indices[0, c_idx] = q_idx
-                        chan_indices[1, c_idx] = k_idx
-                        chan_indices[2, c_idx] = p_idx
-                        chan_indices[3, c_idx] = b_q
-                        chan_indices[4, c_idx] = b_k
-                        chan_indices[5, c_idx] = b_p
+                        chan_indices[1, c_idx] = q_idx
+                        chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = p_idx
+                        chan_indices[4, c_idx] = b_q
+                        chan_indices[5, c_idx] = b_k
+                        chan_indices[6, c_idx] = b_p
                         chan_weights[c_idx] = V_sq * delta_weight
 
 
