@@ -562,6 +562,7 @@ class CrystalDataSoA:
                 Vp = V_plus_all[q_idx]
                 Vm = V_minus_all[q_idx]
                 
+                """
                 # 1. Normal Particle-Particle
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
@@ -577,6 +578,7 @@ class CrystalDataSoA:
                 # 4. Anomalous Hole-Particle (Magnon_h, Phonon_p)
                 H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
+                """
 
             # --- 3. Diagonalization ---
             if return_full_matrices:
@@ -1575,7 +1577,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
         disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * omega))
         
         for mu in range(3):
-            e_mu = eig_phon[q_idx, lambda_phon, l, mu]
+            e_mu = 1 # eig_phon[q_idx, lambda_phon, l, mu] # for now we will ignore it as we are dealing with a Cartesian basis for the phonon eigenvectors in the hybrid vertex calculation!!!
             
             calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
 
@@ -1945,10 +1947,9 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, Qmatrix,
     mqx, mqy, mqz = q_grid_cart[minus_q_idx, 0], q_grid_cart[minus_q_idx, 1], q_grid_cart[minus_q_idx, 2]
 
     num_bands = num_phon + num_mag
-    cutoff = 3.0 * smearing
+    cutoff = 2.0 * smearing
     gaussian_norm = 1.0 / (smearing * 2.50662827463)
 
-    # 1 Unified Loop matching the physics of three indistinguishable polarons
     for b_q in range(num_bands):
         w_q = w_hyb[q_idx, b_q]
         for b_k in range(num_bands):
@@ -2387,9 +2388,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SpinPhony Boltzmann Transport Simulation")
     parser.add_argument("--config", type=str, default="config.toml", help="Path to the TOML configuration file.")
     parser.add_argument("--material", type=str, default="bccFe", help="Target material defined in the config file.")
-    
+
     # Optional overrides 
     parser.add_argument("--smearing", type=float, help="Override default smearing (meV)")
+    parser.add_argument("--min_sigma", type=float, help="Override default minimum smearing (meV)") # NEW
     parser.add_argument("--tmag", type=float, help="Override initial Magnon temperature (K)")
     parser.add_argument("--tphon", type=float, help="Override initial Phonon temperature (K)")
     parser.add_argument("--steps", type=int, help="Override total integration steps")
@@ -2411,6 +2413,7 @@ if __name__ == "__main__":
 
     # --- Apply Settings and Overrides ---
     smearing = args.smearing if args.smearing is not None else sim_config["smearing"]
+    min_sigma = args.min_sigma if args.min_sigma is not None else sim_config.get("min_sigma", 0.5)
     T_mag_init = args.tmag if args.tmag is not None else sim_config["T_mag_init"]
     T_phon_init = args.tphon if args.tphon is not None else sim_config["T_phon_init"]
     steps = args.steps if args.steps is not None else int(sim_config["steps"])
