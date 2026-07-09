@@ -249,6 +249,7 @@ class CrystalDataSoA:
 
         gpu_buffers["w_hyb"] = track_and_push("w_hyb", self.w_hyb)
         gpu_buffers["Qmatrix"] = track_and_push("Qmatrix", self.Qmatrix)
+        gpu_buffers["grad_f_hyb"] = track_and_push("grad_f_hyb", self.grad_f_hyb)
         
         if hasattr(self, 'slc_axis'):
             gpu_buffers["slc_axis"] = track_and_push("slc_axis", self.slc_axis)
@@ -655,8 +656,49 @@ class CrystalDataSoA:
         self.grad_f_mag[:, :, 1] = (self.w_mag[idx_y_plus] - self.w_mag[idx_y_minus]) * (N_y / 2.0)
         self.grad_f_mag[:, :, 2] = (self.w_mag[idx_z_plus] - self.w_mag[idx_z_minus]) * (N_z / 2.0)
         """
+    
 
+    def _compute_hybrid_group_velocities(self):
+        """
+        Computes hybrid energy gradients
+        """
+        print(" -> Computing exact hybrid group velocities via matrix projection...", flush=True)
         
+        num_bands = self.phon_branches + self.n_mag_branches
+        self.grad_f_hyb = np.zeros((self.N, num_bands, 3), dtype=np.float64)
+
+        N_x, N_y, N_z = self.mesh
+
+        # Periodic index lookups
+        idx_xp = self.grid_map[(self.q_grid[:, 0] + 1) % N_x, self.q_grid[:, 1], self.q_grid[:, 2]]
+        idx_xm = self.grid_map[(self.q_grid[:, 0] - 1) % N_x, self.q_grid[:, 1], self.q_grid[:, 2]]
+        
+        idx_yp = self.grid_map[self.q_grid[:, 0], (self.q_grid[:, 1] + 1) % N_y, self.q_grid[:, 2]]
+        idx_ym = self.grid_map[self.q_grid[:, 0], (self.q_grid[:, 1] - 1) % N_y, self.q_grid[:, 2]]
+        
+        idx_zp = self.grid_map[self.q_grid[:, 0], self.q_grid[:, 1], (self.q_grid[:, 2] + 1) % N_z]
+        idx_zm = self.grid_map[self.q_grid[:, 0], self.q_grid[:, 1], (self.q_grid[:, 2] - 1) % N_z]
+
+        for q_idx in range(self.N):
+            # 1. Central difference of the pre-diagonalized BdG Hamiltonian matrix
+            dH_dx = (self.H_BdG_pre_diagonalized[idx_xp[q_idx]] - self.H_BdG_pre_diagonalized[idx_xm[q_idx]]) * (N_x / 2.0)
+            dH_dy = (self.H_BdG_pre_diagonalized[idx_yp[q_idx]] - self.H_BdG_pre_diagonalized[idx_ym[q_idx]]) * (N_y / 2.0)
+            dH_dz = (self.H_BdG_pre_diagonalized[idx_zp[q_idx]] - self.H_BdG_pre_diagonalized[idx_zm[q_idx]]) * (N_z / 2.0)
+
+            # 2. Retrieve para-unitary eigenvector matrix
+            T = self.Qmatrix[q_idx]
+            T_dag = T.conj().T
+
+            # 3. Project operator derivative onto physical basis (first 'num_bands' elements)
+            grad_x = np.diag(T_dag @ dH_dx @ T).real[:num_bands]
+            grad_y = np.diag(T_dag @ dH_dy @ T).real[:num_bands]
+            grad_z = np.diag(T_dag @ dH_dz @ T).real[:num_bands]
+
+            self.grad_f_hyb[q_idx, :, 0] = grad_x
+            self.grad_f_hyb[q_idx, :, 1] = grad_y
+            self.grad_f_hyb[q_idx, :, 2] = grad_z
+        
+
 
     def _compute_group_velocities(self):
         """
@@ -1925,10 +1967,10 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
 
 
 @cuda.jit
-def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, Qmatrix,
+def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, Qmatrix,
                         slc_axis, slc_rij, slc_rik, slc_J, slc_types,
                         eig_phon, w_phon, atom_masses, mag_moments,
-                        smearing, chan_indices, chan_weights, channel_count, num_phon, num_mag):
+                        base_smearing, min_sigma, chan_indices, chan_weights, channel_count, num_phon, num_mag):
     """
     Unified hybridized phase space scan. Because all particles are identical polarons, 
     every collision is mathematically represented by a single splitting topology.
@@ -1967,8 +2009,6 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, Qmatrix,
     mqx, mqy, mqz = q_grid_cart[minus_q_idx, 0], q_grid_cart[minus_q_idx, 1], q_grid_cart[minus_q_idx, 2]
 
     num_bands = num_phon + num_mag
-    cutoff = 2.0 * smearing
-    gaussian_norm = 1.0 / (smearing * 2.50662827463)
 
     for b_q in range(num_bands):
         w_q = w_hyb[q_idx, b_q]
@@ -1977,8 +2017,20 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, Qmatrix,
             for b_p in range(num_bands):
                 dE = w_q - w_k - w_hyb[p_idx, b_p]
 
+                # Adaptive Broadening Calculation
+                variance = 0.0
+                for i in range(3):
+                    d_g = grad_f_hyb[q_idx, b_q, i] - grad_f_hyb[k_idx, b_k, i] - grad_f_hyb[p_idx, b_p, i]
+                    step_width = d_g / mesh[i]
+                    variance += step_width * step_width
+                
+                sigma_raw = base_smearing * math.sqrt(variance / 12.0)
+                sigma = sigma_raw if sigma_raw > min_sigma else min_sigma
+                cutoff = 3.0 * sigma
+
                 if abs(dE) < cutoff:
-                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (smearing * smearing))
+                    gaussian_norm = 0.4179 / sigma
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
 
                     V_sq = calc_symmetrized_hybrid_vertex_squared(
                         k_idx, p_idx, q_idx, minus_k_idx, minus_p_idx, minus_q_idx,
@@ -2574,6 +2626,7 @@ if __name__ == "__main__":
         gpu_data["q_grid_cart"],
         gpu_data["grid_map"], 
         gpu_data["w_hyb"], 
+        gpu_data["grad_f_hyb"], 
         gpu_data["Qmatrix"],
         gpu_data["slc_axis"], 
         gpu_data["slc_rij"], 
@@ -2585,6 +2638,7 @@ if __name__ == "__main__":
         gpu_data["atom_masses"], 
         gpu_data["mag_moments"],
         smearing,                 
+        min_sigma,             
         d_chan_indices,   
         d_chan_weights, 
         d_channel_count,
