@@ -77,12 +77,14 @@ class CrystalDataSoA:
         if slc_files and len(slc_files) == 3:
             self._parse_slc_tensors(slc_files[0], slc_files[1], slc_files[2], lattice_constant)
 
+        self.ref_omega = 5.0 
 
         self.w_hyb, self.Qmatrix, self.H_BdG_pre_diagonalized, self.H_BdG_diagonalized = self._calculate_coupled_hamiltonian(
             q_cart_array=self.q_grid_cart,
             dyn_mat=self.dyn_mat_phon,
             K_anisotropy=anisotropy,
             lattice_constant=lattice_constant,
+            ref_omega=self.ref_omega,
             return_full_matrices=True
         )
 
@@ -249,6 +251,8 @@ class CrystalDataSoA:
 
         gpu_buffers["w_hyb"] = track_and_push("w_hyb", self.w_hyb)
         gpu_buffers["Qmatrix"] = track_and_push("Qmatrix", self.Qmatrix)
+
+        gpu_buffers["w_reference"] = track_and_push("w_reference", np.array([self.ref_omega], dtype=np.float64))
         
         if hasattr(self, 'slc_axis'):
             gpu_buffers["slc_axis"] = track_and_push("slc_axis", self.slc_axis)
@@ -1672,7 +1676,7 @@ def calc_hybrid_vertex_Gamma(
     kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
     alpha, alpha_prime, alpha_double_prime,
     Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+    w_reference, eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
 ):
     """
     Computes the highly-coupled 3-particle hybridized vertex Gamma.
@@ -1693,11 +1697,11 @@ def calc_hybrid_vertex_Gamma(
                 # kpx = k_in - q_in = (k+q) - q = k
                 # qx  = q_in = q
                 # ---------------------------------------------------------
-                V1 = calc_vertex_V(
+                V1 = calc_vertex_V_cart(
                     kx, ky, kz, qx, qy, qz, 
                     q_idx, lam, n, m, 
                     grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                    eig_phon, w_phon, atom_masses, mag_moments
+                    w_reference, atom_masses, mag_moments
                 )
                 P1 = Qmatrix[q_idx, lam, alpha_double_prime] + Qmatrix[q_idx, lam + N_half, alpha_double_prime]
                 Q1_n = Qmatrix[k_plus_q_idx, I_n, alpha].conjugate()
@@ -1710,11 +1714,11 @@ def calc_hybrid_vertex_Gamma(
                 # kpx = k_in - q_in = -q - (-(k+q)) = k
                 # qx  = q_in = -(k+q)
                 # ---------------------------------------------------------
-                V2 = calc_vertex_V(
+                V2 = calc_vertex_V_cart(
                     kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, 
                     minus_k_plus_q_idx, lam, n, m, 
                     grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                    eig_phon, w_phon, atom_masses, mag_moments
+                    w_reference, atom_masses, mag_moments
                 )
                 P2 = Qmatrix[minus_k_plus_q_idx, lam, alpha].conjugate() + Qmatrix[minus_k_plus_q_idx, lam + N_half, alpha].conjugate()
                 Q2_n = Qmatrix[minus_q_idx, I_n, alpha_double_prime + N_half].conjugate()
@@ -1727,11 +1731,11 @@ def calc_hybrid_vertex_Gamma(
                 # kpx = k_in - q_in = -k - q = -(k+q)
                 # qx  = q_in = q
                 # ---------------------------------------------------------
-                V3 = calc_vertex_V(
+                V3 = calc_vertex_V_cart(
                     minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, qx, qy, qz, 
                     q_idx, lam, n, m, 
                     grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                    eig_phon, w_phon, atom_masses, mag_moments
+                    w_reference, atom_masses, mag_moments
                 )
                 P3 = Qmatrix[q_idx, lam, alpha_double_prime] + Qmatrix[q_idx, lam + N_half, alpha_double_prime]
                 Q3_n = Qmatrix[minus_k_idx, I_n, alpha_prime + N_half].conjugate()
@@ -1750,7 +1754,7 @@ def calc_symmetrized_hybrid_vertex_squared(
     k_idx, q_idx, k_plus_q_idx, minus_k_idx, minus_q_idx, minus_k_plus_q_idx,
     kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
     alpha, alpha_prime, alpha_double_prime,
-    Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+    Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, w_reference,
     eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
 ):
     """
@@ -1762,7 +1766,7 @@ def calc_symmetrized_hybrid_vertex_squared(
         k_idx, q_idx, k_plus_q_idx, minus_k_idx, minus_q_idx, minus_k_plus_q_idx,
         kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
         alpha, alpha_prime, alpha_double_prime,
-        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, w_reference,
         eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
     )
     
@@ -1771,7 +1775,7 @@ def calc_symmetrized_hybrid_vertex_squared(
         q_idx, k_idx, k_plus_q_idx, minus_q_idx, minus_k_idx, minus_k_plus_q_idx,
         qx, qy, qz, kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
         alpha, alpha_double_prime, alpha_prime,
-        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, w_reference,
         eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
     )
     
@@ -1965,7 +1969,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
 @cuda.jit
 def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, Qmatrix,
                         slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                        eig_phon, w_phon, atom_masses, mag_moments,
+                        w_reference, eig_phon, w_phon, atom_masses, mag_moments,
                         smearing, chan_indices, chan_weights, channel_count, num_phon, num_mag):
     """
     Unified hybridized phase space scan. Because all particles are identical polarons, 
@@ -2022,7 +2026,7 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, Qmatrix,
                         k_idx, p_idx, q_idx, minus_k_idx, minus_p_idx, minus_q_idx,
                         kx, ky, kz, px, py, pz, mqx, mqy, mqz,
                         b_q, b_k, b_p,
-                        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, w_reference,
                         eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
                     )
 
@@ -2618,6 +2622,7 @@ if __name__ == "__main__":
         gpu_data["slc_rik"], 
         gpu_data["slc_J"], 
         gpu_data["slc_types"], 
+        gpu_data["w_reference"],
         gpu_data["eig_phon"],
         gpu_data["w_phon"],
         gpu_data["atom_masses"], 
