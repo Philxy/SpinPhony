@@ -77,8 +77,6 @@ class CrystalDataSoA:
         if slc_files and len(slc_files) == 3:
             self._parse_slc_tensors(slc_files[0], slc_files[1], slc_files[2], lattice_constant)
 
-        self.grad_f_hyb = np.zeros((self.N, self.phon_branches + self.n_mag_branches, 3), dtype=np.float64)
-
         self.w_hyb, self.Qmatrix, self.H_BdG_pre_diagonalized, self.H_BdG_diagonalized = self._calculate_coupled_hamiltonian(
             q_cart_array=self.q_grid_cart,
             dyn_mat=self.dyn_mat_phon,
@@ -86,6 +84,8 @@ class CrystalDataSoA:
             lattice_constant=lattice_constant,
             return_full_matrices=True
         )
+
+        self._compute_hybrid_group_velocities()
 
 
     def print_summary(self):
