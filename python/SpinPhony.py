@@ -512,7 +512,9 @@ class CrystalDataSoA:
         for q_idx in range(N_pts):
             H_BdG = np.zeros((dim, dim), dtype=np.complex128)
             
-            # --- Phonon Blocks ---
+
+            # --- Phonon Blocks from the Dynamical Matrix ---
+            """
             D_complex = dyn_mat[q_idx]
             D_meV2 = D_complex * (CONV_FACTOR ** 2)
 
@@ -528,6 +530,14 @@ class CrystalDataSoA:
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
             H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon
+            """
+            
+            # --- Phonon Block from Eigenvalues ---
+            A_phon = np.diag(self.w_phon[q_idx])
+            
+            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
+
 
             # --- Magnon Blocks ---
             J_k = J_k_all[q_idx] 
