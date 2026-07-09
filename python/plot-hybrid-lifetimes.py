@@ -225,16 +225,14 @@ literature_phonon_scatt_rates_per_ps = """4.48783529925765, 0.02417798122601752
 34.18134199076503, 0.000001513351728790208
 30.341370543452946, 0.0000018759326350961785
 30.75805420076251, 0.000005553051549190054
-32.43945678612649, 0.000010404311080699466
+22.43945678612649, 0.000010404311080699466
 33.09578293667771, 0.00001606412040410882
 33.76860889233399, 0.000032335872941472364
 33.32992113371684, 0.00005236039963279138
-33.55523945480777, 0.00007164453691910147
-""" 
+33.55523945480777, 0.00007164453691910147""" 
 
 def main():
-    # Set up argument parsing to accept the file path
-    parser = argparse.ArgumentParser(description="Plot BZ Lifetimes for Hybrid Magnon-Polarons")
+    parser = argparse.ArgumentParser(description="Plot BZ Lifetimes and Group Velocities for Hybrid Magnon-Polarons")
     parser.add_argument("filepath", type=str, help="Path to the hybrid_equilibrium_lifetimes.csv file")
     args = parser.parse_args()
 
@@ -245,7 +243,6 @@ def main():
     print(f"Loading data from {args.filepath}...")
     df = pd.read_csv(args.filepath)
 
-    # Convert literature rates (ps^-1) to lifetimes (ps)
     print("Parsing literature rates...")
     df_lit_mag = pd.read_csv(io.StringIO(literature_scattering_rates), names=['energy_meV', 'gamma_ps-1'])
     df_lit_phon = pd.read_csv(io.StringIO(literature_phonon_scatt_rates_per_ps), names=['energy_meV', 'gamma_ps-1'])
@@ -253,8 +250,7 @@ def main():
     df_lit_mag['tau_ps'] = 1.0 / df_lit_mag['gamma_ps-1']
     df_lit_phon['tau_ps'] = 1.0 / df_lit_phon['gamma_ps-1']
 
-    # Filter out infinite or zero lifetimes from hybrid dataset
-    df_valid = df[(df['tau_ps'] < np.inf) & (df['tau_ps'] > 0)]
+    df_valid = df[(df['tau_ps'] < np.inf) & (df['tau_ps'] > 0)].copy()
     
     # Calculate the net character (-1 for pure phonon, +1 for pure magnon)
     character = df_valid['mag_char'] - df_valid['phon_char']
@@ -264,11 +260,10 @@ def main():
     alpha_val = 0.7
     cmap = 'coolwarm'
 
-    print("Generating Character Plot...")
-    
     # =========================================================================
     # PLOT 1: Lifetime vs Energy (Color-coded by Character)
     # =========================================================================
+    print("Generating Character Plot...")
     fig1, ax1 = plt.subplots(figsize=(8, 6))
     
     sc1 = ax1.scatter(df_valid['energy_meV'], df_valid['tau_ps'], c=character, 
@@ -296,7 +291,6 @@ def main():
     print("Generating Angular Momentum Plot...")
     fig2, (ax_pam, ax_sam) = plt.subplots(1, 2, figsize=(14, 6))
 
-    # --- Subplot A: Phonon Angular Momentum (PAM) ---
     sc_pam = ax_pam.scatter(df_valid['energy_meV'], df_valid['tau_ps'], c=df_valid['phon_AM'], 
                             cmap=cmap, vmin=-1.0, vmax=1.0, s=dot_size, alpha=alpha_val, edgecolors='none')
     ax_pam.set_yscale('log')
@@ -309,7 +303,6 @@ def main():
     cbar_pam.set_label(r'Phonon AM $L_z$ ($\hbar$)', fontsize=12)
     ax_pam.grid(True, which="both", ls="--", alpha=0.4)
 
-    # --- Subplot B: Spin Angular Momentum (SAM) ---
     sc_sam = ax_sam.scatter(df_valid['energy_meV'], df_valid['tau_ps'], c=df_valid['spin_AM'], 
                             cmap=cmap, vmin=-1.0, vmax=1.0, s=dot_size, alpha=alpha_val, edgecolors='none')
     ax_sam.set_yscale('log')
@@ -333,15 +326,12 @@ def main():
     print("Generating Literature Comparison Plot...")
     fig3, ax3 = plt.subplots(figsize=(9, 6))
     
-    # 1. Plot hybrid data (same coloring as plot 1)
     sc3 = ax3.scatter(df_valid['energy_meV'], df_valid['tau_ps'], c=character, 
                       cmap=cmap, vmin=-1.0, vmax=1.0, s=dot_size, alpha=alpha_val, edgecolors='none', label='Hybrid Polarons')
     
-    # 2. Overlay Literature Magnons (open black triangles)
     ax3.scatter(df_lit_mag['energy_meV'], df_lit_mag['tau_ps'], marker='^', s=40, 
                 facecolors='none', edgecolors='black', linewidths=1.2, label='Uncoupled Magnons (Lit)')
     
-    # 3. Overlay Literature Phonons (open black squares)
     ax3.scatter(df_lit_phon['energy_meV'], df_lit_phon['tau_ps'], marker='s', s=40, 
                 facecolors='none', edgecolors='black', linewidths=1.2, label='Uncoupled Phonons (Lit)')
 
@@ -354,8 +344,6 @@ def main():
     cbar3 = fig3.colorbar(sc3, ax=ax3)
     cbar3.set_label('Character (Blue=Phonon, Red=Magnon)', fontsize=12)
     ax3.grid(True, which="both", ls="--", alpha=0.4)
-    
-    # Place legend to prevent overlap with the data if possible
     ax3.legend(loc='lower left', fontsize=10, framealpha=0.9)
     
     plt.tight_layout()
@@ -363,6 +351,33 @@ def main():
     plt.savefig(plot3_path, dpi=300)
     plt.show()
     print(f" -> Saved {plot3_path}")
+
+    # =========================================================================
+    # PLOT 4: Group Velocity Magnitude vs Energy (Color-coded by Character)
+    # =========================================================================
+    print("Generating Group Velocity Magnitude Plot...")
+    # Compute total magnitude from vector components
+    df_valid['v_magnitude'] = np.sqrt(df_valid['vx']**2 + df_valid['vy']**2 + df_valid['vz']**2)
+    
+    fig4, ax4 = plt.subplots(figsize=(8, 6))
+    sc4 = ax4.scatter(df_valid['energy_meV'], df_valid['v_magnitude'], c=character, 
+                      cmap=cmap, vmin=-1.0, vmax=1.0, s=dot_size, alpha=alpha_val, edgecolors='none')
+    
+    ax4.set_xscale('log')
+    ax4.set_yscale('log')
+    ax4.set_xlabel('Energy (meV)', fontsize=12, fontweight='bold')
+    ax4.set_ylabel('Group Velocity Magnitude |v| (arb. units)', fontsize=12, fontweight='bold')
+    ax4.set_title('Hybrid Polaron Group Velocity Magnitude vs Energy', fontsize=14)
+    
+    cbar4 = fig4.colorbar(sc4, ax=ax4)
+    cbar4.set_label('Character (Blue=Phonon, Red=Magnon)', fontsize=12)
+    ax4.grid(True, which="both", ls="--", alpha=0.4)
+    
+    plt.tight_layout()
+    plot4_path = "group_velocities_vs_energy.png"
+    plt.savefig(plot4_path, dpi=300)
+    plt.show()
+    print(f" -> Saved {plot4_path}")
 
 if __name__ == "__main__":
     main()
