@@ -2682,8 +2682,8 @@ if __name__ == "__main__":
     out_file = "Outputs/hybrid_equilibrium_lifetimes.csv"
     
     with open(out_file, "w") as f:
-        # Appended specific structural headers
-        f.write("q_idx,qx,qy,qz,branch,energy_meV,phon_char,mag_char,phon_AM,spin_AM,gamma_ps-1,tau_ps\n")
+        # Appended headers
+        f.write("q_idx,qx,qy,qz,branch,energy_meV,vx,vy,vz,phon_char,mag_char,phon_AM,spin_AM,gamma_ps-1,tau_ps\n")
         
         for q_idx in range(N_points):
             qx, qy, qz = crystal_data.q_grid[q_idx]
@@ -2692,15 +2692,20 @@ if __name__ == "__main__":
                 gamma = gamma_hyb_cpu[q_idx, branch]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
                 
-                # Retrieve local characters
+                # Retrieve local characters and AM
                 pc = phon_chars[q_idx, branch]
                 mc = mag_chars[q_idx, branch]
                 pa = phon_ams[q_idx, branch]
                 sa = spin_ams[q_idx, branch]
                 
-                f.write(f"{q_idx},{qx},{qy},{qz},{branch},{energy:.6f},{pc:.6f},{mc:.6f},{pa:.6e},{sa:.6e},{gamma:.6e},{tau:.6e}\n")
+                # Retrieve the hybridized group velocities
+                vx = crystal_data.grad_f_hyb[q_idx, branch, 0]
+                vy = crystal_data.grad_f_hyb[q_idx, branch, 1]
+                vz = crystal_data.grad_f_hyb[q_idx, branch, 2]
+                
+                f.write(f"{q_idx},{qx},{qy},{qz},{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{pc:.6f},{mc:.6f},{pa:.6e},{sa:.6e},{gamma:.6e},{tau:.6e}\n")
 
-    print(f"-> Saved equilibrium hybrid lifetimes and characters to {out_file}.")
+    print(f"-> Saved equilibrium hybrid lifetimes, velocities, and characters to {out_file}.")
     print("Simulation Complete.")
 
 
