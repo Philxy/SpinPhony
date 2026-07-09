@@ -1988,7 +1988,6 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, 
     qz_p = (q_grid[q_idx, 2] - q_grid[k_idx, 2] + mesh[2]) % mesh[2]
     p_idx = grid_map[qx_p, qy_p, qz_p]
 
-    # Required Minus Indices
     mx_k = (-q_grid[k_idx, 0] + mesh[0]) % mesh[0]
     my_k = (-q_grid[k_idx, 1] + mesh[1]) % mesh[1]
     mz_k = (-q_grid[k_idx, 2] + mesh[2]) % mesh[2]
@@ -2004,10 +2003,15 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, 
     mz_q = (-q_grid[q_idx, 2] + mesh[2]) % mesh[2]
     minus_q_idx = grid_map[mx_q, my_q, mz_q]
 
-    # Required Cartesian Vectors
     kx, ky, kz = q_grid_cart[k_idx, 0], q_grid_cart[k_idx, 1], q_grid_cart[k_idx, 2]
-    px, py, pz = q_grid_cart[p_idx, 0], q_grid_cart[p_idx, 1], q_grid_cart[p_idx, 2]
-    mqx, mqy, mqz = q_grid_cart[minus_q_idx, 0], q_grid_cart[minus_q_idx, 1], q_grid_cart[minus_q_idx, 2]
+
+    px = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
+    py = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
+    pz = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
+
+    mqx = -q_grid_cart[q_idx, 0]
+    mqy = -q_grid_cart[q_idx, 1]
+    mqz = -q_grid_cart[q_idx, 2]
 
     num_bands = num_phon + num_mag
 
