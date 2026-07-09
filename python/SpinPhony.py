@@ -411,14 +411,20 @@ class CrystalDataSoA:
             H_pre = np.zeros((N_pts, dim, dim), dtype=np.complex128)
             H_diag = np.zeros((N_pts, dim, dim), dtype=np.complex128)
         
-        # Offsets matching C++ Basis: [Phonon, Magnon, Phonon*, Magnon*]
         off_ph_p = 0
         off_mag_p = num_phon
         off_ph_h = num_phon + num_mag
         off_mag_h = 2 * num_phon + num_mag
 
         CONV_FACTOR = 15.633302 * 4.135667696
-        I_phon = np.eye(num_phon, dtype=np.complex128)
+
+        # Choose grid vs path data based on N_pts
+        if N_pts == self.N:
+            w_phon_source = self.w_phon
+            eig_phon_source = self.eig_phon
+        else:
+            w_phon_source = self.path_w_phon
+            eig_phon_source = self.path_eig_phon
 
         # --- Constants & Conversions ---
         hbar = 0.6582119569 # meV * ps
@@ -533,11 +539,10 @@ class CrystalDataSoA:
             """
             
             # --- Phonon Block from Eigenvalues ---
-            A_phon = np.diag(self.w_phon[q_idx])
+            A_phon = np.diag(w_phon_source[q_idx])
             
             H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
-
 
             # --- Magnon Blocks ---
             J_k = J_k_all[q_idx] 
@@ -1703,8 +1708,7 @@ def calc_symmetrized_hybrid_vertex_squared(
     kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
     alpha, alpha_prime, alpha_double_prime,
     Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
-):
+    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag):
     """
     Computes the squared absolute value of the symmetrized hybridized vertex.
     """
