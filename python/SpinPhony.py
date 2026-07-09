@@ -1577,7 +1577,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
         disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * omega))
         
         for mu in range(3):
-            e_mu = 1 # eig_phon[q_idx, lambda_phon, l, mu] # for now we will ignore it as we are dealing with a Cartesian basis for the phonon eigenvectors in the hybrid vertex calculation!!!
+            e_mu = eig_phon[q_idx, lambda_phon, l, mu]
             
             calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
 
@@ -1604,6 +1604,64 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
             
             W_tot = W_dynamic - W_static
             V_complex += disp_amp * e_mu * W_tot
+            
+    return V_complex
+
+
+@cuda.jit(device=True)
+def calc_vertex_V_cart(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, w_reference, atom_masses, mag_moments):
+    """
+    Calculates the full scattering vertex V^{+-} combining the FT tensor and phonon eigenvectors.
+    """
+    gamma_idx = grid_map[0, 0, 0]
+    
+
+    hbar = 0.6582119569 # meV * ps
+    DALTON_TO_meV_PS2_PER_A2 = 0.10364269 
+    
+    S_n = math.fabs(mag_moments[n] / 2.0 ) 
+    S_m = math.fabs(mag_moments[m] / 2.0 )
+    
+    sigma_n = gpu_copysign(1.0, mag_moments[n]) if math.fabs(S_n) > 1E-3 else 0.0
+    sigma_m = gpu_copysign(1.0, mag_moments[m]) if math.fabs(S_m) > 1E-3 else 0.0
+
+    J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
+    J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
+    
+    V_complex = 0.0 + 0.0j
+    num_atoms = atom_masses.shape[0]
+    num_mag_branches = mag_moments.shape[0]
+
+    for l in range(num_atoms):
+        mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
+        disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * w_reference))
+        
+        for mu in range(3):
+            
+            calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+
+            J_xx = J_tilde_dyn[0, 0]
+            J_yy = J_tilde_dyn[1, 1]
+
+            J_xy = J_tilde_dyn[0, 1]
+            J_yx = J_tilde_dyn[1, 0]
+            
+            W_dynamic = (J_xx + 
+                         (sigma_n * sigma_m) * J_yy - 
+                         1j * sigma_m * J_xy + 
+                         1j * sigma_n * J_yx) / math.sqrt(S_n * S_m)
+            
+            W_static = 0.0 + 0.0j
+            
+            if n == m: 
+                for mp in range(num_mag_branches):
+                    if math.fabs(mag_moments[mp]) > 1e-2:
+                        sigma_mp = gpu_copysign(1.0, mag_moments[mp])
+                        calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] 
+            
+            W_tot = W_dynamic - W_static
+            V_complex += disp_amp * W_tot
             
     return V_complex
 
