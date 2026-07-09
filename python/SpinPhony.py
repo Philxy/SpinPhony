@@ -416,6 +416,8 @@ class CrystalDataSoA:
         off_ph_h = num_phon + num_mag
         off_mag_h = 2 * num_phon + num_mag
 
+        I_phon = np.eye(num_phon, dtype=np.complex128)
+
         CONV_FACTOR = 15.633302 * 4.135667696
 
         # Choose grid vs path data based on N_pts
@@ -501,16 +503,9 @@ class CrystalDataSoA:
                 phases_slc = np.dot(q_cart_array, self.slc_rik[i])
                 phase_factor = np.exp(1j * phases_slc)
 
-                omega = w_phon_source[:, p_idx]
-                if omega < 0.01:
-                    continue 
+                V_plus_all[:, n_mag_i, p_idx] += (Jxz + 1j * Jyz) * phase_factor
+                V_minus_all[:, n_mag_i, p_idx] += (Jxz - 1j * Jyz) * phase_factor
 
-                displ_amplitude = np.sqrt((hbar * hbar) / (S_val * self.atom_masses[disp_atom_idx] * DALTON_TO_meV_PS2_PER_A2 * omega))
-
-                V_plus_all[:, n_mag_i, p_idx] += (Jxz + 1j * Jyz) * phase_factor * displ_amplitude
-                V_minus_all[:, n_mag_i, p_idx] += (Jxz - 1j * Jyz) * phase_factor * displ_amplitude
-
-            """
             for p in range(num_phon):
                 atom_l = p // 3
                 mass = self.atom_masses[atom_l]
@@ -518,7 +513,9 @@ class CrystalDataSoA:
                 
                 V_plus_all[:, :, p] *= prefactor
                 V_minus_all[:, :, p] *= prefactor
-            """
+
+
+
 
         # ==========================================
         # 2. HAMILTONIAN ASSEMBLY
@@ -528,7 +525,6 @@ class CrystalDataSoA:
             
 
             # --- Phonon Blocks from the Dynamical Matrix ---
-            """
             D_complex = dyn_mat[q_idx]
             D_meV2 = D_complex * (CONV_FACTOR ** 2)
 
@@ -544,13 +540,15 @@ class CrystalDataSoA:
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
             H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon
-            """
+
             
             # --- Phonon Block from Eigenvalues ---
+            """
             A_phon = np.diag(w_phon_source[q_idx])
             
             H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
             H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
+            """
 
             # --- Magnon Blocks ---
             J_k = J_k_all[q_idx] 
@@ -585,6 +583,7 @@ class CrystalDataSoA:
                 Vp = V_plus_all[q_idx]
                 Vm = V_minus_all[q_idx]
                 
+                """
                 # 1. Normal Particle-Particle
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
@@ -600,6 +599,7 @@ class CrystalDataSoA:
                 # 4. Anomalous Hole-Particle (Magnon_h, Phonon_p)
                 H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
+                """
 
             # --- 3. Diagonalization ---
             if return_full_matrices:
