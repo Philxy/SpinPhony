@@ -2075,9 +2075,9 @@ def phase_lifetime_hybrid(chan_indices, chan_weights, num_channels, n_hyb, gamma
     V_sq = chan_weights[idx]
 
     hbar = 0.6582119569 # meV * ps
-    prefactor_split = (2.0 * math.pi / hbar) / N_points
+    prefactor_split = (math.pi / hbar) / N_points
     prefactor_coal  = (2.0 * math.pi / hbar) / N_points
-
+    
     n_q = n_hyb[q_idx, b_q]
     n_k = n_hyb[k_idx, b_k]
     n_p = n_hyb[p_idx, b_p]
@@ -2560,7 +2560,6 @@ if __name__ == "__main__":
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N 
 
-    anticipated_fraction = 0.07 # for 40x40x40 0.07 seems to be the max
     total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
     max_channels = int(total_loops * anticipated_fraction)
     
