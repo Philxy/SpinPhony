@@ -2037,9 +2037,8 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, 
                     gaussian_norm = 0.4179 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
 
-                    V_sq = 0.01
+                   #V_sq = 0.01
 
-                    """
                     V_sq = calc_symmetrized_hybrid_vertex_squared(
                         k_idx, p_idx, q_idx, minus_k_idx, minus_p_idx, minus_q_idx,
                         kx, ky, kz, px, py, pz, mqx, mqy, mqz,
@@ -2047,7 +2046,6 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, 
                         Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
                         eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
                     )
-                    """
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
