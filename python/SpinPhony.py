@@ -1565,6 +1565,52 @@ def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc
             for b in range(3):
                 J_tilde_out[a, b] += (slc_J[i, a, b] * phase_factor) * match_mask
 
+@cuda.jit(device=True)
+def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m, 
+                    slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                    eig_phon_q, omega, atom_masses, mag_moments):
+    """Calculates the scattering vertex specifically for explicitly projected wavevectors."""
+    if omega < 1.0: return 0.0
+    
+    hbar = 0.6582119569 # meV * ps
+    DALTON_TO_meV_PS2_PER_A2 = 0.10364269
+    
+    S_n = math.fabs(mag_moments[n] / 2.0 ) 
+    S_m = math.fabs(mag_moments[m] / 2.0 )
+    
+    # REPLACED math.copysign with gpu_copysign
+    sigma_n = gpu_copysign(1.0, mag_moments[n]) if S_n > 0 else 0.0
+    sigma_m = gpu_copysign(1.0, mag_moments[m]) if S_m > 0 else 0.0
+
+    J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
+    J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
+    V_complex = 0.0 + 0.0j
+    
+    num_atoms = atom_masses.shape[0]
+    num_mag_branches = mag_moments.shape[0]
+
+    for l in range(num_atoms):
+        mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
+        disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * omega))
+        
+        for mu in range(3):
+            e_mu = eig_phon_q[lambda_phon, l, mu]
+            calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+            W_dynamic = (J_tilde_dyn[0, 0] + (sigma_n * sigma_m) * J_tilde_dyn[1, 1] - 1j * sigma_m * J_tilde_dyn[0, 1] + 1j * sigma_n * J_tilde_dyn[1, 0]) / math.sqrt(S_n * S_m)
+            
+            W_static = 0.0 + 0.0j
+            if n == m: 
+                for mp in range(num_mag_branches):
+                    if math.fabs(mag_moments[mp]) > 1e-2:
+                        sigma_mp = gpu_copysign(1.0, mag_moments[mp])
+                        calc_fourier_transform_vec(gammax, gammay, gammaz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        
+                        W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2]
+                        
+            V_complex += disp_amp * e_mu * (W_dynamic - W_static)
+            
+    return (V_complex.real**2 + V_complex.imag**2)
+
 
 @cuda.jit(device=True)
 def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
