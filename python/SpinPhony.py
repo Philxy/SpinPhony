@@ -1543,23 +1543,32 @@ def gpu_copysign(x, y):
 
 @cuda.jit(device=True)
 def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n_type, m_type, l_type, mu_type, J_tilde_out):
-    """Computes the FT tensor explicitly passing scalar Cartesian coordinates."""
+    
+    # Initialize array
     for a in range(3):
         for b in range(3):
             J_tilde_out[a, b] = 0.0 + 0.0j
 
+    # Main loop over all interaction pairs
     for i in range(slc_axis.shape[0]):
-        if slc_axis[i] == mu_type:
-            if slc_types[i, 0] == n_type and slc_types[i, 1] == m_type and slc_types[i, 2] == l_type:
-                phase_val = (kpx * slc_rij[i, 0] + kpy * slc_rij[i, 1] + kpz * slc_rij[i, 2]) + \
-                            (qx * slc_rik[i, 0] + qy * slc_rik[i, 1] + qz * slc_rik[i, 2])
-                
-                # REPLACED cmath.exp with NVVM-safe math equivalents
-                phase_factor = math.cos(phase_val) + 1j * math.sin(phase_val)
-                
-                for a in range(3):
-                    for b in range(3):
-                        J_tilde_out[a, b] += slc_J[i, a, b] * phase_factor
+        
+        # --- Eliminate nested IF statements with a boolean mask ---
+        match_mask = float((slc_axis[i] == mu_type) and 
+                           (slc_types[i, 0] == n_type) and 
+                           (slc_types[i, 1] == m_type) and 
+                           (slc_types[i, 2] == l_type))
+        
+        # Calculate phase unconditionally (GPU ALUs are very fast, this is often faster than diverging)
+        phase_val = (kpx * slc_rij[i, 0] + kpy * slc_rij[i, 1] + kpz * slc_rij[i, 2]) + \
+                    (qx * slc_rik[i, 0] + qy * slc_rik[i, 1] + qz * slc_rik[i, 2])
+        
+        phase_factor = math.cos(phase_val) + 1j * math.sin(phase_val)
+        
+        # Multiply the accumulation by the match_mask. 
+        # If types don't match, match_mask is 0.0, and nothing is added.
+        for a in range(3):
+            for b in range(3):
+                J_tilde_out[a, b] += (slc_J[i, a, b] * phase_factor) * match_mask
 
 @cuda.jit(device=True)
 def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m, 
@@ -1610,24 +1619,28 @@ def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda
 
 @cuda.jit(device=True)
 def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
-    """
-    Calculates the full scattering vertex V^{+-} combining the FT tensor and phonon eigenvectors.
-    """
-    gamma_idx = grid_map[0, 0, 0]
-    omega = w_phon[q_idx, lambda_phon]
     
-    if omega < 1.0:
-        return 0.0
-
+    # --- Eliminate early return ---
+    omega = w_phon[q_idx, lambda_phon]
+    # omega_mask is 1.0 if valid, 0.0 if not. 
+    # Adding a small epsilon (1e-12) to omega prevents div-by-zero below when omega is 0
+    omega_mask = float(omega >= 1.0)
+    omega_safe = omega + (1.0 - omega_mask) * 1e-12 
 
     hbar = 0.6582119569 # meV * ps
     DALTON_TO_meV_PS2_PER_A2 = 0.10364269 
     
-    S_n = math.fabs(mag_moments[n] / 2.0 ) 
-    S_m = math.fabs(mag_moments[m] / 2.0 )
+    S_n = math.fabs(mag_moments[n] / 2.0) 
+    S_m = math.fabs(mag_moments[m] / 2.0)
     
-    sigma_n = gpu_copysign(1.0, mag_moments[n]) if math.fabs(S_n) > 1E-3 else 0.0
-    sigma_m = gpu_copysign(1.0, mag_moments[m]) if math.fabs(S_m) > 1E-3 else 0.0
+    # Safe denominators to prevent div-by-zero. If S=0, mask will kill it later anyway.
+    S_n_safe = S_n + float(S_n < 1E-3) * 1.0 
+    S_m_safe = S_m + float(S_m < 1E-3) * 1.0
+    
+    # --- Eliminate if/else for sigma ---
+    # gpu_copysign(1.0, x) is usually just math.copysign in Numba CUDA
+    sigma_n = math.copysign(1.0, mag_moments[n]) * float(S_n > 1E-3)
+    sigma_m = math.copysign(1.0, mag_moments[m]) * float(S_m > 1E-3)
 
     J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
     J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
@@ -1635,10 +1648,14 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     V_complex = 0.0 + 0.0j
     num_atoms = atom_masses.shape[0]
     num_mag_branches = mag_moments.shape[0]
+    
+    # --- Mask for the static term (n == m) ---
+    is_n_eq_m_mask = float(n == m)
 
     for l in range(num_atoms):
         mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
-        disp_amp = math.sqrt(hbar*hbar / (2.0 * mass_l * omega))
+        # Use omega_safe here. If omega < 1.0, this computes garbage, but omega_mask zeroes it out at the end.
+        disp_amp = math.sqrt((hbar * hbar) / (2.0 * mass_l * omega_safe))
         
         for mu in range(3):
             e_mu = eig_phon[q_idx, lambda_phon, l, mu]
@@ -1647,29 +1664,34 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
 
             J_xx = J_tilde_dyn[0, 0]
             J_yy = J_tilde_dyn[1, 1]
-
-            # we will turn off relativistic spin-orbit effects for now, so these terms are zero
             J_xy = 0.0 * J_tilde_dyn[0, 1]
             J_yx = 0.0 * J_tilde_dyn[1, 0]
             
             W_dynamic = (J_xx + 
                          (sigma_n * sigma_m) * J_yy - 
                          1j * sigma_m * J_xy + 
-                         1j * sigma_n * J_yx) / math.sqrt(S_n * S_m)
+                         1j * sigma_n * J_yx) / math.sqrt(S_n_safe * S_m_safe)
             
             W_static = 0.0 + 0.0j
             
-            if n == m: 
-                for mp in range(num_mag_branches):
-                    if math.fabs(mag_moments[mp]) > 1e-2:
-                        sigma_mp = gpu_copysign(1.0, mag_moments[mp])
-                        calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
-                        W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] 
+            # Unroll the loop over mp without the `if n == m` blocking it.
+            # We multiply the final W_static by is_n_eq_m_mask instead.
+            for mp in range(num_mag_branches):
+                # Mask replacing `if math.fabs(mag_moments[mp]) > 1e-2:`
+                mp_active_mask = float(math.fabs(mag_moments[mp]) > 1e-2)
+                sigma_mp = math.copysign(1.0, mag_moments[mp]) * mp_active_mask
+                
+                calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                
+                # The accumulation uses the mp_active_mask
+                W_static += mp_active_mask * (2.0 / S_n_safe) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] 
             
-            W_tot = W_dynamic - W_static
+            # Apply the n == m mask to W_static
+            W_tot = W_dynamic - (W_static * is_n_eq_m_mask)
             V_complex += disp_amp * e_mu * W_tot
             
-    return V_complex
+    # Apply the early-return mask here
+    return V_complex * omega_mask
 
 
 @cuda.jit(device=True)
