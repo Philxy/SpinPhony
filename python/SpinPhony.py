@@ -1569,11 +1569,10 @@ def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc
 @cuda.jit(device=True)
 def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
     
-    # --- Eliminate early return ---
     omega = w_phon[q_idx, lambda_phon]
-    # omega_mask is 1.0 if valid, 0.0 if not. 
-    # Adding a small epsilon (1e-12) to omega prevents div-by-zero below when omega is 0
-    omega_mask = float(omega >= 1.0)
+    
+    # FIXED: Multiply by 1.0 instead of using float()
+    omega_mask = 1.0 * (omega >= 1.0)
     omega_safe = omega + (1.0 - omega_mask) * 1e-12 
 
     hbar = 0.6582119569 # meV * ps
@@ -1582,14 +1581,13 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     S_n = math.fabs(mag_moments[n] / 2.0) 
     S_m = math.fabs(mag_moments[m] / 2.0)
     
-    # Safe denominators to prevent div-by-zero. If S=0, mask will kill it later anyway.
-    S_n_safe = S_n + float(S_n < 1E-3) * 1.0 
-    S_m_safe = S_m + float(S_m < 1E-3) * 1.0
+    # FIXED: Implicit cast
+    S_n_safe = S_n + 1.0 * (S_n < 1E-3) 
+    S_m_safe = S_m + 1.0 * (S_m < 1E-3)
     
-    # --- Eliminate if/else for sigma ---
-    # gpu_copysign(1.0, x) is usually just math.copysign in Numba CUDA
-    sigma_n = math.copysign(1.0, mag_moments[n]) * float(S_n > 1E-3)
-    sigma_m = math.copysign(1.0, mag_moments[m]) * float(S_m > 1E-3)
+    # FIXED: Implicit cast
+    sigma_n = math.copysign(1.0, mag_moments[n]) * (S_n > 1E-3)
+    sigma_m = math.copysign(1.0, mag_moments[m]) * (S_m > 1E-3)
 
     J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
     J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
@@ -1598,12 +1596,11 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     num_atoms = atom_masses.shape[0]
     num_mag_branches = mag_moments.shape[0]
     
-    # --- Mask for the static term (n == m) ---
-    is_n_eq_m_mask = float(n == m)
+    # FIXED: Implicit cast
+    is_n_eq_m_mask = 1.0 * (n == m)
 
     for l in range(num_atoms):
         mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
-        # Use omega_safe here. If omega < 1.0, this computes garbage, but omega_mask zeroes it out at the end.
         disp_amp = math.sqrt((hbar * hbar) / (2.0 * mass_l * omega_safe))
         
         for mu in range(3):
@@ -1624,19 +1621,17 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
             W_static = 0.0 + 0.0j
             
             for mp in range(num_mag_branches):
-                mp_active_mask = float(math.fabs(mag_moments[mp]) > 1e-2)
+                # FIXED: Implicit cast
+                mp_active_mask = 1.0 * (math.fabs(mag_moments[mp]) > 1e-2)
                 sigma_mp = math.copysign(1.0, mag_moments[mp]) * mp_active_mask
                 
                 calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                 
-                # The accumulation uses the mp_active_mask
                 W_static += mp_active_mask * (2.0 / S_n_safe) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] 
             
-            # Apply the n == m mask to W_static
             W_tot = W_dynamic - (W_static * is_n_eq_m_mask)
             V_complex += disp_amp * e_mu * W_tot
             
-    # Apply the early-return mask here
     return V_complex * omega_mask
 
 
