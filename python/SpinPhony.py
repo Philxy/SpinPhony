@@ -1571,7 +1571,6 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     
     omega = w_phon[q_idx, lambda_phon]
     
-    # FIXED: Multiply by 1.0 instead of using float()
     omega_mask = 1.0 * (omega >= 1.0)
     omega_safe = omega + (1.0 - omega_mask) * 1e-12 
 
@@ -1581,13 +1580,15 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     S_n = math.fabs(mag_moments[n] / 2.0) 
     S_m = math.fabs(mag_moments[m] / 2.0)
     
-    # FIXED: Implicit cast
     S_n_safe = S_n + 1.0 * (S_n < 1E-3) 
     S_m_safe = S_m + 1.0 * (S_m < 1E-3)
     
-    # FIXED: Implicit cast
-    sigma_n = math.copysign(1.0, mag_moments[n]) * (S_n > 1E-3)
-    sigma_m = math.copysign(1.0, mag_moments[m]) * (S_m > 1E-3)
+    # FIXED: Replaced math.copysign with purely branchless arithmetic
+    sign_n = 1.0 - 2.0 * (mag_moments[n] < 0.0)
+    sign_m = 1.0 - 2.0 * (mag_moments[m] < 0.0)
+    
+    sigma_n = sign_n * (S_n > 1E-3)
+    sigma_m = sign_m * (S_m > 1E-3)
 
     J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
     J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
@@ -1596,7 +1597,6 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     num_atoms = atom_masses.shape[0]
     num_mag_branches = mag_moments.shape[0]
     
-    # FIXED: Implicit cast
     is_n_eq_m_mask = 1.0 * (n == m)
 
     for l in range(num_atoms):
@@ -1621,9 +1621,11 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
             W_static = 0.0 + 0.0j
             
             for mp in range(num_mag_branches):
-                # FIXED: Implicit cast
                 mp_active_mask = 1.0 * (math.fabs(mag_moments[mp]) > 1e-2)
-                sigma_mp = math.copysign(1.0, mag_moments[mp]) * mp_active_mask
+                
+                # FIXED: Replaced math.copysign here as well
+                sign_mp = 1.0 - 2.0 * (mag_moments[mp] < 0.0)
+                sigma_mp = sign_mp * mp_active_mask
                 
                 calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                 
