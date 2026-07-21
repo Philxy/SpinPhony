@@ -2723,6 +2723,7 @@ if __name__ == "__main__":
     blocks_y = math.ceil(N_points / threads_per_block_2d[1])
     blocks_per_grid_2d = (blocks_x, blocks_y)
 
+    """
     phase_1_scan_hybrid[blocks_per_grid_2d, threads_per_block_2d](
         gpu_data["mesh"], 
         gpu_data["q_grid"], 
@@ -2748,6 +2749,7 @@ if __name__ == "__main__":
         crystal_data.phon_branches,
         crystal_data.n_mag_branches
     )
+    """
 
     cuda.synchronize()
     
@@ -2765,6 +2767,7 @@ if __name__ == "__main__":
     threads_per_block = 256
     blocks_eval = math.ceil(num_channels / threads_per_block)
 
+    
     phase_lifetime_hybrid[blocks_eval, threads_per_block](
         d_chan_indices_active,
         d_chan_weights_active,
