@@ -1669,7 +1669,6 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
             for mp in range(num_mag_branches):
                 mp_active_mask = 1.0 * (math.fabs(mag_moments[mp]) > 1e-2)
                 
-                # FIXED: Replaced math.copysign here as well
                 sign_mp = 1.0 - 2.0 * (mag_moments[mp] < 0.0)
                 sigma_mp = sign_mp * mp_active_mask
                 
@@ -1977,7 +1976,6 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                             chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                             chan_weights[c_idx] = V_sq * delta_weight
 
-
 @cuda.jit
 def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, Qmatrix,
                         slc_axis, slc_rij, slc_rik, slc_J, slc_types,
@@ -2108,6 +2106,96 @@ def phase_lifetime_hybrid(chan_indices, chan_weights, num_channels, n_hyb, gamma
     # 3. Coalescence contribution to child 2 state (p)
     rate_p = prefactor_coal * V_sq * (n_k - n_q)
     cuda.atomic.add(gamma_hyb, p_idx * num_bands + b_p, rate_p)
+
+@cuda.jit
+def compute_G_mp_kernel(chan_indices, chan_weights, d_channel_count, w_mag, w_phon, temperature, G_mp_out, N_points):
+    """
+    Calculates the 3TM spin-lattice coupling constant G_mp by summing over
+    the magnon emission phase space (c_type == 0).
+    """
+    idx = cuda.grid(1)
+    if idx >= d_channel_count[0] or idx >= chan_weights.shape[0]:
+        return
+
+    # The G_mp formula restricts the sum to the magnon emission channel
+    c_type = chan_indices[0, idx]
+    if c_type != 0:
+        return
+
+    q_idx = chan_indices[1, idx]  # Initial Magnon (parent)
+    k_idx = chan_indices[2, idx]  # Final Magnon (child)
+    p_idx = chan_indices[3, idx]  # Emitted Phonon (child)
+    n     = chan_indices[4, idx]
+    m     = chan_indices[5, idx]
+    lam   = chan_indices[6, idx]
+
+    V_sq_delta = chan_weights[idx]  # Contains |V|^2 * delta(E)
+
+    E_init = w_mag[q_idx, n]
+    E_fin  = w_mag[k_idx, m]
+    E_phon = w_phon[p_idx, lam]
+
+    kB = 0.08617333262 # meV/K
+    if temperature <= 0.0:
+        return
+
+    beta = 1.0 / (kB * temperature)
+
+    # Filter zero-energy modes (acoustic modes at Gamma) to prevent infinities
+    if E_init < 1e-5 or E_fin < 1e-5 or E_phon < 1e-5:
+        return
+
+    # Equilibrium Bose-Einstein distributions
+    n_mag_init = 1.0 / (math.exp(E_init * beta) - 1.0)
+    n_mag_fin  = 1.0 / (math.exp(E_fin * beta) - 1.0)
+    n_phon     = 1.0 / (math.exp(E_phon * beta) - 1.0)
+
+    hbar = 0.6582119569 # meV * ps
+    prefactor = (2.0 * math.pi / hbar) / N_points
+
+    # Summand: (n_ph + 1)(n_mag_fin + 1)(n_mag_init) * (E_ph^2) / (k_B * T^2)
+    term = prefactor * V_sq_delta * (n_phon + 1.0) * (n_mag_fin + 1.0) * n_mag_init * (E_phon * E_phon) * (beta / temperature)
+
+    cuda.atomic.add(G_mp_out, 0, term)
+
+def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_channel_count, num_channels, d_w_mag, d_w_phon, N_points, filename="Outputs/G_mp_temperature_scan.csv"):
+    """
+    Evaluates the G_mp(T) kernel over a temperature grid and writes to a CSV.
+    Note: Output units are natively [meV / (K * ps)] per primitive unit cell. 
+    """
+    print(f"\nCalculating temperature-dependent G_mp and saving to {filename}...")
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+    d_G_mp_out = cuda.device_array(1, dtype=np.float64)
+
+    threads_per_block = 256
+    blocks_eval = math.ceil(num_channels / threads_per_block)
+
+    # Scan from 10K to 500K
+    temperatures = np.linspace(10, 500, 50)
+
+    with open(filename, 'w') as f:
+        f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell\n")
+
+        for T in temperatures:
+            d_G_mp_out.copy_to_device(np.zeros(1, dtype=np.float64))
+
+            compute_G_mp_kernel[blocks_eval, threads_per_block](
+                chan_indices_active,
+                chan_weights_active,
+                d_channel_count,
+                d_w_mag,
+                d_w_phon,
+                T,
+                d_G_mp_out,
+                N_points
+            )
+            cuda.synchronize()
+
+            G_mp_val = d_G_mp_out.copy_to_host()[0]
+            f.write(f"{T:.2f},{G_mp_val:.6e}\n")
+
+    print(f"-> G_mp(T) calculation complete!")
 
 
 def init_bose_einstein(w_distribution, temperature_K):
@@ -2609,12 +2697,11 @@ if __name__ == "__main__":
     d_n_mag = cuda.to_device(n_mag_cpu)
     d_n_phon = cuda.to_device(n_phon_cpu)
     
-    # STRIP FIX: Initialize derivatives to strict zeros ONCE before the loop
     d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
     d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
 
     # =============== Hybrid Lifetimes ===============
-
+    
     num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
 
     total_loops = N_points**2 * num_hyb_branches**3
@@ -2920,6 +3007,21 @@ if __name__ == "__main__":
                 f.write(f"{q_idx},{qx},{qy},{qz},phonon,{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{gamma:.6e},{tau:.6e}\n")
 
     print(f"-> Saved equilibrium lifetimes.", flush=True)
+
+
+
+    # ========================== G_mp Temperature Scan ==========================
+    # We pass the GPU arrays for w_mag/w_phon to prevent cross-memory-space crashes
+    calculate_and_save_Gmp_vs_T(
+        d_chan_indices_active,
+        d_chan_weights_active,
+        d_channel_count,
+        num_channels,
+        gpu_data["w_mag"],
+        gpu_data["w_phon"],
+        N_points,
+        filename="Outputs/G_mp_temperature_scan.csv"
+    )
 
     # ========================== Time-evolution Phase ==========================
     
