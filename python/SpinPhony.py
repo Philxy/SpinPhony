@@ -1862,7 +1862,8 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     y_qmink_cart = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
                     z_qmink_cart = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
                     
-                    V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq = V.real**2 + V.imag**2
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
