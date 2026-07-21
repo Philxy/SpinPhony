@@ -2767,7 +2767,8 @@ if __name__ == "__main__":
     threads_per_block = 256
     blocks_eval = math.ceil(num_channels / threads_per_block)
 
-    
+    """
+
     phase_lifetime_hybrid[blocks_eval, threads_per_block](
         d_chan_indices_active,
         d_chan_weights_active,
@@ -2776,6 +2777,7 @@ if __name__ == "__main__":
         d_gamma_hyb, 
         N_points
     )
+
     
     cuda.synchronize()
 
@@ -2812,7 +2814,8 @@ if __name__ == "__main__":
                 f.write(f"{q_idx},{qx},{qy},{qz},{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{pc:.6f},{mc:.6f},{pa:.6e},{sa:.6e},{gamma:.6e},{tau:.6e}\n")
 
     print(f"-> Saved equilibrium hybrid lifetimes, velocities, and characters to {out_file}.")
-    print("Simulation Complete.")
+    """
+
 
 
     # ========================== Path Lifetime Evaluation ==========================
