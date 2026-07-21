@@ -1550,7 +1550,7 @@ def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc
 
     for i in range(slc_axis.shape[0]):
         
-        # FIXED: Multiply the boolean logic by 1.0
+        # Multiply the boolean logic by 1.0
         match_mask = 1.0 * ((slc_axis[i] == mu_type) and 
                             (slc_types[i, 0] == n_type) and 
                             (slc_types[i, 1] == m_type) and 
@@ -1801,7 +1801,7 @@ def calc_symmetrized_hybrid_vertex_squared(
 def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon, 
                  grad_f_phon, grad_f_mag,
                  slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                 base_smearing, chan_indices, chan_weights, channel_count, atom_masses, mag_moments, gamma_idx):
+                 base_smearing, chan_indices, chan_weights, channel_count, atom_masses, mag_moments, gamma_idx, min_sigma):
     """
     Scans phase space enforcing energy conservation via Adaptive Broadening 
     and strict Cartesian continuous vectors for exact Umklapp phase tracking.
@@ -1884,7 +1884,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     variance += step_width * step_width
                 
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
-                MIN_SIGMA = 0.5  # meV
+                MIN_SIGMA = min_sigma # meV
                 sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
 
 
@@ -1948,7 +1948,6 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
 
                     # Process 3 
                     dE = w_mag[idx_kminq, n] - w_mag[k_idx, m] + w_phon[q_idx, lam]
-                    MIN_SIGMA = 0.5  # meV
 
                     variance = 0.0
                     for i in range(3):
@@ -2932,7 +2931,8 @@ if __name__ == "__main__":
         d_channel_count,
         gpu_data["atom_masses"], 
         gpu_data["mag_moments"],
-        gamma_idx
+        gamma_idx,
+        min_sigma
     )
 
     # Wait for the GPU to finish the scan
