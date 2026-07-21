@@ -2152,10 +2152,10 @@ def compute_G_mp_kernel(chan_indices, chan_weights, d_channel_count, w_mag, w_ph
     n_phon     = 1.0 / (math.exp(E_phon * beta) - 1.0)
 
     hbar = 0.6582119569 # meV * ps
-    prefactor = (2.0 * math.pi / hbar) / N_points
+    prefactor = (2.0 * math.pi / hbar) / (N_points * N_points)
 
     # Summand: (n_ph + 1)(n_mag_fin + 1)(n_mag_init) * (E_ph^2) / (k_B * T^2)
-    term = prefactor * V_sq_delta * (n_phon + 1.0) * (n_mag_init + 1.0) * n_mag_fin * (E_phon * E_phon) * (beta / temperature)
+    term = prefactor * V_sq_delta * (n_phon + 1.0) * (n_mag_fin + 1.0) * n_mag_init  * (E_phon * E_phon) * (beta / temperature)
 
     cuda.atomic.add(G_mp_out, 0, term)
 
