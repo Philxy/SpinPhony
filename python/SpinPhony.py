@@ -1617,7 +1617,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     
     omega = w_phon[q_idx, lambda_phon]
     
-    omega_mask = 1.0 * (omega >= 1.0)
+    omega_mask = 1.0 * (omega >= 1E-2)
     omega_safe = omega + (1.0 - omega_mask) * 1e-12 
 
     hbar = 0.6582119569 # meV * ps
