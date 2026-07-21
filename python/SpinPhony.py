@@ -2172,7 +2172,7 @@ def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_chan
     blocks_eval = math.ceil(num_channels / threads_per_block)
 
     # Scan from 10K to 500K
-    temperatures = np.linspace(10, 500, 50)
+    temperatures = np.linspace(100, 900, 100)
 
     with open(filename, 'w') as f:
         f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell\n")
@@ -2701,7 +2701,7 @@ if __name__ == "__main__":
     d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
 
     # =============== Hybrid Lifetimes ===============
-    
+
     num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
 
     total_loops = N_points**2 * num_hyb_branches**3
