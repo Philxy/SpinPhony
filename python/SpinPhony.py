@@ -1831,7 +1831,6 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
             for lam in range(n_phon):
                 
 
-                """
                 # ---------------------------------------------------------
                 # Process 0 (Unified): M(q) <--> M(k) + Ph(q-k)
                 # ---------------------------------------------------------
@@ -1859,12 +1858,10 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     #qy = q_grid_cart[idx_qmink, 1]
                     #qz = q_grid_cart[idx_qmink, 2]
 
-
                     x_qmink_cart = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
                     y_qmink_cart = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
                     z_qmink_cart = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
                     
-
                     V_sq = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
@@ -1872,8 +1869,8 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                         chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
                         chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                         chan_weights[c_idx] = V_sq * delta_weight
+                
                 """
-
                 # Process 1
                 dE = w_mag[q_idx, n] - w_mag[k_idx, m] - w_phon[idx_qmink, lam]
 
@@ -1974,6 +1971,10 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                             chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
                             chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                             chan_weights[c_idx] = V_sq * delta_weight
+
+
+                """
+                    
 
 @cuda.jit
 def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, Qmatrix,
