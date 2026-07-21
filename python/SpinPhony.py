@@ -1570,7 +1570,7 @@ def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda
                     slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
                     eig_phon_q, omega, atom_masses, mag_moments):
     """Calculates the scattering vertex specifically for explicitly projected wavevectors."""
-    if omega < 1.0: return 0.0
+    if omega < 1E-2: return 0.0
     
     hbar = 0.6582119569 # meV * ps
     DALTON_TO_meV_PS2_PER_A2 = 0.10364269
@@ -3067,6 +3067,7 @@ if __name__ == "__main__":
 
     current_time = 0.0
 
+    pass
 
     for step in range(steps):
         
