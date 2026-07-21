@@ -1852,7 +1852,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     gaussian_norm = 0.4179 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
                     
-                    kpx_cart, kpy_cart, kpz_cart = q_grid_cart[k_idx, 0], q_grid_cart[k_idx, 1], q_grid_cart[k_idx, 2]
+                    kpx_cart, kpy_cart, kpz_cart = q_grid_cart[q_idx, 0], q_grid_cart[q_idx, 1], q_grid_cart[q_idx, 2]
 
                     #qx = q_grid_cart[idx_qmink, 0]
                     #qy = q_grid_cart[idx_qmink, 1]
@@ -2155,7 +2155,7 @@ def compute_G_mp_kernel(chan_indices, chan_weights, d_channel_count, w_mag, w_ph
     prefactor = (2.0 * math.pi / hbar) / N_points
 
     # Summand: (n_ph + 1)(n_mag_fin + 1)(n_mag_init) * (E_ph^2) / (k_B * T^2)
-    term = prefactor * V_sq_delta * (n_phon + 1.0) * (n_mag_fin + 1.0) * n_mag_init * (E_phon * E_phon) * (beta / temperature)
+    term = prefactor * V_sq_delta * (n_phon + 1.0) * (n_mag_init + 1.0) * n_mag_fin * (E_phon * E_phon) * (beta / temperature)
 
     cuda.atomic.add(G_mp_out, 0, term)
 

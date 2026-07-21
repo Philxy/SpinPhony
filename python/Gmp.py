@@ -49,7 +49,6 @@ def plot_spin_lattice_coupling(csv_filename="Outputs/G_mp_temperature_scan.csv",
     ax.set_title('3TM Spin-Lattice Coupling Constant', fontsize=13, fontweight='bold', pad=10)
     ax.grid(True, linestyle='--', alpha=0.5)
     ax.set_yscale('log')
-    ax.set_xscale('log')
 
     plt.tight_layout()
     
