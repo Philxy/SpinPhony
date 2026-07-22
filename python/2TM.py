@@ -81,8 +81,6 @@ F_inc = F_inc_mJ_cm2 * 10.0     # Convert to J/m^2
 R = 0.25                        # Optical reflectivity at 800 nm
 delta_opt = 40e-9               # Optical penetration depth in meters (~40 nm)
 
-# --- Coupling Constants ---
-Gmp = 2E15                    # Magnon-phonon coupling (W / m^3 / K)
 
 def calculate_bosonic_specific_heat_grid(energies_meV, temp_grid):
     print(f"Pre-computing specific heat for {energies_meV.shape[1]} branches...")
@@ -140,6 +138,35 @@ def laser_power(t):
     return 0.0
 
 def main():
+    os.makedirs("Outputs", exist_ok=True)
+
+    # --- Load Magnon-Phonon Coupling (Gmp) Temperature Dependence ---
+    gmp_filepath = "Outputs/G_mp_temperature_scan.csv"
+    if not os.path.exists(gmp_filepath):
+        # Create a fallback/dummy file using the example provided if it doesn't exist
+        with open(gmp_filepath, "w") as f:
+            f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell\n")
+            f.write("10.00,2.000000e-04\n")
+            f.write("100.00,2.886391e-04\n")
+            f.write("108.08,3.327675e-04\n")
+            f.write("1000.00,3.500000e-04\n")
+            
+    print(f"Loading Gmp(T) from {gmp_filepath}...")
+    gmp_data = np.loadtxt(gmp_filepath, delimiter=",", skiprows=1)
+    T_gmp = gmp_data[:, 0]
+    Gmp_raw = gmp_data[:, 1]
+
+    
+    
+    # Convert from [meV / (K * ps * cell)] to [W / (m^3 * K)]
+    # Conversion factor = (J / meV) / (s / ps * m^3 / cell)
+    unit_conversion_factor = meV_to_J / (1e-12 * V_cell_m3)
+    Gmp_converted = Gmp_raw * unit_conversion_factor
+    
+    # Create interpolation function for Gmp(T)
+    Gmp_func = interp1d(T_gmp, Gmp_converted, kind='linear', fill_value="extrapolate", bounds_error=False)
+
+
     if not os.path.exists("Outputs/w_mag_grid.csv") or not os.path.exists("Outputs/w_phon_grid.csv"):
         raise FileNotFoundError("Could not find dispersion CSVs. Export them from SpinPhony first.")
         
@@ -202,8 +229,12 @@ def main():
         Cm = Cm_func(T_m)
         Cp = Cp_func(T_p)
         
-        dTm_dt = (1.0 / Cm) * ( Gmp * (T_p - T_m) )
-        dTp_dt = (1.0 / Cp) * (-Gmp * (T_p - T_m) + laser_power(t))
+        # Evaluate Temperature Dependent Gmp 
+        # (Using T_p here since lattice phonons govern the coupling bath strength)
+        Gmp_current = Gmp_func(T_p)
+        
+        dTm_dt = (1.0 / Cm) * ( Gmp_current * (T_p - T_m) )
+        dTp_dt = (1.0 / Cp) * (-Gmp_current * (T_p - T_m) + laser_power(t))
         
         return [dTm_dt, dTp_dt]
 
@@ -252,7 +283,6 @@ def main():
 
     # Output Data
     output_file = "Outputs/2TM_CrI3_Dynamics.csv"
-    os.makedirs("Outputs", exist_ok=True)
     np.savetxt(output_file, np.column_stack((t_ps, Tm_sol, Tp_sol, M_over_M0)), 
                delimiter=",", header="Time(ps),T_mag(K),T_phon(K),M_over_M0", comments="")
     print(f"Dynamics saved to {output_file}")
@@ -264,7 +294,7 @@ def main():
     ax1.plot(t_ps, Tm_sol, color='#d62728', lw=2.5, linestyle='--', label='Magnons ($T_m$)')
     
     ax1.set_ylabel('Temperature (K)', fontsize=12, fontweight='bold')
-    ax1.set_title(f'CrI$_3$ 2-Temperature Dynamics ($G_{{mp}} = 10^{{{int(np.log10(Gmp))}}}$ W/m$^3$K)', fontsize=13, fontweight='bold')
+    ax1.set_title(f'CrI$_3$ 2-Temperature Dynamics ($G_{{mp}}(T)$)', fontsize=13, fontweight='bold')
     ax1.grid(True, linestyle=':', alpha=0.6)
     ax1.legend(loc='upper right', fontsize=11)
 
