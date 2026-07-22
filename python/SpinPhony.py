@@ -1840,7 +1840,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 MIN_SIGMA = min_sigma  # meV
                 sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
 
-                #sigma = 1.0
+                sigma = 5.0
 
                 if abs(dE) < 2.0 * sigma:
                     # 0.4179 normalizes the 2-sigma Gaussian
@@ -1859,7 +1859,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     
                     #V = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
                     #V_sq = V.real**2 + V.imag**2
-                    V_sq = 0.001
+                    V_sq = 0.0001
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     #if c_idx < chan_indices.shape[1]:
