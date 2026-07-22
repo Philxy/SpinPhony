@@ -1617,24 +1617,18 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     
     omega = w_phon[q_idx, lambda_phon]
     
-    omega_mask = 1.0 * (omega >= 1E-2)
-    omega_safe = omega + (1.0 - omega_mask) * 1e-12 
+    omega_mask = 1.0 * (omega >= 1e-3)
+    
+    # Branchless replacement: 
+    # If mask==1, omega_safe = omega * 1 + 0 = omega
+    # If mask==0, omega_safe = omega * 0 + 1.0 = 1.0 (Strictly positive, avoids NaN)
+    omega_safe = (omega * omega_mask) + (1.0 - omega_mask)
 
     hbar = 0.6582119569 # meV * ps
     DALTON_TO_meV_PS2_PER_A2 = 0.10364269 
     
     S_n = math.fabs(mag_moments[n] / 2.0) 
     S_m = math.fabs(mag_moments[m] / 2.0)
-    
-    S_n_safe = S_n + 1.0 * (S_n < 1E-3) 
-    S_m_safe = S_m + 1.0 * (S_m < 1E-3)
-    
-    # FIXED: Replaced math.copysign with purely branchless arithmetic
-    sign_n = 1.0 - 2.0 * (mag_moments[n] < 0.0)
-    sign_m = 1.0 - 2.0 * (mag_moments[m] < 0.0)
-    
-    sigma_n = sign_n * (S_n > 1E-3)
-    sigma_m = sign_m * (S_m > 1E-3)
 
     J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
     J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
@@ -1659,22 +1653,17 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
             J_xy = J_tilde_dyn[0, 1]
             J_yx = J_tilde_dyn[1, 0]
             
-            W_dynamic = (J_xx + 
-                         (sigma_n * sigma_m) * J_yy - 
-                         1j * sigma_m * J_xy + 
-                         1j * sigma_n * J_yx) / math.sqrt(S_n_safe * S_m_safe)
+            W_dynamic = (J_xx + J_yy - 
+                         1j  * J_xy + 
+                         1j  * J_yx) / math.sqrt(S_n * S_m)
             
             W_static = 0.0 + 0.0j
             
             for mp in range(num_mag_branches):
-                mp_active_mask = 1.0 * (math.fabs(mag_moments[mp]) > 1e-2)
-                
-                sign_mp = 1.0 - 2.0 * (mag_moments[mp] < 0.0)
-                sigma_mp = sign_mp * mp_active_mask
                 
                 calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                 
-                W_static += mp_active_mask * (2.0 / S_n_safe) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2] 
+                W_static +=  (2.0 / S_n) * J_tilde_stat[2, 2] 
             
             W_tot = W_dynamic - (W_static * is_n_eq_m_mask)
             V_complex += disp_amp * e_mu * W_tot
@@ -1866,10 +1855,11 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     V_sq = V.real**2 + V.imag**2
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
-                    if c_idx < chan_indices.shape[1]:
-                        chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
-                        chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
-                        chan_weights[c_idx] = V_sq * delta_weight
+                    #if c_idx < chan_indices.shape[1]:
+
+                    chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
+                    chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                    chan_weights[c_idx] = V_sq * delta_weight
                 
                 """
                 # Process 1
@@ -2414,7 +2404,30 @@ def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamm
     
     hbar = 0.6582119569 # meV * ps
     fgr_prefactor = (2.0 * math.pi / hbar) / N_points
+
+    # Populations (evaluated at the equilibrium T_0 passed to the kernel)
+    nk_mag = n_mag[k_idx, m]
+    nq_mag = n_mag[q_idx, n]
+    np_phon = n_phon[p_idx, lam]
     
+    # ---------------------------------------------------------
+    # 1. M(q) Out-Scattering (via Emission: M_q -> M_k + Ph_p)
+    # ---------------------------------------------------------
+    gamma_q = fgr_prefactor * V_sq * (1.0 + np_phon + nk_mag)
+    cuda.atomic.add(gamma_mag, q_idx * num_mag_branches + n, gamma_q)
+    
+    # ---------------------------------------------------------
+    # 2. M(k) Out-Scattering (via Absorption: M_k + Ph_p -> M_q)
+    # ---------------------------------------------------------
+    gamma_k = fgr_prefactor * V_sq * (np_phon - nq_mag)
+    cuda.atomic.add(gamma_mag, k_idx * num_mag_branches + m, gamma_k)
+    
+    # ---------------------------------------------------------
+    # 3. Ph(p) Out-Scattering (via Absorption: Ph_p + M_k -> M_q)
+    # ---------------------------------------------------------
+    gamma_p = fgr_prefactor * V_sq * (nk_mag - nq_mag)
+    cuda.atomic.add(gamma_phon, p_idx * num_phon_branches + lam, gamma_p)
+
     """
 
     # Channel 1
@@ -2448,28 +2461,7 @@ def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamm
 
 
     """
-    # Populations (evaluated at the equilibrium T_0 passed to the kernel)
-    nk_mag = n_mag[k_idx, m]
-    nq_mag = n_mag[q_idx, n]
-    np_phon = n_phon[p_idx, lam]
-    
-    # ---------------------------------------------------------
-    # 1. M(q) Out-Scattering (via Emission: M_q -> M_k + Ph_p)
-    # ---------------------------------------------------------
-    gamma_q = fgr_prefactor * V_sq * (1.0 + np_phon + nk_mag)
-    cuda.atomic.add(gamma_mag, q_idx * num_mag_branches + n, gamma_q)
-    
-    # ---------------------------------------------------------
-    # 2. M(k) Out-Scattering (via Absorption: M_k + Ph_p -> M_q)
-    # ---------------------------------------------------------
-    gamma_k = fgr_prefactor * V_sq * (np_phon - nq_mag)
-    cuda.atomic.add(gamma_mag, k_idx * num_mag_branches + m, gamma_k)
-    
-    # ---------------------------------------------------------
-    # 3. Ph(p) Out-Scattering (via Absorption: Ph_p + M_k -> M_q)
-    # ---------------------------------------------------------
-    gamma_p = fgr_prefactor * V_sq * (nk_mag - nq_mag)
-    cuda.atomic.add(gamma_phon, p_idx * num_phon_branches + lam, gamma_p)
+
 
 
 
@@ -2972,8 +2964,8 @@ if __name__ == "__main__":
         d_chan_indices_active,
         d_chan_weights_active,
         d_channel_count, 
-        d_n_mag,     # Evaluated at thermal equilibrium T_0
-        d_n_phon,    # Evaluated at thermal equilibrium T_0
+        d_n_mag,     
+        d_n_phon,    
         d_gamma_mag, 
         d_gamma_phon, 
         N_points
@@ -3067,6 +3059,7 @@ if __name__ == "__main__":
 
     current_time = 0.0
 
+    exit()
     pass
 
     for step in range(steps):
