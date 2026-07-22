@@ -1840,7 +1840,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 MIN_SIGMA = min_sigma  # meV
                 sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
 
-                sigma = 0.01
+                sigma = 0.1
 
                 if abs(dE) < 2.0 * sigma:
                     # 0.4179 normalizes the 2-sigma Gaussian
