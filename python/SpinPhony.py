@@ -1551,10 +1551,15 @@ def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc
     for i in range(slc_axis.shape[0]):
         
         # Multiply the boolean logic by 1.0
-        match_mask = 1.0 * ((slc_axis[i] == mu_type) and 
-                            (slc_types[i, 0] == n_type) and 
-                            (slc_types[i, 1] == m_type) and 
-                            (slc_types[i, 2] == l_type))
+        match_mask = 1.0 * (
+            (slc_axis[i] == mu_type) & 
+            (slc_types[i, 0] == n_type) & 
+            (slc_types[i, 1] == m_type) & 
+            (slc_types[i, 2] == l_type)
+        )
+
+        if match_mask == 0.0:
+            continue
         
         phase_val = (kpx * slc_rij[i, 0] + kpy * slc_rij[i, 1] + kpz * slc_rij[i, 2]) + \
                     (qx * slc_rik[i, 0] + qy * slc_rik[i, 1] + qz * slc_rik[i, 2])
@@ -1835,6 +1840,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 MIN_SIGMA = min_sigma  # meV
                 sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
 
+                sigma = 0.01
 
                 if abs(dE) < 2.0 * sigma:
                     # 0.4179 normalizes the 2-sigma Gaussian
@@ -2612,7 +2618,7 @@ if __name__ == "__main__":
         Jijs,
         slc_files=slc_files,
         lattice_constant=lattice_constant,
-        anisotropy=anisotropy,  # Set to zero for CrI3 to match the DFT inputs
+        anisotropy=anisotropy,
     )
     
     crystal_data.print_summary()
