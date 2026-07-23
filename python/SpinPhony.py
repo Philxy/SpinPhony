@@ -1646,7 +1646,12 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     num_atoms = atom_masses.shape[0]
     num_mag_branches = mag_moments.shape[0]
     
-    #is_n_eq_m_mask = 1.0 * (n == m)
+    is_n_eq_m_mask = 1.0 * (n == m)
+
+    # find k-q
+    kmqx = kpx - qx
+    kmqy = kpy - qy
+    kmqz = kpz - qz
 
     for l in range(num_atoms):
         mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
@@ -1655,7 +1660,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
         for mu in range(3):
             e_mu = eig_phon[q_idx, lambda_phon, l, mu]
             
-            calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+            calc_fourier_transform_vec(kmqx, kmqy, kmqz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
 
             J_xx = J_tilde_dyn[0, 0]
             J_yy = J_tilde_dyn[1, 1]
@@ -1672,9 +1677,9 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
                 
                 calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                 
-                W_static +=  (2.0 / S_n) * J_tilde_stat[2, 2] 
+                W_static +=  (2.0 / S_n) * J_tilde_stat[2, 2]
             
-            W_tot = W_dynamic - W_static
+            W_tot = W_dynamic - (W_static * is_n_eq_m_mask)
             V_complex += disp_amp * e_mu * W_tot
             
     return V_complex * omega_mask
