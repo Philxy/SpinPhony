@@ -1662,7 +1662,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
         for mu in range(3):
             e_mu = eig_phon[q_idx, lambda_phon, l, mu]
             
-            calc_fourier_transform_vec(kmqx, kmqy, kmqz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+            calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
 
             J_xx = J_tilde_dyn[0, 0]
             J_yy = J_tilde_dyn[1, 1]
