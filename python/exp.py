@@ -66,6 +66,10 @@ data = """
 12.172284644194738, -0.5299565846599132
 """
 
+dataMartin= """
+
+"""
+
 # --- 1. Load and sort data by time ---
 raw_data = np.loadtxt(io.StringIO(data), delimiter=",")
 data_sorted = raw_data[raw_data[:, 0].argsort()]

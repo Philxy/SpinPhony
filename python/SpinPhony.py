@@ -2177,7 +2177,7 @@ def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_chan
     threads_per_block = 256
     blocks_eval = math.ceil(num_channels / threads_per_block)
 
-    temperatures = np.linspace(5, 60, 5)
+    temperatures = np.linspace(4, 800, 5)
 
     with open(filename, 'w') as f:
         f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell\n")
