@@ -246,7 +246,11 @@ class CrystalDataSoA:
 
         gpu_buffers["jij"] = track_and_push("jij", self.jij_interactions)
         gpu_buffers["atom_masses"] = track_and_push("atom_masses", self.atom_masses)
-        gpu_buffers["mag_moments"] = track_and_push("mag_moments", self.mag_moments)
+        #gpu_buffers["mag_moments"] = track_and_push("mag_moments", self.mag_moments)
+
+        # NEW:
+        gpu_buffers["mag_moments"] = track_and_push("mag_moments", self.mag_moments[self.mag_indices]   # length n_mag_branches
+)
 
         gpu_buffers["w_hyb"] = track_and_push("w_hyb", self.w_hyb)
         gpu_buffers["Qmatrix"] = track_and_push("Qmatrix", self.Qmatrix)
