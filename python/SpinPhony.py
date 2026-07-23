@@ -1624,6 +1624,9 @@ def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda
 def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments):
     
     omega = w_phon[q_idx, lambda_phon]
+
+    if omega < 1E-1:
+        return 0
     
     omega_mask = 1.0 * (omega >= 1e-3)
     
@@ -1654,7 +1657,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
 
     for l in range(num_atoms):
         mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
-        disp_amp = math.sqrt((hbar * hbar) / (2.0 * mass_l * omega_safe))
+        disp_amp = math.sqrt((hbar * hbar) / (2.0 * mass_l))
         
         for mu in range(3):
             e_mu = eig_phon[q_idx, lambda_phon, l, mu]
@@ -1681,7 +1684,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
             W_tot = W_dynamic - (W_static * is_n_eq_m_mask)
             V_complex += disp_amp * e_mu * W_tot
             
-    return V_complex * omega_mask
+    return V_complex #* omega_mask
 
 
 @cuda.jit(device=True)
