@@ -122,7 +122,7 @@ def plot_spinphony_dashboard(csv_filename="Outputs/G_mp_temperature_scan.csv",
 if __name__ == "__main__":
     # Now simply pass the file and the max temperature for the fit
     plot_spinphony_dashboard(
-        csv_filename="Outputs/CrI3_minsig0.02/G_mp_temperature_scan.csv", # Update this to your local filename
+        csv_filename="Outputs/G_mp_temperature_scan.csv", # Update this to your local filename
         fit_max_temp=50.0,
         save_plot="Outputs/SpinPhony_Dashboard.png"
     )

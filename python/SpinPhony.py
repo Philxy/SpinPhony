@@ -2230,7 +2230,7 @@ def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_chan
     threads_per_block = 256
     blocks_eval = math.ceil(num_channels / threads_per_block)
 
-    temperatures = [4.0, 10.0, 20.0, 30.0, 50.0, 300.0, 500.0, 600.0, 800.0]
+    temperatures = [1.0 , 4.0, 10.0, 20.0, 30.0, 50.0, 300.0, 500.0, 600.0, 800.0]
 
     with open(filename, 'w') as f:
         f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell,C_s_meV_per_K_per_cell,C_l_meV_per_K_per_cell,tau_ps\n")
@@ -2253,10 +2253,9 @@ def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_chan
             G_mp_val = d_G_mp_out.copy_to_host()[0]
 
             C_s_val = calc_heat_capacity_per_cell(w_mag_host, T)
-            C_l_val = calc_heat_capacity_per_cell(w_phon_host, T)
 
-            if G_mp_val > 0.0 and C_s_val > 0.0 and C_l_val > 0.0:
-                tau_val = 1.0 / (G_mp_val * (1.0 / C_s_val + 1.0 / C_l_val))
+            if G_mp_val > 0.0 and C_s_val > 0.0:
+                tau_val = 1.0 / (G_mp_val * (1.0 / C_s_val ))
             else:
                 tau_val = float('inf')
 
