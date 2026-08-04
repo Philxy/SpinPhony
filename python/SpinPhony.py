@@ -2169,12 +2169,55 @@ def compute_G_mp_kernel(chan_indices, chan_weights, d_channel_count, w_mag, w_ph
 
     cuda.atomic.add(G_mp_out, 0, term)
 
-def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_channel_count, num_channels, d_w_mag, d_w_phon, N_points, filename="Outputs/G_mp_temperature_scan.csv"):
+def calc_heat_capacity_per_cell(w_grid, temperature):
     """
-    Evaluates the G_mp(T) kernel over a temperature grid and writes to a CSV.
-    Note: Output units are natively [meV / (K * ps)] per primitive unit cell. 
+    Volumetric (per primitive-cell) heat capacity from a boson mode spectrum
+    w_grid[q_idx, branch] (meV), evaluated at `temperature` (K).
+
+    Uses the single-oscillator specific heat
+        c_E(E, T) = kB * (x / (2 * sinh(x/2)))^2,   x = E / (kB * T)
+    which is the numerically stable form of kB * x^2 * exp(x) / (exp(x) - 1)^2
+    (avoids overflow at large x and the 0/0 indeterminacy at x -> 0, where
+    c_E -> kB, the classical/Dulong-Petit limit for a gapless Goldstone mode).
+
+    The per-cell value is the Brillouin-zone average over the N_q grid points,
+    matching the "per primitive cell" convention already used for G_mp:
+        C(T) = (1 / N_q) * sum_{q, branch} c_E(w_grid[q, branch], T)
+
+    Returns C in meV/K per primitive cell.
     """
-    print(f"\nCalculating temperature-dependent G_mp and saving to {filename}...")
+    kB = 0.08617333262  # meV/K
+    if temperature <= 0.0:
+        return 0.0
+
+    N_q = w_grid.shape[0]
+
+    # Discard unphysical/imaginary (negative) branches; they carry no thermal population.
+    E = np.clip(w_grid, 0.0, None)
+    x = E / (kB * temperature)
+
+    with np.errstate(over='ignore', invalid='ignore'):
+        ratio = np.where(x < 1e-8, 1.0, x / (2.0 * np.sinh(x / 2.0)))
+
+    c_mode = kB * ratio * ratio
+    return np.sum(c_mode) / N_q
+
+
+def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_channel_count, num_channels,
+                                 d_w_mag, d_w_phon, w_mag_host, w_phon_host, N_points,
+                                 filename="Outputs/G_mp_temperature_scan.csv"):
+    """
+    Evaluates the G_mp(T) kernel, the magnon/lattice heat capacities, and the
+    resulting spin-lattice relaxation time tau(T) over a temperature grid, and
+    writes them to a CSV.
+
+    Units (all "per primitive unit cell", consistent throughout):
+        G_mp : meV / (K * ps)   (already the native output of compute_G_mp_kernel)
+        C_s, C_l : meV / K      (magnon / phonon heat capacity, see calc_heat_capacity_per_cell)
+        tau = [G_mp * (1/C_s + 1/C_l)]^-1
+            units: [meV/(K*ps)] / [meV/K] = 1/ps  =>  tau in ps
+    """
+    print(f"\nCalculating temperature-dependent G_mp, heat capacities, and tau, saving to {filename}...")
     os.makedirs(os.path.dirname(filename), exist_ok=True)
 
     d_G_mp_out = cuda.device_array(1, dtype=np.float64)
@@ -2185,7 +2228,7 @@ def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_chan
     temperatures = [4.0, 10.0, 20.0, 30.0, 50.0, 300.0, 500.0, 600.0, 800.0]
 
     with open(filename, 'w') as f:
-        f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell\n")
+        f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell,C_s_meV_per_K_per_cell,C_l_meV_per_K_per_cell,tau_ps\n")
 
         for T in temperatures:
             d_G_mp_out.copy_to_device(np.zeros(1, dtype=np.float64))
@@ -2203,9 +2246,18 @@ def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_chan
             cuda.synchronize()
 
             G_mp_val = d_G_mp_out.copy_to_host()[0]
-            f.write(f"{T:.2f},{G_mp_val:.6e}\n")
 
-    print(f"-> G_mp(T) calculation complete!")
+            C_s_val = calc_heat_capacity_per_cell(w_mag_host, T)
+            C_l_val = calc_heat_capacity_per_cell(w_phon_host, T)
+
+            if G_mp_val > 0.0 and C_s_val > 0.0 and C_l_val > 0.0:
+                tau_val = 1.0 / (G_mp_val * (1.0 / C_s_val + 1.0 / C_l_val))
+            else:
+                tau_val = float('inf')
+
+            f.write(f"{T:.2f},{G_mp_val:.6e},{C_s_val:.6e},{C_l_val:.6e},{tau_val:.6e}\n")
+
+    print(f"-> G_mp(T), C_s(T), C_l(T), and tau(T) calculation complete!")
 
 
 def init_bose_einstein(w_distribution, temperature_K):
@@ -3037,6 +3089,8 @@ if __name__ == "__main__":
         num_channels,
         gpu_data["w_mag"],
         gpu_data["w_phon"],
+        crystal_data.w_mag,
+        crystal_data.w_phon,
         N_points,
         filename=f"{out_dir}/G_mp_temperature_scan.csv"
     )
