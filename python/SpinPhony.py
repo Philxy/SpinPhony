@@ -2578,6 +2578,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SpinPhony Boltzmann Transport Simulation")
     parser.add_argument("--config", type=str, default="config.toml", help="Path to the TOML configuration file.")
     parser.add_argument("--material", type=str, default="bccFe", help="Target material defined in the config file.")
+    parser.add_argument("--out_dir", type=str, default="Outputs", help="Directory to write output files into (created if missing).")
 
     # Optional overrides 
     parser.add_argument("--smearing", type=float, help="Override default smearing (meV)")
@@ -2610,6 +2611,9 @@ if __name__ == "__main__":
     
     anticipated_fraction = sim_config["anticipated_fraction"]
     dt = sim_config["dt"]
+
+    out_dir = args.out_dir
+    os.makedirs(out_dir, exist_ok=True)
 
     lattice_constant = mat_config["lattice_constant"]
     anisotropy = mat_config["anisotropy"]
@@ -2644,9 +2648,9 @@ if __name__ == "__main__":
     # Load the high-symmetry path from the HDF5 band file
     crystal_data.load_and_evaluate_path_hdf5(band, K_anisotropy=anisotropy, lattice_constant=lattice_constant)
     # Save the exact path energies to a CSV
-    crystal_data.save_path_dispersions("Outputs/path_dispersions.csv")
+    crystal_data.save_path_dispersions(f"{out_dir}/path_dispersions.csv")
     # Plot the exact path
-    crystal_data.plot_path_dispersions("Outputs/exact_path_dispersions.png")
+    crystal_data.plot_path_dispersions(f"{out_dir}/exact_path_dispersions.png")
 
     print("\nEvaluating magnon-polaron hybridization along the high-symmetry path...")
     crystal_data.path_w_hyb, crystal_data.path_eig_hyb = crystal_data._calculate_coupled_hamiltonian(
@@ -2656,10 +2660,10 @@ if __name__ == "__main__":
         lattice_constant=lattice_constant
     )
 
-    crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_character.png", color_mode='character')
-    crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_spin_AM.png", color_mode='spin_am')
-    crystal_data.plot_hybridized_path_dispersions("Outputs/hybridized_phon_AM.png", color_mode='phon_am')
-    crystal_data.save_hybrid_path_properties("Outputs/hybrid_path_properties.csv")
+    crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_character.png", color_mode='character')
+    crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_spin_AM.png", color_mode='spin_am')
+    crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_phon_AM.png", color_mode='phon_am')
+    crystal_data.save_hybrid_path_properties(f"{out_dir}/hybrid_path_properties.csv")
 
     # Push path data to GPU for scanning kernels
     d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
@@ -2795,7 +2799,7 @@ if __name__ == "__main__":
     phon_chars, mag_chars, phon_ams, spin_ams = crystal_data.extract_full_grid_hybrid_properties()
 
     os.makedirs("Outputs", exist_ok=True)
-    out_file = "Outputs/hybrid_equilibrium_lifetimes.csv"
+    out_file = f"{out_dir}/hybrid_equilibrium_lifetimes.csv"
     
     with open(out_file, "w") as f:
         # Appended headers
@@ -2891,7 +2895,7 @@ if __name__ == "__main__":
     gamma_mag_path_cpu = d_gamma_mag_path.copy_to_host().reshape((N_path, crystal_data.n_mag_branches))
     gamma_phon_path_cpu = d_gamma_phon_path.copy_to_host().reshape((N_path, crystal_data.phon_branches))
 
-    with open("Outputs/path_lifetimes.csv", "w") as f:
+    with open(f"{out_dir}/path_lifetimes.csv", "w") as f:
         f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps\n")
         
         # Magnons
@@ -2994,7 +2998,7 @@ if __name__ == "__main__":
 
     # Write to CSV
     os.makedirs("Outputs", exist_ok=True)
-    with open("Outputs/equilibrium_lifetimes.csv", "w") as f:
+    with open(f"{out_dir}/equilibrium_lifetimes.csv", "w") as f:
         f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,vx,vy,vz,gamma_ps-1,tau_ps\n")
         # Write Magnon Lifetimes
         for q_idx in range(N_points):
@@ -3034,12 +3038,12 @@ if __name__ == "__main__":
         gpu_data["w_mag"],
         gpu_data["w_phon"],
         N_points,
-        filename="Outputs/G_mp_temperature_scan.csv"
+        filename=f"{out_dir}/G_mp_temperature_scan.csv"
     )
 
     # Save
-    np.savetxt("Outputs/w_mag_grid.csv", crystal_data.w_mag, delimiter=",")
-    np.savetxt("Outputs/w_phon_grid.csv", crystal_data.w_phon, delimiter=",")
+    np.savetxt(f"{out_dir}/w_mag_grid.csv", crystal_data.w_mag, delimiter=",")
+    np.savetxt(f"{out_dir}/w_phon_grid.csv", crystal_data.w_phon, delimiter=",")
 
     # ========================== Time-evolution Phase ==========================
     
@@ -3068,7 +3072,7 @@ if __name__ == "__main__":
     max_elements = max(N_points * crystal_data.n_mag_branches, N_points * crystal_data.phon_branches)
     blocks_euler = math.ceil(max_elements / threads_per_block)
     
-    obs_file = open("Outputs/observables_dynamics.txt", "w")
+    obs_file = open(f"{out_dir}/observables_dynamics.txt", "w")
     obs_file.write("Step\tTime_ps\tE_tot_meV\tE_mag_meV\tE_phon_meV\tN_mag\tN_phon\tT_eff_mag_K\tT_eff_phon_K\n")
     
     print(f"\nStarting Phase 2: Time Integration ({steps} steps)...")
