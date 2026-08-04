@@ -2173,18 +2173,6 @@ def calc_heat_capacity_per_cell(w_grid, temperature):
     """
     Volumetric (per primitive-cell) heat capacity from a boson mode spectrum
     w_grid[q_idx, branch] (meV), evaluated at `temperature` (K).
-
-    Uses the single-oscillator specific heat
-        c_E(E, T) = kB * (x / (2 * sinh(x/2)))^2,   x = E / (kB * T)
-    which is the numerically stable form of kB * x^2 * exp(x) / (exp(x) - 1)^2
-    (avoids overflow at large x and the 0/0 indeterminacy at x -> 0, where
-    c_E -> kB, the classical/Dulong-Petit limit for a gapless Goldstone mode).
-
-    The per-cell value is the Brillouin-zone average over the N_q grid points,
-    matching the "per primitive cell" convention already used for G_mp:
-        C(T) = (1 / N_q) * sum_{q, branch} c_E(w_grid[q, branch], T)
-
-    Returns C in meV/K per primitive cell.
     """
     kB = 0.08617333262  # meV/K
     if temperature <= 0.0:
@@ -2192,14 +2180,31 @@ def calc_heat_capacity_per_cell(w_grid, temperature):
 
     N_q = w_grid.shape[0]
 
-    # Discard unphysical/imaginary (negative) branches; they carry no thermal population.
-    E = np.clip(w_grid, 0.0, None)
-    x = E / (kB * temperature)
-
-    with np.errstate(over='ignore', invalid='ignore'):
-        ratio = np.where(x < 1e-8, 1.0, x / (2.0 * np.sinh(x / 2.0)))
-
-    c_mode = kB * ratio * ratio
+    # 1. Mask out non-physical modes and the Gamma point
+    # A tiny threshold (1e-4 meV ~ 0.02 THz) filters out the acoustic Goldstone modes
+    # at q=0 and completely ignores any imaginary (negative) artifacts.
+    valid_mask = w_grid > 1e-4
+    
+    # Initialize the output array with zeros
+    c_mode = np.zeros_like(w_grid)
+    
+    # Calculate x only for valid, positive-frequency modes
+    x_valid = w_grid[valid_mask] / (kB * temperature)
+    
+    # 2. Prevent floating-point overflow for deeply frozen optical modes at low T
+    # e^(-150) is ~10^-66, which is zero in float64. 
+    # Attempting to sinh(150/2) is fine, but beyond x ~ 1400 it overflows to inf.
+    compute_mask = x_valid < 150.0
+    x_compute = x_valid[compute_mask]
+    
+    # Apply the stable hyperbolic sine identity
+    ratio = x_compute / (2.0 * np.sinh(x_compute / 2.0))
+    
+    # Map the computed values back to the original array shape
+    c_mode_valid = np.zeros_like(x_valid)
+    c_mode_valid[compute_mask] = kB * (ratio * ratio)
+    c_mode[valid_mask] = c_mode_valid
+    
     return np.sum(c_mode) / N_q
 
 
