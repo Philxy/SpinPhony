@@ -2233,7 +2233,7 @@ def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_chan
     temperatures = [1.0 , 4.0, 10.0, 20.0, 30.0, 50.0, 300.0, 500.0, 600.0, 800.0]
 
     with open(filename, 'w') as f:
-        f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell,C_s_meV_per_K_per_cell,C_l_meV_per_K_per_cell,tau_ps\n")
+        f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell,C_s_meV_per_K_per_cell,tau_ps\n")
 
         for T in temperatures:
             d_G_mp_out.copy_to_device(np.zeros(1, dtype=np.float64))
@@ -2259,9 +2259,9 @@ def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_chan
             else:
                 tau_val = float('inf')
 
-            f.write(f"{T:.2f},{G_mp_val:.6e},{C_s_val:.6e},{C_l_val:.6e},{tau_val:.6e}\n")
+            f.write(f"{T:.2f},{G_mp_val:.6e},{C_s_val:.6e},{tau_val:.6e}\n")
 
-    print(f"-> G_mp(T), C_s(T), C_l(T), and tau(T) calculation complete!")
+    print(f"-> G_mp(T), C_s(T), and tau(T) calculation complete!")
 
 
 def init_bose_einstein(w_distribution, temperature_K):

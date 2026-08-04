@@ -90,15 +90,6 @@ def plot_spinphony_dashboard(csv_filename="Outputs/G_mp_temperature_scan.csv",
     ax.set_ylabel(r'$C_s$ ($\mathrm{meV} / \mathrm{K} \cdot \mathrm{cell}$)', fontsize=12)
     ax.set_title('Magnon Heat Capacity', fontsize=13, fontweight='bold')
 
-    # ---------------------------------------------------------
-    # 4. Lattice Heat Capacity (Bottom Right)
-    # ---------------------------------------------------------
-    ax = axs[1, 1]
-    ax.plot(temp, c_l, marker='d', color='#1f77b4', lw=2, label=r'Calc $C_l$')
-    add_scaling_check(ax, temp, c_l, fit_max_temp, "C_l")
-    
-    ax.set_ylabel(r'$C_l$ ($\mathrm{meV} / \mathrm{K} \cdot \mathrm{cell}$)', fontsize=12)
-    ax.set_title('Phonon Heat Capacity', fontsize=13, fontweight='bold')
 
     # ---------------------------------------------------------
     # Global Formatting
@@ -122,7 +113,7 @@ def plot_spinphony_dashboard(csv_filename="Outputs/G_mp_temperature_scan.csv",
 if __name__ == "__main__":
     # Now simply pass the file and the max temperature for the fit
     plot_spinphony_dashboard(
-        csv_filename="Outputs/G_mp_temperature_scan.csv", # Update this to your local filename
+        csv_filename="Outputs/CrI3_minsig0.001/G_mp_temperature_scan.csv", # Update this to your local filename
         fit_max_temp=50.0,
         save_plot="Outputs/SpinPhony_Dashboard.png"
     )
