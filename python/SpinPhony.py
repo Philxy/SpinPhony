@@ -1849,7 +1849,12 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                 
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
                 MIN_SIGMA = min_sigma  # meV
+
+                
+
                 sigma = sigma_raw if sigma_raw > MIN_SIGMA else MIN_SIGMA
+
+                sigma = min_sigma
 
                 if abs(dE) < 2.0 * sigma:
                     # 0.4179 normalizes the 2-sigma Gaussian
@@ -2177,7 +2182,7 @@ def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_chan
     threads_per_block = 256
     blocks_eval = math.ceil(num_channels / threads_per_block)
 
-    temperatures = np.linspace(4, 800, 5)
+    temperatures = [4.0, 10.0, 20.0, 30.0, 50.0, 300.0, 500.0, 600.0, 800.0]
 
     with open(filename, 'w') as f:
         f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell\n")
