@@ -2683,10 +2683,6 @@ if __name__ == "__main__":
 
     threads_per_block = 256
     blocks_per_grid = math.ceil(N_points / threads_per_block)
-
-    # Setup temperatures and initial populations
-    T_mag_init = 300
-    T_phon_init = 300
     
     print(f"\nInitializing populations at thermal equilibrium:")
     print(f" -> Magnons: {T_mag_init} K")
