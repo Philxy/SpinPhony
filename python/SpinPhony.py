@@ -1657,7 +1657,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
 
     for l in range(num_atoms):
         mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
-        disp_amp = math.sqrt((hbar * hbar) / (2.0 * mass_l))
+        disp_amp = math.sqrt((hbar * hbar) / (2.0 * mass_l * omega))
         
         for mu in range(3):
             e_mu = eig_phon[q_idx, lambda_phon, l, mu]
