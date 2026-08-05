@@ -72,7 +72,9 @@ class CrystalDataSoA:
         self.w_mag = np.zeros((self.N, self.n_mag_branches), dtype=np.float64)
         self._compute_magnon_dispersions(K_anisotropy=anisotropy, lattice_constant=lattice_constant)
 
-        self._compute_group_velocities()
+        #self._compute_group_velocities() # temporarily disabled for performance; can be re-enabled if needed
+        grad_f_phon = np.zeros((self.N, self.phon_branches, 3), dtype=np.float64)
+
 
         # Cartesian conversion
         q_frac_array = self.q_grid / self.mesh
@@ -602,7 +604,8 @@ class CrystalDataSoA:
             if hasattr(self, 'slc_axis') and is_FM:
                 Vp = V_plus_all[q_idx]
                 Vm = V_minus_all[q_idx]
-                
+
+                # Enable or disable the following block to include SLC interactions
                 """
                 # 1. Normal Particle-Particle
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
@@ -1382,7 +1385,7 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
 
                 sigma_raw_mag = smearing * math.sqrt(var_mag / 12.0)
                 sigma_mag = sigma_raw_mag if sigma_raw_mag > 1e-5 else 1e-5
-
+                
                 if abs(dE_mag) < 2.0 * sigma_mag:
                     weight = (0.4179 / sigma_mag) * math.exp(-0.5 * (dE_mag*dE_mag) / (sigma_mag*sigma_mag))
                     kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
@@ -2125,7 +2128,9 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, 
             for b_p in range(num_bands):
                 dE = w_q - w_k - w_hyb[p_idx, b_p]
 
+
                 # Adaptive Broadening Calculation
+                """
                 variance = 0.0
                 for i in range(3):
                     d_g = grad_f_hyb[q_idx, b_q, i] - grad_f_hyb[k_idx, b_k, i] - grad_f_hyb[p_idx, b_p, i]
@@ -2134,7 +2139,10 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, 
                 
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
                 sigma = sigma_raw if sigma_raw > min_sigma else min_sigma
-                cutoff = 3.0 * sigma
+                """
+                sigma = min_sigma
+
+                cutoff = 2.0 * sigma
 
                 if abs(dE) < cutoff:
                     gaussian_norm = 0.4179 / sigma
@@ -2845,7 +2853,7 @@ if __name__ == "__main__":
 
 
     # =============== Hybrid Lifetimes ===============
-    """
+    #"""
     num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
 
     total_loops = N_points**2 * num_hyb_branches**3
@@ -2956,7 +2964,7 @@ if __name__ == "__main__":
                 f.write(f"{q_idx},{qx},{qy},{qz},{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{pc:.6f},{mc:.6f},{pa:.6e},{sa:.6e},{gamma:.6e},{tau:.6e}\n")
 
     print(f"-> Saved equilibrium hybrid lifetimes, velocities, and characters to {out_file}.")
-    """
+    #"""
 
 
 
