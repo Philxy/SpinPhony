@@ -1878,7 +1878,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     V = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
                     V_Gmp = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_kminq_cart, y_kminq_cart, z_kminq_cart, idx_kminq, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
-                    V_sq_Gmp = V.real**2 + V.imag**2
+                    V_sq_Gmp = V_Gmp.real**2 + V_Gmp.imag**2
 
                     V_sq = V.real**2 + V.imag**2
 
