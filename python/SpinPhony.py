@@ -1366,6 +1366,62 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
         for m in range(n_mag):
             for lam in range(n_phon):
 
+                # ---------------------------------------------------------
+                # Unified magnon channel: M(path,n) <-> M(k,m) + Ph(k-path,lam)
+                # Single delta / full bidirectional bracket (mirrors the grid's
+                # unified Process 0), vertex evaluated at (kp=path, q=k-path) to
+                # match the confirmed phonon-equation vertex convention.
+                # ---------------------------------------------------------
+                dE_mag = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] - w_phon_grid[idx_qmink, lam]
+                var_mag = 0.0
+                for i in range(3):
+                    d_g = -grad_f_mag[k_idx, m, i] + grad_f_phon[idx_qmink, lam, i]
+                    step_w = d_g / mesh[i]
+                    var_mag += step_w * step_w
+
+                sigma_raw_mag = smearing * math.sqrt(var_mag / 12.0)
+                sigma_mag = sigma_raw_mag if sigma_raw_mag > 1e-5 else 1e-5
+
+                if abs(dE_mag) < 2.0 * sigma_mag:
+                    weight = (0.4179 / sigma_mag) * math.exp(-0.5 * (dE_mag*dE_mag) / (sigma_mag*sigma_mag))
+                    kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
+                    qx = grid_q_cart[k_idx, 0] - path_q_cart[path_idx, 0]
+                    qy = grid_q_cart[k_idx, 1] - path_q_cart[path_idx, 1]
+                    qz = grid_q_cart[k_idx, 2] - path_q_cart[path_idx, 2]
+                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * weight
+
+                # ---------------------------------------------------------
+                # Unified phonon channel: Ph(path,lam) <-> M(k,n) - M(k-path,m)
+                # Vertex evaluated at (kp=k, q=-path), matching the confirmed
+                # V^{+-}_{k,-q,lam,nm} directly. Already correct as originally
+                # written (this is the old "Process 2"); kept unchanged.
+                # ---------------------------------------------------------
+                dE_phon = path_w_phon[path_idx, lam] + w_mag_grid[idx_kminq, m] - w_mag_grid[k_idx, n]
+                var_phon = 0.0
+                for i in range(3):
+                    d_g = grad_f_mag[idx_kminq, m, i] - grad_f_mag[k_idx, n, i]
+                    step_w = d_g / mesh[i]
+                    var_phon += step_w * step_w
+
+                sigma_raw_phon = smearing * math.sqrt(var_phon / 12.0)
+                sigma_phon = sigma_raw_phon if sigma_raw_phon > 1e-5 else 1e-5
+
+                if abs(dE_phon) < 2.0 * sigma_phon:
+                    weight = (0.4179 / sigma_phon) * math.exp(-0.5 * (dE_phon*dE_phon) / (sigma_phon*sigma_phon))
+                    kpx, kpy, kpz = grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2]
+                    qx, qy, qz = -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2]
+                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, path_eig_phon[path_idx], path_w_phon[path_idx, lam], atom_masses, mag_moments)
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * weight
+
 
 
                 """
@@ -2486,14 +2542,14 @@ def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, d
     """
 
 @cuda.jit
-def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamma_mag, gamma_phon, N_points):
+def phase_lifetime_path(chan_indices, chan_weights, num_channels, n_mag_grid, n_phon_grid, gamma_mag_path, gamma_phon_path, N_grid_points):
+    """Calculates lifetimes for the path array by evaluating the thermal distributions on the regular grid."""
     idx = cuda.grid(1)
     if idx >= num_channels[0] or idx >= chan_weights.shape[0]: 
         return
         
-    # We no longer need c_type, but we read it to maintain memory alignment
     c_type = chan_indices[0, idx]
-    q_idx  = chan_indices[1, idx] 
+    path_idx = chan_indices[1, idx] 
     k_idx  = chan_indices[2, idx] 
     p_idx  = chan_indices[3, idx] 
     n      = chan_indices[4, idx]
@@ -2501,34 +2557,26 @@ def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamm
     lam    = chan_indices[6, idx]
     V_sq   = chan_weights[idx]
     
-    num_mag_branches = n_mag.shape[1]
-    num_phon_branches = n_phon.shape[1]
-    
     hbar = 0.6582119569 # meV * ps
-    fgr_prefactor = (2.0 * math.pi / hbar) / N_points
+    fgr_prefactor = (2.0 * math.pi / hbar) / N_grid_points
+    
+    num_mag_branches = n_mag_grid.shape[1]
+    num_phon_branches = n_phon_grid.shape[1]
+    
+    if c_type == 0:
+        # Unified magnon channel: full bidirectional bracket (mirrors phase_lifetime's gamma_q)
+        nk_mag = n_mag_grid[k_idx, m]
+        n_ph = n_phon_grid[p_idx, lam]
+        rate = fgr_prefactor * V_sq * (1.0 + n_ph + nk_mag)
+        cuda.atomic.add(gamma_mag_path, path_idx * num_mag_branches + n, rate)
+        
+    elif c_type == 2:
+        # Unified phonon channel (mirrors the confirmed phonon RTA rate)
+        nk_mag = n_mag_grid[k_idx, n]
+        n_kminq_mag = n_mag_grid[p_idx, m]
+        rate = fgr_prefactor * V_sq * (n_kminq_mag - nk_mag)
+        cuda.atomic.add(gamma_phon_path, path_idx * num_phon_branches + lam, rate)
 
-    # Populations (evaluated at the equilibrium T_0 passed to the kernel)
-    nk_mag = n_mag[k_idx, m]
-    nq_mag = n_mag[q_idx, n]
-    np_phon = n_phon[p_idx, lam]
-    
-    # ---------------------------------------------------------
-    # 1. M(q) Out-Scattering (via Emission: M_q -> M_k + Ph_p)
-    # ---------------------------------------------------------
-    gamma_q = fgr_prefactor * V_sq * (1.0 + np_phon + nk_mag)
-    cuda.atomic.add(gamma_mag, q_idx * num_mag_branches + n, gamma_q)
-    
-    # ---------------------------------------------------------
-    # 2. M(k) Out-Scattering (via Absorption: M_k + Ph_p -> M_q)
-    # ---------------------------------------------------------
-    gamma_k = fgr_prefactor * V_sq * (np_phon - nq_mag)
-    cuda.atomic.add(gamma_mag, k_idx * num_mag_branches + m, gamma_k)
-    
-    # ---------------------------------------------------------
-    # 3. Ph(p) Out-Scattering (via Absorption: Ph_p + M_k -> M_q)
-    # ---------------------------------------------------------
-    gamma_p = fgr_prefactor * V_sq * (nk_mag - nq_mag)
-    cuda.atomic.add(gamma_phon, p_idx * num_phon_branches + lam, gamma_p)
 
     """
 
