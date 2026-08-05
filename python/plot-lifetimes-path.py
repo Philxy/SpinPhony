@@ -99,4 +99,4 @@ def plot_colored_line_dispersions(csv_file, output_image='lifetime_lineplots.png
     print(f"-> Saved plot to '{output_image}'")
 
 if __name__ == "__main__":
-    plot_colored_line_dispersions('Outputs/path_lifetimes.csv', 'Outputs/lifetime_colored_lines.png')
+    plot_colored_line_dispersions('Outputs/CrI3_minsig0.1/path_lifetimes.csv', 'Outputs/lifetime_colored_lines.png')

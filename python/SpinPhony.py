@@ -59,6 +59,13 @@ class CrystalDataSoA:
                     self.eig_phon[q_idx, b, atom, 2] = eigenvectors[3*atom + 2, b]
 
         if np.any(self.grid_map == -1):
+
+            # Print the missing q-points for debugging
+            missing_q_points = np.argwhere(self.grid_map == -1)
+            print(f"Missing q-points (grid positions): {missing_q_points.shape[0]}")
+            for pos in missing_q_points:
+                print(f"  -> {pos[0]}, {pos[1]}, {pos[2]}")
+
             raise ValueError("Grid map initialization failed: Incomplete q-point mesh.")
 
         # Allocate and Compute Magnons
@@ -1351,7 +1358,10 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
     for n in range(n_mag):
         for m in range(n_mag):
             for lam in range(n_phon):
-                
+
+
+
+                """
                 # ---------------------------------------------------------
                 # 0: Magnon Emission (Magnon on path -> Magnon + Phonon on grid)
                 # ---------------------------------------------------------
@@ -1426,6 +1436,7 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                         chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
                         chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                         chan_weights[c_idx] = V_sq * weight
+                """
 
 @cuda.jit
 def phase_lifetime_path(chan_indices, chan_weights, num_channels, n_mag_grid, n_phon_grid, gamma_mag_path, gamma_phon_path, N_grid_points):
