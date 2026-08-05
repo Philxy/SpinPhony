@@ -72,7 +72,7 @@ def plot_spin_lattice_coupling_comparison(min_sigmas=(0.01, 0.05, 0.1, 0.2, 0.5)
 
 if __name__ == "__main__":
     plot_spin_lattice_coupling_comparison(
-        min_sigmas=(0.005, 0.01, 0.02, 0.05, 0.1),
+        min_sigmas=(0.005, 0.01, 0.02, 0.05, 0.1, 0.5),
         out_dir_template="Outputs/CrI3_minsig{}",
         unit_cell_volume_A3=269.0,  # Replace with your CrI3 unit cell volume in Å^3
         save_plot="Outputs/G_mp_vs_temperature_comparison.png",

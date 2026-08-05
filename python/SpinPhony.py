@@ -1870,8 +1870,16 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     x_qmink_cart = q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0]
                     y_qmink_cart = q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1]
                     z_qmink_cart = q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2]
+
+                    x_kminq_cart = q_grid_cart[k_idx, 0] - q_grid_cart[q_idx, 0]
+                    y_kminq_cart = q_grid_cart[k_idx, 1] - q_grid_cart[q_idx, 1]
+                    z_kminq_cart = q_grid_cart[k_idx, 2] - q_grid_cart[q_idx, 2]
                     
                     V = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+
+                    V_Gmp = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_kminq_cart, y_kminq_cart, z_kminq_cart, idx_kminq, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                    V_sq_Gmp = V.real**2 + V.imag**2
+
                     V_sq = V.real**2 + V.imag**2
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
@@ -1879,7 +1887,7 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
 
                     chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
                     chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
-                    chan_weights[c_idx] = V_sq * delta_weight
+                    chan_weights[c_idx] = V_sq_Gmp * delta_weight
                 
                 """
                 # Process 1
@@ -2768,10 +2776,9 @@ if __name__ == "__main__":
     d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
     d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
 
+
     # =============== Hybrid Lifetimes ===============
-
     """
-
     num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
 
     total_loops = N_points**2 * num_hyb_branches**3

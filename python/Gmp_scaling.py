@@ -41,8 +41,7 @@ def plot_spinphony_dashboard(csv_filename="Outputs/G_mp_temperature_scan.csv",
     temp = data[:, 0]
     g_mp_raw = data[:, 1]  # Units: meV / (K * ps) per unit cell
     c_s  = data[:, 2]
-    c_l  = data[:, 3]
-    tau  = data[:, 4]
+    tau  = data[:, 3]
 
     # --- Unit Conversion for G_mp to Watts ---
     if unit_cell_volume_A3 is None:
@@ -113,7 +112,7 @@ def plot_spinphony_dashboard(csv_filename="Outputs/G_mp_temperature_scan.csv",
 if __name__ == "__main__":
     # Now simply pass the file and the max temperature for the fit
     plot_spinphony_dashboard(
-        csv_filename="Outputs/CrI3_minsig0.001/G_mp_temperature_scan.csv", # Update this to your local filename
+        csv_filename="Outputs/CrI3_minsig0.5/G_mp_temperature_scan.csv", # Update this to your local filename
         fit_max_temp=50.0,
         save_plot="Outputs/SpinPhony_Dashboard.png"
     )
