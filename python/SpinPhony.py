@@ -73,7 +73,7 @@ class CrystalDataSoA:
         self._compute_magnon_dispersions(K_anisotropy=anisotropy, lattice_constant=lattice_constant)
 
         #self._compute_group_velocities() # temporarily disabled for performance; can be re-enabled if needed
-        grad_f_phon = np.zeros((self.N, self.phon_branches, 3), dtype=np.float64)
+        self.grad_f_phon = np.zeros((self.N, self.phon_branches, 3), dtype=np.float64)
 
 
         # Cartesian conversion
