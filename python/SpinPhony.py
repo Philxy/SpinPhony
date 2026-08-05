@@ -3093,7 +3093,7 @@ if __name__ == "__main__":
 
 
     # =============== Hybrid Lifetimes ===============
-    #"""
+    """
     num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
 
     total_loops = N_points**2 * num_hyb_branches**3
@@ -3204,7 +3204,7 @@ if __name__ == "__main__":
                 f.write(f"{q_idx},{qx},{qy},{qz},{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{pc:.6f},{mc:.6f},{pa:.6e},{sa:.6e},{gamma:.6e},{tau:.6e}\n")
 
     print(f"-> Saved equilibrium hybrid lifetimes, velocities, and characters to {out_file}.")
-    #"""
+    """
 
 
 
@@ -3305,6 +3305,13 @@ if __name__ == "__main__":
     # d_path_hyb_chan_indices/d_path_hyb_chan_weights, lower anticipated_fraction for
     # this section specifically rather than assuming the grid-tuned value applies here.
     print("\nStarting Hybrid Path Lifetime Evaluation...")
+
+    # Self-contained: does not assume the grid hybrid section above ran (it may be
+    # commented out if only path hybrid lifetimes are wanted), so num_hyb_branches
+    # and the grid hybrid occupations are (re)computed here.
+    num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
+    n_hyb_cpu = init_bose_einstein(crystal_data.w_hyb, T_mag_init)
+    d_n_hyb = cuda.to_device(n_hyb_cpu)
 
     total_path_hyb_loops = N_path * N_points * num_hyb_branches**3
     max_path_hyb_channels = int(total_path_hyb_loops * anticipated_fraction)
