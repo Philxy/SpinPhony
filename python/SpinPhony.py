@@ -92,7 +92,8 @@ class CrystalDataSoA:
             return_full_matrices=True
         )
 
-        self._compute_hybrid_group_velocities()
+        #self._compute_hybrid_group_velocities()
+        self.grad_f_hyb = np.zeros((self.N, self.phon_branches + self.n_mag_branches, 3), dtype=np.float64)
 
 
     def print_summary(self):

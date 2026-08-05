@@ -108,7 +108,7 @@ def plot_spinphony_dashboard(csv_filename="Outputs/G_mp_temperature_scan.csv",
 if __name__ == "__main__":
     # Example usage: Pass unit_cell_volume_A3 if you want SI unit conversion
     plot_spinphony_dashboard(
-        csv_filename="Outputs/CrI3_minsig0.01/G_mp_temperature_scan.csv",
+        csv_filename="Outputs/G_mp_temperature_scan.csv",
         unit_cell_volume_A3=269.0,  # Replace with e.g. 23.5 for a system volume in Å^3
         save_plot="Outputs/G_mp_vs_temperature.png"
     )
