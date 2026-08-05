@@ -220,6 +220,13 @@ class CrystalDataSoA:
             """
 
         if np.any(self.grid_map == -1):
+
+            # Print the missing q-points for debugging
+            missing_q_points = np.argwhere(self.grid_map == -1)
+            print(f"Missing q-points (grid positions): {missing_q_points.shape[0]}")
+            for pos in missing_q_points:
+                print(f"  -> {pos[0]}, {pos[1]}, {pos[2]}")
+
             raise ValueError("Grid map initialization failed: Incomplete q-point mesh.")
             
     def push_to_gpu(self):
