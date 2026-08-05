@@ -1877,6 +1877,119 @@ def calc_symmetrized_hybrid_vertex_squared(
     Gamma_sym = 0.5 * (Gamma_kq + Gamma_qk)
     return Gamma_sym.real**2 + Gamma_sym.imag**2
 
+
+@cuda.jit(device=True)
+def calc_hybrid_vertex_Gamma_path(
+    path_idx, minus_path_grid_idx,
+    k_idx, q_idx, minus_k_idx, minus_q_idx,
+    kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
+    alpha, alpha_prime, alpha_double_prime,
+    Qmatrix, path_Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+):
+    """
+    Path variant of calc_hybrid_vertex_Gamma: the parent leg (k+q) is pinned to an
+    exact high-symmetry path point (path_idx), while k_idx/q_idx (the two children)
+    remain grid indices, exactly as in the grid version.
+
+    The parent's own Qmatrix row is read from path_Qmatrix (exact, no approximation).
+    The "-parent" leg is unavoidably approximated onto the nearest grid point
+    (minus_path_grid_idx) for its Qmatrix row and its calc_vertex_V eig_phon/w_phon
+    lookup, since no continuous "-path" hybrid diagonalization exists - there is no
+    grid point at -path in general. The exact (unrounded) cartesian coordinate of
+    -path is still used for the phase factors inside calc_vertex_V; only the array
+    lookups that require a discrete index are grid-snapped.
+    """
+    Gamma = 0.0 + 0.0j
+
+    N_half = num_phon + num_mag
+
+    for n in range(num_mag):
+        I_n = num_phon + n
+        for m in range(num_mag):
+            I_m = num_phon + m
+            for lam in range(num_phon):
+
+                # Term 1: both children on the grid, parent (k+q) exact via path_Qmatrix
+                V1 = calc_vertex_V(
+                    kx, ky, kz, qx, qy, qz,
+                    q_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+                P1 = Qmatrix[q_idx, lam, alpha_double_prime] + Qmatrix[q_idx, lam + N_half, alpha_double_prime]
+                Q1_n = path_Qmatrix[path_idx, I_n, alpha].conjugate()
+                Q1_m = Qmatrix[k_idx, I_m, alpha_prime]
+
+                term1 = V1 * P1 * Q1_n * Q1_m
+
+                # Term 2: -(k+q) leg grid-snapped (minus_path_grid_idx) for both the
+                # vertex's phonon lookup and its Qmatrix row.
+                V2 = calc_vertex_V(
+                    kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
+                    minus_path_grid_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+                P2 = Qmatrix[minus_path_grid_idx, lam, alpha].conjugate() + Qmatrix[minus_path_grid_idx, lam + N_half, alpha].conjugate()
+                Q2_n = Qmatrix[minus_q_idx, I_n, alpha_double_prime + N_half].conjugate()
+                Q2_m = Qmatrix[k_idx, I_m, alpha_prime]
+
+                term2 = V2 * P2 * Q2_n * Q2_m
+
+                # Term 3: -(k+q) leg grid-snapped again
+                V3 = calc_vertex_V(
+                    minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, qx, qy, qz,
+                    q_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+                P3 = Qmatrix[q_idx, lam, alpha_double_prime] + Qmatrix[q_idx, lam + N_half, alpha_double_prime]
+                Q3_n = Qmatrix[minus_k_idx, I_n, alpha_prime + N_half].conjugate()
+                Q3_m = Qmatrix[minus_path_grid_idx, I_m, alpha + N_half]
+
+                term3 = V3 * P3 * Q3_n * Q3_m
+
+                Gamma += (term1 + term2 + term3)
+
+    return Gamma
+
+
+@cuda.jit(device=True)
+def calc_symmetrized_hybrid_vertex_squared_path(
+    path_idx, minus_path_grid_idx,
+    k_idx, q_idx, minus_k_idx, minus_q_idx,
+    kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
+    alpha, alpha_prime, alpha_double_prime,
+    Qmatrix, path_Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag):
+    """
+    Path variant of calc_symmetrized_hybrid_vertex_squared. The parent (path) leg is
+    held fixed between the two symmetrization calls; only the two grid children swap
+    roles, exactly mirroring the grid version's Gamma_kq / Gamma_qk swap.
+    """
+
+    Gamma_kq = calc_hybrid_vertex_Gamma_path(
+        path_idx, minus_path_grid_idx,
+        k_idx, q_idx, minus_k_idx, minus_q_idx,
+        kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
+        alpha, alpha_prime, alpha_double_prime,
+        Qmatrix, path_Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+    )
+
+    Gamma_qk = calc_hybrid_vertex_Gamma_path(
+        path_idx, minus_path_grid_idx,
+        q_idx, k_idx, minus_q_idx, minus_k_idx,
+        qx, qy, qz, kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
+        alpha, alpha_double_prime, alpha_prime,
+        Qmatrix, path_Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+    )
+
+    Gamma_sym = 0.5 * (Gamma_kq + Gamma_qk)
+    return Gamma_sym.real**2 + Gamma_sym.imag**2
+
 # ==========================================
 # 2. GPU Kernels: The Main Phases
 # ==========================================
@@ -2208,6 +2321,132 @@ def phase_lifetime_hybrid(chan_indices, chan_weights, num_channels, n_hyb, gamma
     # 3. Coalescence contribution to child 2 state (p)
     rate_p = prefactor_coal * V_sq * (n_k - n_q)
     cuda.atomic.add(gamma_hyb, p_idx * num_bands + b_p, rate_p)
+
+
+@cuda.jit
+def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
+                              path_q_frac, path_q_cart, path_w_hyb, path_eig_hyb,
+                              w_hyb, Qmatrix,
+                              slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                              eig_phon, w_phon, atom_masses, mag_moments,
+                              min_sigma, chan_indices, chan_weights, channel_count,
+                              num_phon, num_mag):
+    """
+    Unified hybridized phase space scan along the high-symmetry path:
+    hybrid(path, b_q) <-> hybrid(k, b_k) + hybrid(p, b_p), with k, p on the grid and
+    p = round_to_grid(path - k). Mirrors phase_1_scan_hybrid's splitting/coalescence
+    topology, with the parent leg pinned to an exact path point instead of a grid point.
+    """
+    path_idx, k_idx = cuda.grid(2)
+    N_path = path_q_frac.shape[0]
+    N_grid = grid_q_cart.shape[0]
+
+    if path_idx >= N_path or k_idx >= N_grid:
+        return
+
+    # p_idx = round_to_grid(path - k)
+    px_int = int(math.floor(((path_q_frac[path_idx, 0] - grid_q_frac[k_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
+    py_int = int(math.floor(((path_q_frac[path_idx, 1] - grid_q_frac[k_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
+    pz_int = int(math.floor(((path_q_frac[path_idx, 2] - grid_q_frac[k_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
+    p_idx = grid_map[px_int, py_int, pz_int]
+
+    # -k (exact grid negation - k is already on-grid)
+    mx_k = (-q_grid[k_idx, 0] + mesh[0]) % mesh[0]
+    my_k = (-q_grid[k_idx, 1] + mesh[1]) % mesh[1]
+    mz_k = (-q_grid[k_idx, 2] + mesh[2]) % mesh[2]
+    minus_k_idx = grid_map[mx_k, my_k, mz_k]
+
+    # -p (exact grid negation - p is already on-grid)
+    mx_p = (-q_grid[p_idx, 0] + mesh[0]) % mesh[0]
+    my_p = (-q_grid[p_idx, 1] + mesh[1]) % mesh[1]
+    mz_p = (-q_grid[p_idx, 2] + mesh[2]) % mesh[2]
+    minus_p_idx = grid_map[mx_p, my_p, mz_p]
+
+    # -path, rounded to the nearest grid point. This is the one unavoidable
+    # approximation - see calc_hybrid_vertex_Gamma_path's docstring.
+    mx_q = int(math.floor(((-path_q_frac[path_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
+    my_q = int(math.floor(((-path_q_frac[path_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
+    mz_q = int(math.floor(((-path_q_frac[path_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
+    minus_path_grid_idx = grid_map[mx_q, my_q, mz_q]
+
+    kx, ky, kz = grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2]
+
+    px = path_q_cart[path_idx, 0] - grid_q_cart[k_idx, 0]
+    py = path_q_cart[path_idx, 1] - grid_q_cart[k_idx, 1]
+    pz = path_q_cart[path_idx, 2] - grid_q_cart[k_idx, 2]
+
+    mqx = -path_q_cart[path_idx, 0]
+    mqy = -path_q_cart[path_idx, 1]
+    mqz = -path_q_cart[path_idx, 2]
+
+    num_bands = num_phon + num_mag
+
+    for b_q in range(num_bands):
+        w_q = path_w_hyb[path_idx, b_q]
+        for b_k in range(num_bands):
+            w_k = w_hyb[k_idx, b_k]
+            for b_p in range(num_bands):
+                dE = w_q - w_k - w_hyb[p_idx, b_p]
+
+                sigma = min_sigma
+                cutoff = 2.0 * sigma
+
+                if abs(dE) < cutoff:
+                    gaussian_norm = 0.4179 / sigma
+                    delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
+
+                    V_sq = calc_symmetrized_hybrid_vertex_squared_path(
+                        path_idx, minus_path_grid_idx,
+                        k_idx, p_idx, minus_k_idx, minus_p_idx,
+                        kx, ky, kz, px, py, pz, mqx, mqy, mqz,
+                        b_q, b_k, b_p,
+                        Qmatrix, path_eig_hyb, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+                    )
+
+                    c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[1, c_idx] = path_idx
+                        chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = p_idx
+                        chan_indices[4, c_idx] = b_q
+                        chan_indices[5, c_idx] = b_k
+                        chan_indices[6, c_idx] = b_p
+                        chan_weights[c_idx] = V_sq * delta_weight
+
+
+@cuda.jit
+def phase_lifetime_hybrid_path(chan_indices, chan_weights, num_channels, n_hyb_grid, gamma_hyb_path, N_grid_points):
+    """
+    Computes SMRTA relaxation rates for hybrid modes along the explicit path, using
+    grid-evaluated occupations for the two grid-bound child modes. Mirrors
+    phase_lifetime_hybrid's splitting contribution to the parent state only - the
+    grid children's own lifetimes are already accounted for by the grid hybrid pass.
+    """
+    idx = cuda.grid(1)
+    if idx >= num_channels[0] or idx >= chan_weights.shape[0]:
+        return
+
+    path_idx = chan_indices[1, idx]
+    k_idx = chan_indices[2, idx]
+    p_idx = chan_indices[3, idx]
+    b_q   = chan_indices[4, idx]
+    b_k   = chan_indices[5, idx]
+    b_p   = chan_indices[6, idx]
+
+    V_sq = chan_weights[idx]
+
+    hbar = 0.6582119569  # meV * ps
+    prefactor_split = (math.pi / hbar) / N_grid_points
+
+    n_k = n_hyb_grid[k_idx, b_k]
+    n_p = n_hyb_grid[p_idx, b_p]
+
+    num_bands = n_hyb_grid.shape[1]
+
+    rate_q = prefactor_split * V_sq * (n_k + n_p + 1.0)
+    cuda.atomic.add(gamma_hyb_path, path_idx * num_bands + b_q, rate_q)
+
 
 @cuda.jit
 def compute_G_mp_kernel(chan_indices, chan_weights, d_channel_count, w_mag, w_phon, temperature, G_mp_out, N_points):
@@ -2812,6 +3051,7 @@ if __name__ == "__main__":
     d_path_eig_phon = cuda.to_device(crystal_data.path_eig_phon)
     d_path_eig_mag = cuda.to_device(crystal_data.path_eig_mag)
     d_path_eig_hyb = cuda.to_device(crystal_data.path_eig_hyb)
+    d_path_w_hyb = cuda.to_device(crystal_data.path_w_hyb)
 
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N 
@@ -3055,6 +3295,71 @@ if __name__ == "__main__":
                 f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},phonon,{b},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
                 
     print("-> Saved true path lifetimes to Outputs/path_lifetimes.csv")
+
+
+    # ========================== Hybrid Path Lifetime Evaluation ==========================
+    # NOTE: the combinatorial phase space here (N_path * N_points * num_hyb_branches**3)
+    # is far larger than the plain magnon/phonon path scan (num_hyb_branches includes
+    # every phonon AND magnon branch, cubed), so max_path_hyb_channels can require a lot
+    # of GPU memory for large meshes. If you hit an out-of-memory error allocating
+    # d_path_hyb_chan_indices/d_path_hyb_chan_weights, lower anticipated_fraction for
+    # this section specifically rather than assuming the grid-tuned value applies here.
+    print("\nStarting Hybrid Path Lifetime Evaluation...")
+
+    total_path_hyb_loops = N_path * N_points * num_hyb_branches**3
+    max_path_hyb_channels = int(total_path_hyb_loops * anticipated_fraction)
+
+    d_path_hyb_chan_indices = cuda.device_array((7, max_path_hyb_channels), dtype=np.int32)
+    d_path_hyb_chan_weights = cuda.device_array(max_path_hyb_channels, dtype=np.float64)
+    d_path_hyb_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))
+
+    print(" -> Scanning Hybrid Phase Space (Path x Grid)...")
+    phase_1_scan_hybrid_path[(blocks_x_path, blocks_y_path), threads_2d_path](
+        gpu_data["mesh"], gpu_data["q_grid"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
+        d_path_q_frac, d_path_q_cart, d_path_w_hyb, d_path_eig_hyb,
+        gpu_data["w_hyb"], gpu_data["Qmatrix"],
+        gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
+        gpu_data["eig_phon"], gpu_data["w_phon"], gpu_data["atom_masses"], gpu_data["mag_moments"],
+        min_sigma, d_path_hyb_chan_indices, d_path_hyb_chan_weights, d_path_hyb_channel_count,
+        crystal_data.phon_branches, crystal_data.n_mag_branches
+    )
+
+    cuda.synchronize()
+
+    path_hyb_num_channels = d_path_hyb_channel_count.copy_to_host()[0]
+    print(f" -> Hybrid Path Channels found: {path_hyb_num_channels:,}")
+
+    d_path_hyb_chan_indices_active = d_path_hyb_chan_indices[:, :path_hyb_num_channels]
+    d_path_hyb_chan_weights_active = d_path_hyb_chan_weights[:path_hyb_num_channels]
+
+    d_gamma_hyb_path = cuda.to_device(np.zeros(N_path * num_hyb_branches, dtype=np.float64))
+
+    print(" -> Calculating explicit hybrid path lifetimes...")
+    blocks_eval_path_hyb = math.ceil(path_hyb_num_channels / threads_per_block)
+
+    phase_lifetime_hybrid_path[blocks_eval_path_hyb, threads_per_block](
+        d_path_hyb_chan_indices_active,
+        d_path_hyb_chan_weights_active,
+        d_path_hyb_channel_count,
+        d_n_hyb,
+        d_gamma_hyb_path,
+        N_points
+    )
+    cuda.synchronize()
+
+    gamma_hyb_path_cpu = d_gamma_hyb_path.copy_to_host().reshape((N_path, num_hyb_branches))
+
+    with open(f"{out_dir}/hybrid_path_lifetimes.csv", "w") as f:
+        f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps\n")
+        for i in range(N_path):
+            qx, qy, qz = crystal_data.path_q_frac[i]
+            for b in range(num_hyb_branches):
+                energy = crystal_data.path_w_hyb[i, b]
+                gamma = gamma_hyb_path_cpu[i, b]
+                tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
+                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
+
+    print(f"-> Saved hybrid path lifetimes to {out_dir}/hybrid_path_lifetimes.csv")
 
 
     # 3. Execute Phase 1
