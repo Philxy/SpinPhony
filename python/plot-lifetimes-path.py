@@ -89,13 +89,14 @@ def plot_colored_line_dispersions(csv_file, output_image='lifetime_lineplots.png
     # Plot on respective axes with different colormaps
     # Phonons: Warm theme (inferno_r), Magnons: Cool theme (viridis_r)
     _ = plot_particle_lines(ax1, 'phonon', 'Phonon Dispersion', cmap_name='inferno_r')
-    _ = plot_particle_lines(ax2, 'magnon', 'Magnon Dispersion', cmap_name='viridis_r')
+    _ = plot_particle_lines(ax2, 'magnon', 'Magnon Dispersion', cmap_name='rainbow_r')
     
     ax1.set_ylabel('Energy (meV)', fontsize=14, fontweight='bold')
 
     # Adjust layout dynamically to ensure labels and colorbars do not overlap
     plt.tight_layout()
     plt.savefig(output_image, dpi=300, bbox_inches='tight')
+    plt.show()
     print(f"-> Saved plot to '{output_image}'")
 
 if __name__ == "__main__":
