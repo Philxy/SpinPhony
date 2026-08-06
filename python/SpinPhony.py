@@ -2358,6 +2358,10 @@ def phase_lifetime_hybrid(chan_indices, chan_weights, num_channels, n_hyb, gamma
 
 
 @cuda.jit
+# Quasiparticles below this energy (meV) are excluded as scattering partners
+# in the hybrid path scan below - near-zero-energy modes (e.g. the acoustic
+# Goldstone magnon / acoustic phonons right at Gamma) have ill-defined or
+# divergent occupation numbers and shouldn't be allowed to participate.
 def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                               path_q_frac, path_q_cart, path_w_hyb, path_eig_hyb,
                               w_hyb, Qmatrix,
@@ -2374,6 +2378,8 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
     path_idx, k_idx = cuda.grid(2)
     N_path = path_q_frac.shape[0]
     N_grid = grid_q_cart.shape[0]
+
+    MIN_SCATTERING_ENERGY_MEV = 0.1
 
     if path_idx >= N_path or k_idx >= N_grid:
         return
@@ -2442,12 +2448,16 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
         for b_k in range(num_bands):
             w_k = w_hyb[k_idx, b_k]
             for b_p in range(num_bands):
-                dE = w_q - w_k - w_hyb[p_idx, b_p]
+                w_p = w_hyb[p_idx, b_p]
+                dE = w_q - w_k - w_p
 
                 sigma = min_sigma
                 cutoff = 2.0 * sigma
 
-                if abs(dE) < cutoff:
+                if (abs(dE) < cutoff
+                        and w_q >= MIN_SCATTERING_ENERGY_MEV
+                        and w_k >= MIN_SCATTERING_ENERGY_MEV
+                        and w_p >= MIN_SCATTERING_ENERGY_MEV):
                     gaussian_norm = 0.4179 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
 
