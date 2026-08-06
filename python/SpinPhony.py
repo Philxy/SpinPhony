@@ -606,7 +606,7 @@ class CrystalDataSoA:
                 Vm = V_minus_all[q_idx]
 
                 # Enable or disable the following block to include SLC interactions
-                #"""
+                """
                 # 1. Normal Particle-Particle
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
@@ -622,7 +622,7 @@ class CrystalDataSoA:
                 # 4. Anomalous Hole-Particle (Magnon_h, Phonon_p)
                 H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
-                #"""
+                """
 
             # --- 3. Diagonalization ---
             if return_full_matrices:
@@ -1807,17 +1807,17 @@ def fill_hybrid_vertex_cache(
                 -minus_k_plus_qx, -minus_k_plus_qy, -minus_k_plus_qz, qx, qy, qz, q_idx, lam, n, m,
                 grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
                 eig_phon, w_phon, atom_masses, mag_moments
-            )
-            V2_cache[n, m, lam] = calc_vertex_V(
-                -qx, -qy, -qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, minus_k_plus_q_idx, lam, n, m,
-                grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                eig_phon, w_phon, atom_masses, mag_moments
-            )
-            V3_cache[n, m, lam] = calc_vertex_V(
-                -kx, -ky, -kz, qx, qy, qz, q_idx, lam, n, m,
-                grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                eig_phon, w_phon, atom_masses, mag_moments
-            )
+                )
+                V2_cache[n, m, lam] = calc_vertex_V(
+                    -qx, -qy, -qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, minus_k_plus_q_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+                V3_cache[n, m, lam] = calc_vertex_V(
+                    -kx, -ky, -kz, qx, qy, qz, q_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
 
 
 @cuda.jit(device=True)
