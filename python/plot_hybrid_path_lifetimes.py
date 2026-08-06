@@ -109,7 +109,7 @@ def plot_hybrid_bands_with_lifetime(
     vmin, vmax = finite_vals.min(), finite_vals.max()
     if vmin <= 0:
         vmin = finite_vals[finite_vals > 0].min() if np.any(finite_vals > 0) else 1e-9
-    norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
+    norm = mcolors.LogNorm(vmin=1, vmax=1E4)
 
     cbar_label = r"Lifetime $\tau$ (ps)" if color_by == "tau_ps" else r"Scattering rate $\Gamma$ (ps$^{-1}$)"
 

@@ -1310,7 +1310,8 @@ class CrystalDataSoA:
                         
                         # Particle Block
                         L_matrix[base_idx_p + alpha, base_idx_p + beta] = val
-                        # Hole Block: O_hole = -O_particle^* L_matrix[base_idx_h + alpha, base_idx_h + beta] = -val
+                        # Hole Block: O_hole = -O_particle^* 
+                        L_matrix[base_idx_h + alpha, base_idx_h + beta] = -val
 
         # 3. Magnon Block (Spin Angular Momentum - Sz)
         # Magnons only carry intrinsic spin angular momentum along the quantization axis
