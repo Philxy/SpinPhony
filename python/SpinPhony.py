@@ -1804,20 +1804,20 @@ def fill_hybrid_vertex_cache(
         for m in range(num_mag):
             for lam in range(num_phon):
                 V1_cache[n, m, lam] = calc_vertex_V(
-                    kx, ky, kz, qx, qy, qz, q_idx, lam, n, m,
-                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                    eig_phon, w_phon, atom_masses, mag_moments
-                )
-                V2_cache[n, m, lam] = calc_vertex_V(
-                    kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, minus_k_plus_q_idx, lam, n, m,
-                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                    eig_phon, w_phon, atom_masses, mag_moments
-                )
-                V3_cache[n, m, lam] = calc_vertex_V(
-                    minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, qx, qy, qz, q_idx, lam, n, m,
-                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                    eig_phon, w_phon, atom_masses, mag_moments
-                )
+                -minus_k_plus_qx, -minus_k_plus_qy, -minus_k_plus_qz, qx, qy, qz, q_idx, lam, n, m,
+                grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                eig_phon, w_phon, atom_masses, mag_moments
+            )
+            V2_cache[n, m, lam] = calc_vertex_V(
+                -qx, -qy, -qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, minus_k_plus_q_idx, lam, n, m,
+                grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                eig_phon, w_phon, atom_masses, mag_moments
+            )
+            V3_cache[n, m, lam] = calc_vertex_V(
+                -kx, -ky, -kz, qx, qy, qz, q_idx, lam, n, m,
+                grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                eig_phon, w_phon, atom_masses, mag_moments
+            )
 
 
 @cuda.jit(device=True)
@@ -3351,7 +3351,7 @@ if __name__ == "__main__":
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
                 f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},phonon,{b},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
                 
-    print("-> Saved true path lifetimes to Outputs/path_lifetimes.csv")
+    print(f"-> Saved true path lifetimes to {out_dir}/path_lifetimes.csv")
 
 
     # ========================== Hybrid Path Lifetime Evaluation ==========================
@@ -3423,8 +3423,11 @@ if __name__ == "__main__":
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
                 f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
 
+    print(f" -> Hybrid Path Channels: found_channels / max_channels : {path_hyb_num_channels / max_path_hyb_channels * 100:.2f}%")
+
     print(f"-> Saved hybrid path lifetimes to {out_dir}/hybrid_path_lifetimes.csv")
 
+    
 
     # 3. Execute Phase 1
     print("\nStarting Phase 1: Scanning Phase Space and computing FT Vertices...")
