@@ -1765,19 +1765,74 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     return V_complex #* omega_mask
 
 
+# ==========================================
+# Hybrid vertex caching
+# ==========================================
+# V1/V2/V3 (inside calc_hybrid_vertex_Gamma) depend only on momenta and
+# (n, m, lam) - never on the hybrid band indices (alpha, alpha', alpha'').
+# The original implementation recomputed all of them (including the
+# expensive SLC-tensor scan inside calc_vertex_V) once per hybrid band
+# triple - up to num_bands**3 times per (grid/path) momentum pair, even
+# though the result is identical every time. fill_hybrid_vertex_cache
+# computes them once per momentum pair instead; calc_hybrid_vertex_Gamma
+# then just looks them up.
+#
+# MAX_HYB_MAG_BRANCHES/MAX_HYB_PHON_BRANCHES are CUDA local-array
+# compile-time bounds (numba requires a fixed shape). Raise them if a
+# material exceeds these branch counts - current materials are well within
+# them (bccFe: 1 mag / 3 phon; CrI3: 2 mag / 24 phon).
+MAX_HYB_MAG_BRANCHES = 2
+MAX_HYB_PHON_BRANCHES = 24
+
+
+@cuda.jit(device=True)
+def fill_hybrid_vertex_cache(
+    kx, ky, kz, qx, qy, qz, q_idx,
+    minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, minus_k_plus_q_idx,
+    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag,
+    V1_cache, V2_cache, V3_cache
+):
+    """
+    Fills the V1/V2/V3 caches (indexed [n, m, lam]) for one symmetrization
+    configuration. kx,ky,kz / qx,qy,qz play whichever of the "k"/"q" roles
+    the caller needs (swapped between the Gamma_kq and Gamma_qk configurations
+    in calc_symmetrized_hybrid_vertex_squared); minus_k_plus_q is the same
+    in both configurations.
+    """
+    for n in range(num_mag):
+        for m in range(num_mag):
+            for lam in range(num_phon):
+                V1_cache[n, m, lam] = calc_vertex_V(
+                    kx, ky, kz, qx, qy, qz, q_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+                V2_cache[n, m, lam] = calc_vertex_V(
+                    kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, minus_k_plus_q_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+                V3_cache[n, m, lam] = calc_vertex_V(
+                    minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, qx, qy, qz, q_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+
+
 @cuda.jit(device=True)
 def calc_hybrid_vertex_Gamma(
     k_idx, q_idx, k_plus_q_idx, minus_k_idx, minus_q_idx, minus_k_plus_q_idx,
-    kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
     alpha, alpha_prime, alpha_double_prime,
-    Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+    Qmatrix, V1_cache, V2_cache, V3_cache, num_phon, num_mag
 ):
     """
-    Computes the highly-coupled 3-particle hybridized vertex Gamma.
+    Computes the highly-coupled 3-particle hybridized vertex Gamma, reusing
+    precomputed V1/V2/V3 (see fill_hybrid_vertex_cache) instead of
+    recomputing them for every hybrid band triple.
     """
     Gamma = 0.0 + 0.0j
-    
+
     # N is the dimension block size: total number of physical bosonic modes
     N_half = num_phon + num_mag
 
@@ -1786,56 +1841,29 @@ def calc_hybrid_vertex_Gamma(
         for m in range(num_mag):
             I_m = num_phon + m
             for lam in range(num_phon):
-                
-                # ---------------------------------------------------------
-                # Term 1: V^{+-}_{k+q, q} 
-                # kpx = k_in - q_in = (k+q) - q = k
-                # qx  = q_in = q
-                # ---------------------------------------------------------
-                V1 = calc_vertex_V(
-                    kx, ky, kz, qx, qy, qz, 
-                    q_idx, lam, n, m, 
-                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                    eig_phon, w_phon, atom_masses, mag_moments
-                )
+
+                # Term 1: V^{+-}_{k+q, q}
+                V1 = V1_cache[n, m, lam]
                 P1 = Qmatrix[q_idx, lam, alpha_double_prime] + Qmatrix[q_idx, lam + N_half, alpha_double_prime]
                 Q1_n = Qmatrix[k_plus_q_idx, I_n, alpha].conjugate()
                 Q1_m = Qmatrix[k_idx, I_m, alpha_prime]
-                
+
                 term1 = V1 * P1 * Q1_n * Q1_m
 
-                # ---------------------------------------------------------
-                # Term 2: V^{+-}_{-q, -(k+q)} 
-                # kpx = k_in - q_in = -q - (-(k+q)) = k
-                # qx  = q_in = -(k+q)
-                # ---------------------------------------------------------
-                V2 = calc_vertex_V(
-                    kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, 
-                    minus_k_plus_q_idx, lam, n, m, 
-                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                    eig_phon, w_phon, atom_masses, mag_moments
-                )
+                # Term 2: V^{+-}_{-q, -(k+q)}
+                V2 = V2_cache[n, m, lam]
                 P2 = Qmatrix[minus_k_plus_q_idx, lam, alpha].conjugate() + Qmatrix[minus_k_plus_q_idx, lam + N_half, alpha].conjugate()
                 Q2_n = Qmatrix[minus_q_idx, I_n, alpha_double_prime + N_half].conjugate()
                 Q2_m = Qmatrix[k_idx, I_m, alpha_prime]
-                
+
                 term2 = V2 * P2 * Q2_n * Q2_m
 
-                # ---------------------------------------------------------
                 # Term 3: V^{+-}_{-k, q}
-                # kpx = k_in - q_in = -k - q = -(k+q)
-                # qx  = q_in = q
-                # ---------------------------------------------------------
-                V3 = calc_vertex_V(
-                    minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, qx, qy, qz, 
-                    q_idx, lam, n, m, 
-                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
-                    eig_phon, w_phon, atom_masses, mag_moments
-                )
+                V3 = V3_cache[n, m, lam]
                 P3 = Qmatrix[q_idx, lam, alpha_double_prime] + Qmatrix[q_idx, lam + N_half, alpha_double_prime]
                 Q3_n = Qmatrix[minus_k_idx, I_n, alpha_prime + N_half].conjugate()
                 Q3_m = Qmatrix[minus_k_plus_q_idx, I_m, alpha + N_half]
-                
+
                 term3 = V3 * P3 * Q3_n * Q3_m
 
                 # Accumulate the total hybridized vertex
@@ -1847,32 +1875,31 @@ def calc_hybrid_vertex_Gamma(
 @cuda.jit(device=True)
 def calc_symmetrized_hybrid_vertex_squared(
     k_idx, q_idx, k_plus_q_idx, minus_k_idx, minus_q_idx, minus_k_plus_q_idx,
-    kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
     alpha, alpha_prime, alpha_double_prime,
-    Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag):
+    Qmatrix,
+    V1_cache_kq, V2_cache_kq, V3_cache_kq,
+    V1_cache_qk, V2_cache_qk, V3_cache_qk,
+    num_phon, num_mag):
     """
-    Computes the squared absolute value of the symmetrized hybridized vertex.
+    Computes the squared absolute value of the symmetrized hybridized vertex,
+    reusing the two precomputed per-configuration vertex caches (kq and qk)
+    instead of recomputing V1/V2/V3 for every hybrid band triple.
     """
-    
+
     # Gamma(k, q, alpha, alpha', alpha'')
     Gamma_kq = calc_hybrid_vertex_Gamma(
         k_idx, q_idx, k_plus_q_idx, minus_k_idx, minus_q_idx, minus_k_plus_q_idx,
-        kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
         alpha, alpha_prime, alpha_double_prime,
-        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+        Qmatrix, V1_cache_kq, V2_cache_kq, V3_cache_kq, num_phon, num_mag
     )
-    
+
     # 2. Swapped configuration: Gamma(q, k, alpha, alpha'', alpha')
     Gamma_qk = calc_hybrid_vertex_Gamma(
         q_idx, k_idx, k_plus_q_idx, minus_q_idx, minus_k_idx, minus_k_plus_q_idx,
-        qx, qy, qz, kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
         alpha, alpha_double_prime, alpha_prime,
-        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+        Qmatrix, V1_cache_qk, V2_cache_qk, V3_cache_qk, num_phon, num_mag
     )
-    
+
     # 3. Symmetrize and return the squared absolute value |Gamma_sym|^2
     Gamma_sym = 0.5 * (Gamma_kq + Gamma_qk)
     return Gamma_sym.real**2 + Gamma_sym.imag**2
@@ -1882,23 +1909,23 @@ def calc_symmetrized_hybrid_vertex_squared(
 def calc_hybrid_vertex_Gamma_path(
     path_idx, minus_path_grid_idx,
     k_idx, q_idx, minus_k_idx, minus_q_idx,
-    kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
     alpha, alpha_prime, alpha_double_prime,
-    Qmatrix, path_Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+    Qmatrix, path_Qmatrix, V1_cache, V2_cache, V3_cache, num_phon, num_mag
 ):
     """
     Path variant of calc_hybrid_vertex_Gamma: the parent leg (k+q) is pinned to an
     exact high-symmetry path point (path_idx), while k_idx/q_idx (the two children)
-    remain grid indices, exactly as in the grid version.
+    remain grid indices, exactly as in the grid version. Reuses precomputed
+    V1/V2/V3 (see fill_hybrid_vertex_cache) instead of recomputing them for
+    every hybrid band triple.
 
     The parent's own Qmatrix row is read from path_Qmatrix (exact, no approximation).
     The "-parent" leg is unavoidably approximated onto the nearest grid point
     (minus_path_grid_idx) for its Qmatrix row and its calc_vertex_V eig_phon/w_phon
     lookup, since no continuous "-path" hybrid diagonalization exists - there is no
     grid point at -path in general. The exact (unrounded) cartesian coordinate of
-    -path is still used for the phase factors inside calc_vertex_V; only the array
-    lookups that require a discrete index are grid-snapped.
+    -path is still used for the phase factors inside calc_vertex_V (baked into the
+    cache); only the array lookups that require a discrete index are grid-snapped.
     """
     Gamma = 0.0 + 0.0j
 
@@ -1911,12 +1938,7 @@ def calc_hybrid_vertex_Gamma_path(
             for lam in range(num_phon):
 
                 # Term 1: both children on the grid, parent (k+q) exact via path_Qmatrix
-                V1 = calc_vertex_V(
-                    kx, ky, kz, qx, qy, qz,
-                    q_idx, lam, n, m,
-                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                    eig_phon, w_phon, atom_masses, mag_moments
-                )
+                V1 = V1_cache[n, m, lam]
                 P1 = Qmatrix[q_idx, lam, alpha_double_prime] + Qmatrix[q_idx, lam + N_half, alpha_double_prime]
                 Q1_n = path_Qmatrix[path_idx, I_n, alpha].conjugate()
                 Q1_m = Qmatrix[k_idx, I_m, alpha_prime]
@@ -1925,12 +1947,7 @@ def calc_hybrid_vertex_Gamma_path(
 
                 # Term 2: -(k+q) leg grid-snapped (minus_path_grid_idx) for both the
                 # vertex's phonon lookup and its Qmatrix row.
-                V2 = calc_vertex_V(
-                    kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
-                    minus_path_grid_idx, lam, n, m,
-                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                    eig_phon, w_phon, atom_masses, mag_moments
-                )
+                V2 = V2_cache[n, m, lam]
                 P2 = Qmatrix[minus_path_grid_idx, lam, alpha].conjugate() + Qmatrix[minus_path_grid_idx, lam + N_half, alpha].conjugate()
                 Q2_n = Qmatrix[minus_q_idx, I_n, alpha_double_prime + N_half].conjugate()
                 Q2_m = Qmatrix[k_idx, I_m, alpha_prime]
@@ -1938,12 +1955,7 @@ def calc_hybrid_vertex_Gamma_path(
                 term2 = V2 * P2 * Q2_n * Q2_m
 
                 # Term 3: -(k+q) leg grid-snapped again
-                V3 = calc_vertex_V(
-                    minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, qx, qy, qz,
-                    q_idx, lam, n, m,
-                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                    eig_phon, w_phon, atom_masses, mag_moments
-                )
+                V3 = V3_cache[n, m, lam]
                 P3 = Qmatrix[q_idx, lam, alpha_double_prime] + Qmatrix[q_idx, lam + N_half, alpha_double_prime]
                 Q3_n = Qmatrix[minus_k_idx, I_n, alpha_prime + N_half].conjugate()
                 Q3_m = Qmatrix[minus_path_grid_idx, I_m, alpha + N_half]
@@ -1959,32 +1971,31 @@ def calc_hybrid_vertex_Gamma_path(
 def calc_symmetrized_hybrid_vertex_squared_path(
     path_idx, minus_path_grid_idx,
     k_idx, q_idx, minus_k_idx, minus_q_idx,
-    kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
     alpha, alpha_prime, alpha_double_prime,
-    Qmatrix, path_Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-    eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag):
+    Qmatrix, path_Qmatrix,
+    V1_cache_kq, V2_cache_kq, V3_cache_kq,
+    V1_cache_qk, V2_cache_qk, V3_cache_qk,
+    num_phon, num_mag):
     """
     Path variant of calc_symmetrized_hybrid_vertex_squared. The parent (path) leg is
     held fixed between the two symmetrization calls; only the two grid children swap
-    roles, exactly mirroring the grid version's Gamma_kq / Gamma_qk swap.
+    roles, exactly mirroring the grid version's Gamma_kq / Gamma_qk swap. Reuses the
+    two precomputed per-configuration vertex caches instead of recomputing V1/V2/V3
+    for every hybrid band triple.
     """
 
     Gamma_kq = calc_hybrid_vertex_Gamma_path(
         path_idx, minus_path_grid_idx,
         k_idx, q_idx, minus_k_idx, minus_q_idx,
-        kx, ky, kz, qx, qy, qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
         alpha, alpha_prime, alpha_double_prime,
-        Qmatrix, path_Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+        Qmatrix, path_Qmatrix, V1_cache_kq, V2_cache_kq, V3_cache_kq, num_phon, num_mag
     )
 
     Gamma_qk = calc_hybrid_vertex_Gamma_path(
         path_idx, minus_path_grid_idx,
         q_idx, k_idx, minus_q_idx, minus_k_idx,
-        qx, qy, qz, kx, ky, kz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz,
         alpha, alpha_double_prime, alpha_prime,
-        Qmatrix, path_Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+        Qmatrix, path_Qmatrix, V1_cache_qk, V2_cache_qk, V3_cache_qk, num_phon, num_mag
     )
 
     Gamma_sym = 0.5 * (Gamma_kq + Gamma_qk)
@@ -2234,6 +2245,28 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, 
 
     num_bands = num_phon + num_mag
 
+    # Precompute the vertex caches once per (q_idx, k_idx) grid pair (see
+    # fill_hybrid_vertex_cache) instead of once per hybrid band triple below.
+    V1_cache_kq = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+    V2_cache_kq = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+    V3_cache_kq = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+    V1_cache_qk = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+    V2_cache_qk = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+    V3_cache_qk = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+
+    fill_hybrid_vertex_cache(
+        kx, ky, kz, px, py, pz, p_idx, mqx, mqy, mqz, minus_q_idx,
+        grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag,
+        V1_cache_kq, V2_cache_kq, V3_cache_kq
+    )
+    fill_hybrid_vertex_cache(
+        px, py, pz, kx, ky, kz, q_idx, mqx, mqy, mqz, minus_q_idx,
+        grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag,
+        V1_cache_qk, V2_cache_qk, V3_cache_qk
+    )
+
     for b_q in range(num_bands):
         w_q = w_hyb[q_idx, b_q]
         for b_k in range(num_bands):
@@ -2249,7 +2282,7 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, 
                     d_g = grad_f_hyb[q_idx, b_q, i] - grad_f_hyb[k_idx, b_k, i] - grad_f_hyb[p_idx, b_p, i]
                     step_width = d_g / mesh[i]
                     variance += step_width * step_width
-                
+
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
                 sigma = sigma_raw if sigma_raw > min_sigma else min_sigma
                 """
@@ -2265,10 +2298,11 @@ def phase_1_scan_hybrid(mesh, q_grid, q_grid_cart, grid_map, w_hyb, grad_f_hyb, 
 
                     V_sq = calc_symmetrized_hybrid_vertex_squared(
                         k_idx, p_idx, q_idx, minus_k_idx, minus_p_idx, minus_q_idx,
-                        kx, ky, kz, px, py, pz, mqx, mqy, mqz,
                         b_q, b_k, b_p,
-                        Qmatrix, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+                        Qmatrix,
+                        V1_cache_kq, V2_cache_kq, V3_cache_kq,
+                        V1_cache_qk, V2_cache_qk, V3_cache_qk,
+                        num_phon, num_mag
                     )
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
@@ -2381,6 +2415,28 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
 
     num_bands = num_phon + num_mag
 
+    # Precompute the vertex caches once per (path_idx, k_idx) pair (see
+    # fill_hybrid_vertex_cache) instead of once per hybrid band triple below.
+    V1_cache_kq = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+    V2_cache_kq = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+    V3_cache_kq = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+    V1_cache_qk = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+    V2_cache_qk = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+    V3_cache_qk = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
+
+    fill_hybrid_vertex_cache(
+        kx, ky, kz, px, py, pz, p_idx, mqx, mqy, mqz, minus_path_grid_idx,
+        grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag,
+        V1_cache_kq, V2_cache_kq, V3_cache_kq
+    )
+    fill_hybrid_vertex_cache(
+        px, py, pz, kx, ky, kz, k_idx, mqx, mqy, mqz, minus_path_grid_idx,
+        grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag,
+        V1_cache_qk, V2_cache_qk, V3_cache_qk
+    )
+
     for b_q in range(num_bands):
         w_q = path_w_hyb[path_idx, b_q]
         for b_k in range(num_bands):
@@ -2398,10 +2454,11 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                     V_sq = calc_symmetrized_hybrid_vertex_squared_path(
                         path_idx, minus_path_grid_idx,
                         k_idx, p_idx, minus_k_idx, minus_p_idx,
-                        kx, ky, kz, px, py, pz, mqx, mqy, mqz,
                         b_q, b_k, b_p,
-                        Qmatrix, path_eig_hyb, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag
+                        Qmatrix, path_eig_hyb,
+                        V1_cache_kq, V2_cache_kq, V3_cache_kq,
+                        V1_cache_qk, V2_cache_qk, V3_cache_qk,
+                        num_phon, num_mag
                     )
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
