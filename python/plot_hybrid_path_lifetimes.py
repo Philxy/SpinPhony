@@ -109,7 +109,7 @@ def plot_hybrid_bands_with_lifetime(
     vmin, vmax = finite_vals.min(), finite_vals.max()
     if vmin <= 0:
         vmin = finite_vals[finite_vals > 0].min() if np.any(finite_vals > 0) else 1e-9
-    norm = mcolors.LogNorm(vmin=1, vmax=1E4)
+    norm = mcolors.LogNorm(vmin=1, vmax=1E5)
 
     cbar_label = r"Lifetime $\tau$ (ps)" if color_by == "tau_ps" else r"Scattering rate $\Gamma$ (ps$^{-1}$)"
 
@@ -157,5 +157,5 @@ if __name__ == "__main__":
         lifetimes_csv="Outputs/hybrid_path_lifetimes.csv",
         band_h5_for_distances=None,  # e.g. "Inputs/CrI3/band.h5" for a true cartesian x-axis
         color_by="tau_ps",
-        save_plot="Outputs/hybrid_bands_lifetime.png",
+        save_plot="Outputs/Hybrid/hybrid_bands_lifetime.png",
     )

@@ -606,7 +606,7 @@ class CrystalDataSoA:
                 Vm = V_minus_all[q_idx]
 
                 # Enable or disable the following block to include SLC interactions
-                #"""
+                """
                 # 1. Normal Particle-Particle
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
@@ -622,7 +622,7 @@ class CrystalDataSoA:
                 # 4. Anomalous Hole-Particle (Magnon_h, Phonon_p)
                 H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
-                #"""
+                """
 
             # --- 3. Diagonalization ---
             if return_full_matrices:
@@ -1312,7 +1312,7 @@ class CrystalDataSoA:
                         L_matrix[base_idx_p + alpha, base_idx_p + beta] = val
                         # Hole Block: O_hole = -O_particle^*. Since val = -i*hbar*eps is
                         # purely imaginary, -(val)* = val, so the hole block equals the
-                        # particle block unchanged (not -val).
+                        # particle block unchanged.
                         L_matrix[base_idx_h + alpha, base_idx_h + beta] = val
 
         # 3. Magnon Block (Spin Angular Momentum - Sz)
