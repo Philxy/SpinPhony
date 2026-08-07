@@ -928,6 +928,38 @@ class CrystalDataSoA:
         print(f"-> Evaluated {self.N_path} exact path points for magnons.")
 
 
+    def get_path_distance_info(self):
+        """
+        Computes the cumulative path distance (1/Angstrom, minimum-image wrapped,
+        matching plot_hybridized_path_dispersions' k_distances convention) for
+        every explicit high-symmetry path point, plus a comment-line string
+        recording the path distance of each high-symmetry label. Shared by every
+        CSV writer that outputs per-path-point data, so post-processing can plot
+        against a physically meaningful x-axis (and combine dense/sparse files
+        from different runs) without reconstructing distances via nearest-neighbor
+        matching on qx,qy,qz.
+        """
+        path_dist = np.zeros(self.N_path)
+        current_dist = 0.0
+        for i in range(1, self.N_path):
+            dq_frac = self.path_q_frac[i] - self.path_q_frac[i - 1]
+            dq_frac = dq_frac - np.round(dq_frac)  # minimum image convention
+            dq_cart = np.dot(dq_frac, self.path_reciprocal_lattice * 2.0 * np.pi)
+            current_dist += np.linalg.norm(dq_cart)
+            path_dist[i] = current_dist
+
+        if hasattr(self, 'path_labels') and hasattr(self, 'path_segments'):
+            entries = [f"{self.path_labels[0][0]}={path_dist[0]:.6f}"]
+            idx = 0
+            for i, seg_len in enumerate(self.path_segments):
+                idx += seg_len
+                entries.append(f"{self.path_labels[i][1]}={path_dist[idx - 1]:.6f}")
+            label_comment = "# path_labels: " + ",".join(entries)
+        else:
+            label_comment = "# path_labels: unavailable"
+
+        return path_dist, label_comment
+
     def save_hybrid_path_properties(self, filename="Outputs/hybrid_path_properties.csv"):
         """
         Extracts Spin AM, Phonon AM, and subsystem characters for all hybridized bands 
@@ -968,8 +1000,10 @@ class CrystalDataSoA:
         np.fill_diagonal(J_spin[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total], -1.0)
         
         # 4. Iterate path and compute physical expectation values
+        path_dist, label_comment = self.get_path_distance_info()
         with open(filename, 'w') as f:
-            header = ["q_idx", "qx", "qy", "qz", "band", "energy_meV", "phon_character", "mag_character", "phon_AM_z_hbar", "spin_AM_z_hbar"]
+            f.write(label_comment + "\n")
+            header = ["q_idx", "qx", "qy", "qz", "band", "energy_meV", "phon_character", "mag_character", "phon_AM_z_hbar", "spin_AM_z_hbar", "path_dist"]
             f.write(",".join(header) + "\n")
             
             for q_idx in range(self.N_path):
@@ -993,9 +1027,9 @@ class CrystalDataSoA:
                     phon_AM = AM_phon_q[b, b].real
                     spin_AM = AM_spin_q[b, b].real
                     
-                    row = [f"{q_idx}", f"{qx:.6f}", f"{qy:.6f}", f"{qz:.6f}", f"{b}", 
-                           f"{energy:.6f}", f"{phon_char:.6f}", f"{mag_char:.6f}", 
-                           f"{phon_AM:.6e}", f"{spin_AM:.6e}"]
+                    row = [f"{q_idx}", f"{qx:.6f}", f"{qy:.6f}", f"{qz:.6f}", f"{b}",
+                           f"{energy:.6f}", f"{phon_char:.6f}", f"{mag_char:.6f}",
+                           f"{phon_AM:.6e}", f"{spin_AM:.6e}", f"{path_dist[q_idx]:.6f}"]
                     f.write(",".join(row) + "\n")
                     
         print(f"-> Done! (Sanity check: character sum phon+mag should equal exactly 1.0 for all bands)")
@@ -3348,9 +3382,12 @@ if __name__ == "__main__":
     gamma_mag_path_cpu = d_gamma_mag_path.copy_to_host().reshape((N_path, crystal_data.n_mag_branches))
     gamma_phon_path_cpu = d_gamma_phon_path.copy_to_host().reshape((N_path, crystal_data.phon_branches))
 
+    path_dist, label_comment = crystal_data.get_path_distance_info()
+
     with open(f"{out_dir}/path_lifetimes.csv", "w") as f:
-        f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps\n")
-        
+        f.write(label_comment + "\n")
+        f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps,path_dist\n")
+
         # Magnons
         for i in range(N_path):
             qx, qy, qz = crystal_data.path_q_frac[i]
@@ -3358,8 +3395,8 @@ if __name__ == "__main__":
                 energy = crystal_data.path_w_mag[i, b]
                 gamma = gamma_mag_path_cpu[i, b]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},magnon,{b},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
-                
+                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},magnon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},{path_dist[i]:.6f}\n")
+
         # Phonons
         for i in range(N_path):
             qx, qy, qz = crystal_data.path_q_frac[i]
@@ -3367,7 +3404,7 @@ if __name__ == "__main__":
                 energy = crystal_data.path_w_phon[i, b]
                 gamma = gamma_phon_path_cpu[i, b]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},phonon,{b},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
+                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},phonon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},{path_dist[i]:.6f}\n")
                 
     print(f"-> Saved true path lifetimes to {out_dir}/path_lifetimes.csv")
 
@@ -3431,15 +3468,18 @@ if __name__ == "__main__":
 
     gamma_hyb_path_cpu = d_gamma_hyb_path.copy_to_host().reshape((N_path, num_hyb_branches))
 
+    path_dist, label_comment = crystal_data.get_path_distance_info()
+
     with open(f"{out_dir}/hybrid_path_lifetimes.csv", "w") as f:
-        f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps\n")
+        f.write(label_comment + "\n")
+        f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps,path_dist\n")
         for i in range(N_path):
             qx, qy, qz = crystal_data.path_q_frac[i]
             for b in range(num_hyb_branches):
                 energy = crystal_data.path_w_hyb[i, b]
                 gamma = gamma_hyb_path_cpu[i, b]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e}\n")
+                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e},{path_dist[i]:.6f}\n")
 
     print(f" -> Hybrid Path Channels: found_channels / max_channels : {path_hyb_num_channels / max_path_hyb_channels * 100:.2f}%")
 
