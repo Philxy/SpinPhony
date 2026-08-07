@@ -63,24 +63,6 @@ def _prepare_tau(df, tau_col="tau_ps"):
     return df
 
 
-def _load_and_align(dense_csv, lifetime_csv, tau_col):
-    """
-    Loads both files. Each file's 'path_dist' column is phonopy's own native
-    cumulative path distance (see SpinPhony.py's get_path_distance_info /
-    path_dist_native), computed independently for that run's own q-points and
-    reciprocal lattice - so both files' path_dist values are already directly
-    comparable/physically meaningful and require no rescaling or nearest-
-    neighbor matching to overlay.
-
-    Returns (df_disp, df_life, labels_dense).
-    """
-    df_disp, labels_dense = load_path_csv(dense_csv)
-    df_life, labels_sparse = load_path_csv(lifetime_csv)
-
-    df_life = _prepare_tau(df_life, tau_col)
-    return df_disp, df_life, labels_dense
-
-
 def plot_dense_with_scatter(
     dense_csv="Outputs/HybridDense/hybrid_path_properties.csv",
     lifetime_csv="Outputs/Hybrid_band32/hybrid_path_lifetimes.csv",
@@ -91,21 +73,25 @@ def plot_dense_with_scatter(
     save_plot="Outputs/Hybrid/hybrid_bands_lifetime_scatter.png",
 ):
     """
-    Figure 1: dense hybrid band structure (from hybrid_path_properties.csv,
-    plotted as thin grey lines per band) with the (typically sparser)
-    lifetimes from hybrid_path_lifetimes.csv overlaid as color-coded scatter
-    points on a log scale. The lifetime file's path_dist is first remapped
-    onto the dense file's scale via remap_path_dist, so this is correct even
-    when the two files were generated from different band.h5 sources.
+    Figure 1: dense hybrid band structure (thin grey lines per band, ticked
+    with its own high-symmetry labels) with the sparser lifetimes overlaid
+    as color-coded scatter points on a log scale, plotted at exactly the
+    path_dist stored in the lifetime file - no remapping.
     """
-    df_disp, df_life, labels = _load_and_align(dense_csv, lifetime_csv, tau_col)
+    df_disp, labels = load_path_csv(dense_csv)
+    df_life, _ = load_path_csv(lifetime_csv)
+    df_life = _prepare_tau(df_life, tau_col)
+
+    vmin = max(vmin, df_life[tau_col].min())
+    vmax = min(vmax, df_life[tau_col].max())
+
     norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
 
     fig, ax = plt.subplots(figsize=(8, 6))
 
     for band in sorted(df_disp["band"].unique()):
         subset = df_disp[df_disp["band"] == band].sort_values("path_dist")
-        ax.plot(subset["path_dist"], subset["energy_meV"], color="lightgrey", lw=1, zorder=1)
+        ax.plot(subset["path_dist"], subset["energy_meV"], color="lightgrey", lw=1.5, zorder=1)
 
     sc = ax.scatter(
         df_life["path_dist"], df_life["energy_meV"],
@@ -146,15 +132,18 @@ def plot_dense_interpolated_line(
 ):
     """
     Figure 2: dense hybrid band structure, drawn as a continuous line per
-    band, colored by the (sparser) lifetime data log-linearly interpolated
-    onto the dense path's 'path_dist' grid (after remapping the lifetime
-    file's path_dist onto the dense file's scale via shared labels). Matching
-    between the dense 'band' column and the sparse 'branch' column is by
-    shared branch index - both are the same physical hybrid-mode ordering
-    (num_phon + num_mag branches) as long as both files are for the same
-    material.
+    band, colored by the sparser lifetime data log-linearly interpolated
+    onto the dense path's path_dist grid - using each file's own stored
+    path_dist directly, no remapping. Matching between the dense 'band'
+    column and the sparse 'branch' column is by shared branch index.
     """
-    df_disp, df_life, labels = _load_and_align(dense_csv, lifetime_csv, tau_col)
+    df_disp, labels = load_path_csv(dense_csv)
+    df_life, _ = load_path_csv(lifetime_csv)
+    df_life = _prepare_tau(df_life, tau_col)
+
+    vmin = max(vmin, df_life[tau_col].min())
+    vmax = min(vmax, df_life[tau_col].max())
+
     norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
 
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -215,20 +204,19 @@ def plot_dense_interpolated_line(
 
 if __name__ == "__main__":
 
-    df_dense, labels_dense = load_path_csv("Outputs/HybridDense/hybrid_path_properties.csv")
-    df_sparse, labels_sparse = load_path_csv("Outputs/Hybrid_band32/hybrid_path_lifetimes.csv")
+    df_dense, labels_dense = load_path_csv("Outputs/Hybrid_GK_32_dense/hybrid_path_properties.csv")
+    df_sparse, labels_sparse = load_path_csv("Outputs/Hybrid_GK_32/hybrid_path_lifetimes.csv")
 
     print("Dense labels: ", labels_dense)
     print("Sparse labels:", labels_sparse)
 
-
     plot_dense_with_scatter(
-        dense_csv="Outputs/HybridDense/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/Hybrid_band32/hybrid_path_lifetimes.csv",
+        dense_csv="Outputs/Hybrid_GK_32_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/Hybrid_GK_32/hybrid_path_lifetimes.csv",
         save_plot="Outputs/Hybrid/hybrid_bands_lifetime_scatter.png",
     )
     plot_dense_interpolated_line(
-        dense_csv="Outputs/HybridDense/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/Hybrid_band32/hybrid_path_lifetimes.csv",
+        dense_csv="Outputs/Hybrid_GK_32_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/Hybrid_GK_32/hybrid_path_lifetimes.csv",
         save_plot="Outputs/Hybrid/hybrid_bands_lifetime_interpolated.png",
     )
