@@ -82,8 +82,8 @@ def plot_dense_with_scatter(
     df_life, _ = load_path_csv(lifetime_csv)
     df_life = _prepare_tau(df_life, tau_col)
 
-    vmin = max(vmin, df_life[tau_col].min())
-    vmax = min(vmax, df_life[tau_col].max())
+    #vmin = max(vmin, df_life[tau_col].min())
+    #vmax = min(vmax, df_life[tau_col].max())
 
     norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
 
@@ -141,8 +141,8 @@ def plot_dense_interpolated_line(
     df_life, _ = load_path_csv(lifetime_csv)
     df_life = _prepare_tau(df_life, tau_col)
 
-    vmin = max(vmin, df_life[tau_col].min())
-    vmax = min(vmax, df_life[tau_col].max())
+    #vmin = max(vmin, df_life[tau_col].min())
+    #vmax = min(vmax, df_life[tau_col].max())
 
     norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
 
@@ -213,10 +213,10 @@ if __name__ == "__main__":
     plot_dense_with_scatter(
         dense_csv="Outputs/Hybrid_GK_32_dense/hybrid_path_properties.csv",
         lifetime_csv="Outputs/Hybrid_GK_32/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/Hybrid/hybrid_bands_lifetime_scatter.png",
+        save_plot="Outputs/Hybrid_GK_32/hybrid_bands_lifetime_scatter.png",
     )
     plot_dense_interpolated_line(
         dense_csv="Outputs/Hybrid_GK_32_dense/hybrid_path_properties.csv",
         lifetime_csv="Outputs/Hybrid_GK_32/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/Hybrid/hybrid_bands_lifetime_interpolated.png",
+        save_plot="Outputs/Hybrid_GK_32/hybrid_bands_lifetime_interpolated.png",
     )

@@ -3179,24 +3179,17 @@ if __name__ == "__main__":
     d_path_w_hyb = cuda.to_device(crystal_data.path_w_hyb)
 
     # 2. Setup Phase 1 memory
-    N_points = crystal_data.N 
+    N_points = crystal_data.N
 
-    total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
-    max_channels = int(total_loops * anticipated_fraction)
-    
-    # --- SoA ALLOCATION ---
-    # Shape is (7, max_channels) so the last axis is contiguous.
-    # Row 0: c_type | Row 1: q_idx | Row 2: k_idx | Row 3: p_idx
-    # Row 4: n      | Row 5: m     | Row 6: lam
-    d_chan_indices = cuda.device_array((7, max_channels), dtype=np.int32)
-    d_chan_weights = cuda.device_array(max_channels, dtype=np.float64)
-    d_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))
-    
-    #Q: the chan_indices are int32. The channel_count is int64. Hence, there can be more channels than can be indexed by int32. This is a potential issue if the number of channels exceeds int32. Should I be concerned? What is the memory impact of using int64 for the channel indices?
-
+    # NOTE: the O(N_points^2) channel-buffer allocation (chan_indices/
+    # chan_weights/channel_count, sized by anticipated_fraction) used to live
+    # here, but its kernel (phase_1_scan) isn't launched until much later.
+    # Allocating it this early meant it sat on the GPU, unused, through the
+    # entire path and hybrid-path sections below, stacking on top of their
+    # own buffers and needlessly inflating peak memory - moved down to right
+    # before phase_1_scan actually runs.
     threads_per_block = 256
-    blocks_per_grid = math.ceil(N_points / threads_per_block)
-    
+
     print(f"\nInitializing populations at thermal equilibrium:")
     print(f" -> Magnons: {T_mag_init} K")
     print(f" -> Phonons: {T_phon_init} K")
@@ -3511,6 +3504,19 @@ if __name__ == "__main__":
     blocks_y = math.ceil(N_points / threads_per_block_2d[1])
     blocks_per_grid_2d = (blocks_x, blocks_y)
 
+    total_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
+    max_channels = int(total_loops * anticipated_fraction)
+
+    # --- SoA ALLOCATION --- (moved here, right before use: this O(N_points^2)
+    # buffer is by far the largest allocation in the whole run and is only
+    # needed for this scan - allocating it earlier held it resident on the
+    # GPU throughout the unrelated path/hybrid-path work above.)
+    # Shape is (7, max_channels) so the last axis is contiguous.
+    # Row 0: c_type | Row 1: q_idx | Row 2: k_idx | Row 3: p_idx
+    # Row 4: n      | Row 5: m     | Row 6: lam
+    d_chan_indices = cuda.device_array((7, max_channels), dtype=np.int32)
+    d_chan_weights = cuda.device_array(max_channels, dtype=np.float64)
+    d_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))
 
     phase_1_scan[blocks_per_grid_2d, threads_per_block_2d](
         gpu_data["mesh"], 
