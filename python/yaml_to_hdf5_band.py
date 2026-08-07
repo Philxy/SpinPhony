@@ -58,12 +58,15 @@ def convert_band_yaml_to_hdf5(yaml_file, hdf5_file):
     
     q_positions = np.zeros((nqpoint, 3), dtype=np.float64)
     frequencies = np.zeros((nqpoint, phon_bands), dtype=np.float64)
-    
+
     # Check what optional band data is available
     has_gv = 'group_velocity' in config['phonon'][0]['band'][0]
     has_evec = 'eigenvector' in config['phonon'][0]['band'][0]
     has_dm = 'dynamical_matrix' in config['phonon'][0]
+    has_distance = 'distance' in config['phonon'][0]
 
+    if has_distance:
+        distances = np.zeros(nqpoint, dtype=np.float64)
     if has_gv:
         group_velocities = np.zeros((nqpoint, phon_bands, 3), dtype=np.float64)
     if has_evec:
@@ -74,7 +77,10 @@ def convert_band_yaml_to_hdf5(yaml_file, hdf5_file):
     for q_idx, p_node in enumerate(config['phonon']):
         if 'q-position' in p_node:
             q_positions[q_idx] = p_node['q-position']
-            
+
+        if has_distance and 'distance' in p_node:
+            distances[q_idx] = p_node['distance']
+
         # Fast extraction of the dynamical matrix
         if has_dm and 'dynamical_matrix' in p_node:
             dm_raw = np.array(p_node['dynamical_matrix'], dtype=np.float64)
@@ -118,7 +124,12 @@ def convert_band_yaml_to_hdf5(yaml_file, hdf5_file):
         # Phonon Data
         f.create_dataset('q_positions', data=q_positions)
         f.create_dataset('frequencies', data=frequencies, compression="gzip")
-        
+        if has_distance:
+            # Cumulative path distance as computed natively by phonopy for
+            # this run's own q-points/reciprocal lattice - authoritative,
+            # avoids recomputing (and potentially mismatching) it downstream.
+            f.create_dataset('distances', data=distances)
+
         if has_gv:
             f.create_dataset('group_velocities', data=group_velocities, compression="gzip")
         if has_evec:

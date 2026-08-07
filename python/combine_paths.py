@@ -1,122 +1,217 @@
+import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from matplotlib.collections import LineCollection
-from matplotlib.colors import LogNorm
-from scipy.spatial import cKDTree
 from scipy.interpolate import interp1d
 
-# ---------------------------------------------------------
-# 1. Load Data
-# ---------------------------------------------------------
-df_disp = pd.read_csv('Outputs/Hybrid/hybrid_path_properties.csv')
-df_life = pd.read_csv('Outputs/Hybrid_band32/hybrid_path_lifetimes.csv')
 
-# ---------------------------------------------------------
-# 1.5 Handle Infinite and Non-Positive Lifetimes for Log Scale
-# ---------------------------------------------------------
-# Replace inf values with the maximum finite lifetime
-max_finite_tau = df_life.loc[np.isfinite(df_life['tau_ps']), 'tau_ps'].max()
-df_life['tau_ps'] = df_life['tau_ps'].replace([np.inf, -np.inf], max_finite_tau)
+def load_path_csv(path):
+    """
+    Loads a SpinPhony.py path-output CSV (hybrid_path_properties.csv,
+    hybrid_path_lifetimes.csv, path_lifetimes.csv, ...). These all start
+    with a "# path_labels: G=0.000000,K=1.234567,..." comment line followed
+    by the normal header, and every row carries a 'path_dist' column (1/Å,
+    cumulative distance along the high-symmetry path) - so dense and sparse
+    files can be combined directly on 'path_dist' without any spatial
+    nearest-neighbor matching, even if they came from different runs/meshes.
 
-# Ensure all values are strictly positive (>0) for log scale
-min_pos_tau = df_life.loc[df_life['tau_ps'] > 0, 'tau_ps'].min()
-df_life['tau_ps'] = df_life['tau_ps'].clip(lower=min_pos_tau)
+    Returns (df, labels) where labels is {'G': 0.0, 'K': 1.234567, ...} or
+    an empty dict if the source run had no path_labels available.
+    """
+    with open(path) as f:
+        first_line = f.readline().strip()
 
-# ---------------------------------------------------------
-# 2. Compute 1D Path Coordinates
-# ---------------------------------------------------------
-q_unique = df_disp[['q_idx', 'qx', 'qy', 'qz']].drop_duplicates().sort_values('q_idx')
+    labels = {}
+    if first_line.startswith("# path_labels:"):
+        payload = first_line[len("# path_labels:"):].strip()
+        if payload and payload != "unavailable":
+            for pair in payload.split(","):
+                name, val = pair.split("=")
+                labels[name] = float(val)
+        df = pd.read_csv(path, skiprows=1)
+    else:
+        # Older file without the label/comment line - read as-is.
+        df = pd.read_csv(path)
 
-dq_dense = np.diff(q_unique[['qx', 'qy', 'qz']].values, axis=0)
-dist_dense = np.linalg.norm(dq_dense, axis=1)
-q_unique['q_path'] = np.concatenate(([0], np.cumsum(dist_dense)))
+    return df, labels
 
-df_disp = df_disp.merge(q_unique[['q_idx', 'q_path']], on='q_idx')
 
-tree = cKDTree(q_unique[['qx', 'qy', 'qz']].values)
-distances, idx = tree.query(df_life[['qx', 'qy', 'qz']].values)
-df_life['q_path'] = q_unique['q_path'].values[idx]
+def set_path_ticks(ax, labels):
+    """Applies high-symmetry point tick labels + vertical gridlines to ax."""
+    if not labels:
+        return
+    tick_locs = list(labels.values())
+    tick_labels = list(labels.keys())
+    ax.set_xticks(tick_locs)
+    ax.set_xticklabels(tick_labels, fontsize=13)
+    ax.grid(True, axis="x", linestyle="--", color="gray", alpha=0.5)
 
-# Set logarithmic color normalization
-vmin = df_life['tau_ps'].min()
-vmax = df_life['tau_ps'].max()
-norm = LogNorm(vmin=vmin, vmax=vmax)
-cmap = plt.get_cmap('viridis')
 
-# ---------------------------------------------------------
-# 3. Figure 1: Dense Lines + Sparse Color-Coded Scatter (Log Scale)
-# ---------------------------------------------------------
-fig1, ax1 = plt.subplots(figsize=(8, 6))
+def _prepare_tau(df, tau_col="tau_ps"):
+    """Replaces inf with the max finite value and clips to strictly positive,
+    matching the convention needed for a log color scale."""
+    df = df.copy()
+    finite = df.loc[np.isfinite(df[tau_col]), tau_col]
+    if finite.empty:
+        raise ValueError(f"No finite values found in column '{tau_col}'.")
+    max_finite = finite.max()
+    df[tau_col] = df[tau_col].replace([np.inf, -np.inf], max_finite)
+    min_pos = df.loc[df[tau_col] > 0, tau_col].min()
+    df[tau_col] = df[tau_col].clip(lower=min_pos)
+    return df
 
-# Plot dense background bands
-for band in df_disp['band'].unique():
-    subset = df_disp[df_disp['band'] == band].sort_values('q_path')
-    ax1.plot(subset['q_path'], subset['energy_meV'], color='lightgrey', lw=1, zorder=1)
 
-# Scatter plot with LogNorm
-sc = ax1.scatter(df_life['q_path'], df_life['energy_meV'], 
-                 c=df_life['tau_ps'], cmap=cmap, norm=norm, 
-                 s=30, zorder=2, edgecolors='k', linewidth=0.5)
+def plot_dense_with_scatter(
+    dense_csv="Outputs/Hybrid/hybrid_path_properties.csv",
+    lifetime_csv="Outputs/Hybrid/hybrid_path_lifetimes.csv",
+    tau_col="tau_ps",
+    cmap="rainbow_r",
+    vmin=1.0,
+    vmax=1e5,
+    save_plot="Outputs/Hybrid/hybrid_bands_lifetime_scatter.png",
+):
+    """
+    Figure 1: dense hybrid band structure (from hybrid_path_properties.csv,
+    plotted as thin grey lines per band) with the (typically sparser)
+    lifetimes from hybrid_path_lifetimes.csv overlaid as color-coded scatter
+    points on a log scale.
+    """
+    df_disp, labels = load_path_csv(dense_csv)
+    df_life, labels_life = load_path_csv(lifetime_csv)
+    if not labels:
+        labels = labels_life
 
-cbar1 = fig1.colorbar(sc, ax=ax1)
-cbar1.set_label(r'Lifetime $\tau$ (ps) [Log Scale]')
-ax1.set_xlim(df_disp['q_path'].min(), df_disp['q_path'].max())
-ax1.set_xlabel('Path distance')
-ax1.set_ylabel('Energy (meV)')
-ax1.set_title('Figure 1: Dispersion with Sparse Lifetime Scatter (Log Scale)')
-fig1.tight_layout()
+    df_life = _prepare_tau(df_life, tau_col)
+    norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
 
-# ---------------------------------------------------------
-# 4. Figure 2: Interpolated Color-Coded Lines (Log-Space Interp)
-# ---------------------------------------------------------
-def plot_colored_line(x, y, c, ax, cmap, norm, lw=2.5):
-    """Helper to plot a line whose color changes smoothly on a log scale."""
-    points = np.array([x, y]).T.reshape(-1, 1, 2)
-    segments = np.concatenate([points[:-1], points[1:]], axis=1)
-    lc = LineCollection(segments, cmap=cmap, norm=norm)
-    # Geometric mean / log-average of segment endpoints for accurate log color mapping
-    lc.set_array(np.sqrt(c[:-1] * c[1:]))
-    lc.set_linewidth(lw)
-    ax.add_collection(lc)
+    fig, ax = plt.subplots(figsize=(8, 6))
 
-fig2, ax2 = plt.subplots(figsize=(8, 6))
+    for band in sorted(df_disp["band"].unique()):
+        subset = df_disp[df_disp["band"] == band].sort_values("path_dist")
+        ax.plot(subset["path_dist"], subset["energy_meV"], color="lightgrey", lw=1, zorder=1)
 
-for branch in df_life['branch'].unique():
-    mask_life = df_life['branch'] == branch
-    subset_life = df_life[mask_life].sort_values('q_path')
-    
-    if len(subset_life) < 2:
-        continue
-        
-    mask_disp = df_disp['band'] == branch
-    subset_disp = df_disp[mask_disp].sort_values('q_path')
-    
-    if subset_disp.empty:
-        continue
-        
-    # Interpolate log10(tau) to get linear behavior in log-space across orders of magnitude
-    log_tau_sparse = np.log10(subset_life['tau_ps'])
-    f_interp = interp1d(subset_life['q_path'], log_tau_sparse, 
-                        kind='linear', fill_value='extrapolate')
-    
-    # Convert back to tau space
-    tau_dense = 10 ** f_interp(subset_disp['q_path'])
-    
-    plot_colored_line(subset_disp['q_path'], subset_disp['energy_meV'], tau_dense, 
-                      ax2, cmap, norm)
+    sc = ax.scatter(
+        df_life["path_dist"], df_life["energy_meV"],
+        c=df_life[tau_col], cmap=cmap, norm=norm,
+        s=30, zorder=2, edgecolors="k", linewidth=0.5,
+    )
 
-# Add log-scaled colorbar for Figure 2
-sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-sm.set_array([])
-cbar2 = fig2.colorbar(sm, ax=ax2)
-cbar2.set_label(r'Interpolated Lifetime $\tau$ (ps) [Log Scale]')
+    cbar = fig.colorbar(sc, ax=ax)
+    cbar.set_label(r"Lifetime $\tau$ (ps) [log scale]", fontsize=12, fontweight="bold")
 
-ax2.set_xlim(df_disp['q_path'].min(), df_disp['q_path'].max())
-ax2.set_ylim(df_disp['energy_meV'].min(), df_disp['energy_meV'].max())
-ax2.set_xlabel('Path distance')
-ax2.set_ylabel('Energy (meV)')
-ax2.set_title('Figure 2: Dispersion Colored by Interpolated Lifetime (Log Scale)')
-fig2.tight_layout()
+    ax.set_xlim(df_disp["path_dist"].min(), df_disp["path_dist"].max())
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel("Path distance (1/Å)", fontsize=12)
+    ax.set_ylabel("Energy (meV)", fontsize=12, fontweight="bold")
+    ax.set_title("Hybrid Bands with Lifetime Scatter", fontsize=13, fontweight="bold")
+    set_path_ticks(ax, labels)
 
-plt.show()
+    fig.tight_layout()
+
+    plt.show()
+
+    if save_plot:
+        os.makedirs(os.path.dirname(save_plot), exist_ok=True)
+        fig.savefig(save_plot, dpi=300)
+        print(f"Plot saved to '{save_plot}'")
+
+    return fig, ax
+
+
+def plot_dense_interpolated_line(
+    dense_csv="Outputs/Hybrid/hybrid_path_properties.csv",
+    lifetime_csv="Outputs/Hybrid/hybrid_path_lifetimes.csv",
+    tau_col="tau_ps",
+    cmap="rainbow_r",
+    vmin=1.0,
+    vmax=1e5,
+    linewidth=2.5,
+    save_plot="Outputs/Hybrid/hybrid_bands_lifetime_interpolated.png",
+):
+    """
+    Figure 2: dense hybrid band structure, drawn as a continuous line per
+    band, colored by the (sparser) lifetime data log-linearly interpolated
+    onto the dense path's 'path_dist' grid. Matching between the dense
+    'band' column and the sparse 'branch' column is by shared branch index -
+    both are the same physical hybrid-mode ordering (num_phon + num_mag
+    branches) as long as both files were generated for the same material/mesh.
+    """
+    df_disp, labels = load_path_csv(dense_csv)
+    df_life, labels_life = load_path_csv(lifetime_csv)
+    if not labels:
+        labels = labels_life
+
+    df_life = _prepare_tau(df_life, tau_col)
+    norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    lc = None
+    for branch in sorted(df_life["branch"].unique()):
+        subset_life = df_life[df_life["branch"] == branch].sort_values("path_dist")
+        if len(subset_life) < 2:
+            continue
+
+        subset_disp = df_disp[df_disp["band"] == branch].sort_values("path_dist")
+        if subset_disp.empty:
+            continue
+
+        # Linear interpolation in log10(tau) space, so the color varies
+        # smoothly across orders of magnitude rather than linearly in tau.
+        log_tau_sparse = np.log10(subset_life[tau_col].to_numpy())
+        f_interp = interp1d(
+            subset_life["path_dist"], log_tau_sparse,
+            kind="linear", bounds_error=False,
+            fill_value=(log_tau_sparse[0], log_tau_sparse[-1]),
+        )
+        tau_dense = 10.0 ** f_interp(subset_disp["path_dist"])
+        tau_dense = np.clip(tau_dense, norm.vmin, norm.vmax)
+
+        x = subset_disp["path_dist"].to_numpy()
+        y = subset_disp["energy_meV"].to_numpy()
+        seg_vals = np.sqrt(tau_dense[:-1] * tau_dense[1:])  # log-space (geometric) segment color
+
+        points = np.array([x, y]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        lc = LineCollection(segments, cmap=cmap, norm=norm)
+        lc.set_array(seg_vals)
+        lc.set_linewidth(linewidth)
+        ax.add_collection(lc)
+
+    if lc is not None:
+        cbar = fig.colorbar(lc, ax=ax)
+        cbar.set_label(r"Interpolated lifetime $\tau$ (ps) [log scale]", fontsize=12, fontweight="bold")
+
+    ax.set_xlim(df_disp["path_dist"].min(), df_disp["path_dist"].max())
+    ax.set_ylim(df_disp["energy_meV"].min(), df_disp["energy_meV"].max() * 1.05)
+    ax.set_xlabel("Path distance (1/Å)", fontsize=12)
+    ax.set_ylabel("Energy (meV)", fontsize=12, fontweight="bold")
+    ax.set_title("Hybrid Bands Colored by Interpolated Lifetime", fontsize=13, fontweight="bold")
+    set_path_ticks(ax, labels)
+
+    fig.tight_layout()
+
+    plt.show()
+
+    if save_plot:
+        os.makedirs(os.path.dirname(save_plot), exist_ok=True)
+        fig.savefig(save_plot, dpi=300)
+        print(f"Plot saved to '{save_plot}'")
+
+    return fig, ax
+
+
+if __name__ == "__main__":
+    plot_dense_with_scatter(
+        dense_csv="Outputs/HybridDense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/Hybrid_band32/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/Hybrid/hybrid_bands_lifetime_scatter.png",
+    )
+    plot_dense_interpolated_line(
+        dense_csv="Outputs/HybridDense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/Hybrid_band32/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/Hybrid/hybrid_bands_lifetime_interpolated.png",
+    )
+    plt.show()

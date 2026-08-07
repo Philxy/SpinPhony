@@ -819,7 +819,16 @@ class CrystalDataSoA:
                 
             # Convert to Cartesian wavevectors using the PATH's native lattice
             self.path_q_cart = np.dot(self.path_q_frac, self.path_reciprocal_lattice * 2.0 * np.pi)
-            
+
+            # Native cumulative path distance as computed by phonopy itself
+            # for this run's own q-points (authoritative - avoids recomputing
+            # it ourselves, which used minimum-image wrapping unsuited to a
+            # non-periodic path and could silently disagree between runs).
+            if 'distances' in f:
+                self.path_dist_native = f['distances'][:]
+            else:
+                self.path_dist_native = None
+
             raw_frequencies = f['frequencies'][:]
             self.path_w_phon = raw_frequencies * 4.135667696
             
