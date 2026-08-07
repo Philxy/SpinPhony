@@ -606,7 +606,7 @@ class CrystalDataSoA:
                 Vm = V_minus_all[q_idx]
 
                 # Enable or disable the following block to include SLC interactions
-                """
+                #"""
                 # 1. Normal Particle-Particle
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
@@ -622,11 +622,16 @@ class CrystalDataSoA:
                 # 4. Anomalous Hole-Particle (Magnon_h, Phonon_p)
                 H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
-                """
+                #"""
 
             # --- 3. Diagonalization ---
             if return_full_matrices:
                 H_pre[q_idx] = H_BdG  # Save state prior to Cholesky projection
+
+            # Positive Definiteness Enforcement (important near Gamma point)
+            min_eig = np.min(np.linalg.eigvalsh(H_BdG))
+            if min_eig <= 1e-8:
+                np.fill_diagonal(H_BdG, H_BdG.diagonal() + np.abs(min_eig) + 1e-5)
 
             try:
                 energies, para_unitary = diagonalize_bosonic_hamiltonian(H_BdG)
