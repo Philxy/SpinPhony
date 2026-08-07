@@ -49,78 +49,6 @@ def set_path_ticks(ax, labels):
     ax.grid(True, axis="x", linestyle="--", color="gray", alpha=0.5)
 
 
-def remap_path_dist(values, source_labels, target_labels):
-    """
-    Piecewise-linearly rescales `values` (path_dist from the SOURCE file) onto
-    the TARGET file's path_dist scale, anchoring each matching pair of labels
-    exactly. Necessary whenever combining two path files generated from
-    different band.h5 sources (different lattice constants / segment lengths
-    in 1/Angstrom) - guarantees shared high-symmetry points align even though
-    the raw path_dist scales differ, and don't differ by a uniform factor.
-
-    Matches source_labels[i] to target_labels[i] purely by position in the
-    path sequence (both must walk the same route, e.g. Gamma-K-M-Gamma) - the
-    label *names* are only used for the sanity check below, not for matching.
-    """
-    if len(source_labels) != len(target_labels):
-        raise ValueError(
-            f"Source path has {len(source_labels)} labels "
-            f"{[n for n, _ in source_labels]} but target has "
-            f"{len(target_labels)} {[n for n, _ in target_labels]} - "
-            "these two files walk a different high-symmetry route and "
-            "cannot be aligned by simple segment-anchoring."
-        )
-    mismatched = [(sn, tn) for (sn, _), (tn, _) in zip(source_labels, target_labels) if sn != tn]
-    if mismatched:
-        print(f"Warning: label name mismatch at matching path positions: {mismatched} "
-              "- proceeding anyway (matched by sequence position, not name).")
-
-    values = np.asarray(values, dtype=float)
-    remapped = np.empty_like(values)
-    n_seg = len(source_labels) - 1
-    for i in range(n_seg):
-        s0, s1 = source_labels[i][1], source_labels[i + 1][1]
-        t0, t1 = target_labels[i][1], target_labels[i + 1][1]
-        # Include the segment's right edge only on the last segment, so every
-        # point is assigned to exactly one segment with no gaps/overlaps.
-        if i < n_seg - 1:
-            mask = (values >= s0) & (values < s1)
-        else:
-            mask = (values >= s0) & (values <= s1 + 1e-9)
-        frac = (values[mask] - s0) / (s1 - s0)
-        remapped[mask] = t0 + frac * (t1 - t0)
-    return remapped
-
-
-def nearest_q_path_dist(q_frac, dense_q_frac, dense_path_dist):
-    """
-    For each row in q_frac (N,3), finds the closest point in dense_q_frac
-    (M,3) under the minimum-image convention (fractional coordinates, so
-    periodicity in each component is accounted for) and returns that
-    neighbor's path_dist and the matching distance (in fractional units).
-
-    Needed because a "sparse" path built by snapping to the nearest points
-    on a Monkhorst-Pack grid (e.g. picking near-K points on a 32x32x32 mesh)
-    does not actually sit on the ideal high-symmetry line - e.g. 2/3 is not
-    representable on a 32-point grid, so the nearest reachable point is
-    20/32 = 0.625 instead of 0.666667. Two files built this way have
-    genuinely different sets of q-points per segment, not just different
-    path_dist scales, so anchoring only the segment endpoints (label-based
-    linear rescaling) cannot correctly place the interior points - matching
-    by actual reciprocal-space location is required instead.
-    """
-    q_frac = np.asarray(q_frac, dtype=float)
-    dense_q_frac = np.asarray(dense_q_frac, dtype=float)
-    dense_path_dist = np.asarray(dense_path_dist, dtype=float)
-
-    diff = dense_q_frac[None, :, :] - q_frac[:, None, :]
-    diff -= np.round(diff)
-    dist2 = np.sum(diff ** 2, axis=-1)
-    nearest_idx = np.argmin(dist2, axis=1)
-    nearest_dist = np.sqrt(dist2[np.arange(len(q_frac)), nearest_idx])
-    return dense_path_dist[nearest_idx], nearest_dist
-
-
 def _prepare_tau(df, tau_col="tau_ps"):
     """Replaces inf with the max finite value and clips to strictly positive,
     matching the convention needed for a log color scale."""
@@ -137,37 +65,17 @@ def _prepare_tau(df, tau_col="tau_ps"):
 
 def _load_and_align(dense_csv, lifetime_csv, tau_col):
     """
-    Loads both files and reassigns the lifetime file's path_dist to that of
-    its nearest neighbor (in actual fractional q-space) in the dense file.
-    Returns (df_disp, df_life, labels_dense).
+    Loads both files. Each file's 'path_dist' column is phonopy's own native
+    cumulative path distance (see SpinPhony.py's get_path_distance_info /
+    path_dist_native), computed independently for that run's own q-points and
+    reciprocal lattice - so both files' path_dist values are already directly
+    comparable/physically meaningful and require no rescaling or nearest-
+    neighbor matching to overlay.
 
-    This is more robust than label-anchored rescaling when the "sparse" file
-    was built by snapping to the nearest points on a coarse Monkhorst-Pack
-    grid: those points don't actually lie on the ideal high-symmetry line,
-    so segment-endpoint anchoring alone can't place the interior points
-    correctly - matching by physical location can.
+    Returns (df_disp, df_life, labels_dense).
     """
     df_disp, labels_dense = load_path_csv(dense_csv)
     df_life, labels_sparse = load_path_csv(lifetime_csv)
-
-    q_cols = ["qx", "qy", "qz"]
-    if all(c in df_disp.columns for c in q_cols) and all(c in df_life.columns for c in q_cols):
-        dense_unique = df_disp.drop_duplicates(subset=q_cols)
-        df_life = df_life.copy()
-        new_path_dist, match_dist = nearest_q_path_dist(
-            df_life[q_cols].to_numpy(),
-            dense_unique[q_cols].to_numpy(),
-            dense_unique["path_dist"].to_numpy(),
-        )
-        df_life["path_dist"] = new_path_dist
-        if match_dist.max() > 1e-3:
-            print(f"Warning: nearest dense q-point match distance up to "
-                  f"{match_dist.max():.4f} (fractional units) - the sparse "
-                  "path points may not lie close to the dense path (e.g. "
-                  "grid-snapping error or a genuinely different route).")
-    else:
-        print("Warning: qx/qy/qz columns missing from one of the two files - "
-              "cannot align by reciprocal-space location.")
 
     df_life = _prepare_tau(df_life, tau_col)
     return df_disp, df_life, labels_dense
@@ -312,17 +220,6 @@ if __name__ == "__main__":
 
     print("Dense labels: ", labels_dense)
     print("Sparse labels:", labels_sparse)
-
-    # Check a few sparse points' original vs nearest-dense-q-matched path_dist
-    q_cols = ["qx", "qy", "qz"]
-    dense_unique = df_dense.drop_duplicates(subset=q_cols)
-    raw = df_sparse["path_dist"].to_numpy()
-    remapped, match_dist = nearest_q_path_dist(
-        df_sparse[q_cols].to_numpy(), dense_unique[q_cols].to_numpy(), dense_unique["path_dist"].to_numpy()
-    )
-    for i in range(0, len(raw), max(1, len(raw)//15)):
-        print(f"branch={df_sparse['branch'].iloc[i]}  raw={raw[i]:.4f}  remapped={remapped[i]:.4f}  "
-              f"match_dist={match_dist[i]:.4f}  energy={df_sparse['energy_meV'].iloc[i]:.3f}")
 
 
     plot_dense_with_scatter(

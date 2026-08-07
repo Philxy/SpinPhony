@@ -939,23 +939,30 @@ class CrystalDataSoA:
 
     def get_path_distance_info(self):
         """
-        Computes the cumulative path distance (1/Angstrom, minimum-image wrapped,
-        matching plot_hybridized_path_dispersions' k_distances convention) for
-        every explicit high-symmetry path point, plus a comment-line string
-        recording the path distance of each high-symmetry label. Shared by every
-        CSV writer that outputs per-path-point data, so post-processing can plot
-        against a physically meaningful x-axis (and combine dense/sparse files
-        from different runs) without reconstructing distances via nearest-neighbor
-        matching on qx,qy,qz.
+        Returns the cumulative path distance (1/Angstrom) for every explicit
+        high-symmetry path point, plus a comment-line string recording the
+        path distance of each high-symmetry label. Shared by every CSV writer
+        that outputs per-path-point data, so post-processing can plot against
+        a physically meaningful x-axis.
+
+        Prefers path_dist_native (phonopy's own per-point 'distance' field,
+        read straight from the path HDF5 in load_and_evaluate_path_hdf5) when
+        available - that is the authoritative value for how far along the
+        path phonopy itself placed each point. Falls back to recomputing it
+        via consecutive-point Cartesian differences (minimum-image wrapped)
+        only for older path files that don't carry 'distances'.
         """
-        path_dist = np.zeros(self.N_path)
-        current_dist = 0.0
-        for i in range(1, self.N_path):
-            dq_frac = self.path_q_frac[i] - self.path_q_frac[i - 1]
-            dq_frac = dq_frac - np.round(dq_frac)  # minimum image convention
-            dq_cart = np.dot(dq_frac, self.path_reciprocal_lattice * 2.0 * np.pi)
-            current_dist += np.linalg.norm(dq_cart)
-            path_dist[i] = current_dist
+        if getattr(self, 'path_dist_native', None) is not None:
+            path_dist = self.path_dist_native
+        else:
+            path_dist = np.zeros(self.N_path)
+            current_dist = 0.0
+            for i in range(1, self.N_path):
+                dq_frac = self.path_q_frac[i] - self.path_q_frac[i - 1]
+                dq_frac = dq_frac - np.round(dq_frac)  # minimum image convention
+                dq_cart = np.dot(dq_frac, self.path_reciprocal_lattice * 2.0 * np.pi)
+                current_dist += np.linalg.norm(dq_cart)
+                path_dist[i] = current_dist
 
         if hasattr(self, 'path_labels') and hasattr(self, 'path_segments'):
             entries = [f"{self.path_labels[0][0]}={path_dist[0]:.6f}"]
