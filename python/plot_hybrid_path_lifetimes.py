@@ -82,8 +82,8 @@ def plot_dense_with_scatter(
     df_life, _ = load_path_csv(lifetime_csv)
     df_life = _prepare_tau(df_life, tau_col)
 
-    #vmin = max(vmin, df_life[tau_col].min())
-    #vmax = min(vmax, df_life[tau_col].max())
+    vmin = df_life[tau_col].min()
+    vmax = df_life[tau_col].max()
 
     norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
 
@@ -141,8 +141,8 @@ def plot_dense_interpolated_line(
     df_life, _ = load_path_csv(lifetime_csv)
     df_life = _prepare_tau(df_life, tau_col)
 
-    #vmin = max(vmin, df_life[tau_col].min())
-    #vmax = min(vmax, df_life[tau_col].max())
+    vmin =  df_life[tau_col].min()
+    vmax =  df_life[tau_col].max()
 
     norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
 
