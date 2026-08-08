@@ -205,18 +205,18 @@ def plot_dense_interpolated_line(
 if __name__ == "__main__":
 
     df_dense, labels_dense = load_path_csv("Outputs/NonHybrid_GK_32_dense/hybrid_path_properties.csv")
-    df_sparse, labels_sparse = load_path_csv("Outputs/NonHybrid_GK_32/hybrid_path_lifetimes.csv")
+    df_sparse, labels_sparse = load_path_csv("Outputs/Hybrid_GK_32_sigma_0.01/hybrid_path_lifetimes.csv")
 
     print("Dense labels: ", labels_dense)
     print("Sparse labels:", labels_sparse)
 
     plot_dense_with_scatter(
         dense_csv="Outputs/NonHybrid_GK_32_dense/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/NonHybrid_GK_32/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/NonHybrid_GK_32/hybrid_bands_lifetime_scatter.png",
+        lifetime_csv="Outputs/Hybrid_GK_32_sigma_0.01/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/Hybrid_GK_32_sigma_0.01/hybrid_bands_lifetime_scatter.png",
     )
     plot_dense_interpolated_line(
         dense_csv="Outputs/NonHybrid_GK_32_dense/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/NonHybrid_GK_32/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/NonHybrid_GK_32/hybrid_bands_lifetime_interpolated.png",
+        lifetime_csv="Outputs/Hybrid_GK_32_sigma_0.01/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/Hybrid_GK_32_sigma_0.01/hybrid_bands_lifetime_interpolated.png",
     )
