@@ -1774,19 +1774,29 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     hbar = 0.6582119569 # meV * ps
     DALTON_TO_meV_PS2_PER_A2 = 0.10364269 
     
-    S_n = math.fabs(mag_moments[n] / 2.0) 
+    S_n = math.fabs(mag_moments[n] / 2.0)
     S_m = math.fabs(mag_moments[m] / 2.0)
+
+    # Sublattice spin orientations sigma_n, sigma_m = sign(moment). Identically
+    # +1 for a ferromagnet (so these factors are invisible for bccFe/CrI3), but
+    # they carry the relative sublattice sign for any antiferromagnetic or
+    # ferrimagnetic ordering and must not be dropped.
+    sigma_n = gpu_copysign(1.0, mag_moments[n]) if S_n > 0 else 0.0
+    sigma_m = gpu_copysign(1.0, mag_moments[m]) if S_m > 0 else 0.0
 
     J_tilde_dyn = cuda.local.array((3, 3), dtype=np.complex128)
     J_tilde_stat = cuda.local.array((3, 3), dtype=np.complex128)
-    
+
     V_complex = 0.0 + 0.0j
     num_atoms = atom_masses.shape[0]
     num_mag_branches = mag_moments.shape[0]
-    
+
     is_n_eq_m_mask = 1.0 * (n == m)
 
-    # find k-q
+    # W^{+-}(k, q) is built from J~(k - q, q): the first Fourier argument is
+    # conjugate to r_ij and is the DIFFERENCE of the vertex's two momentum
+    # labels, not the first label itself. (The static term below correctly
+    # passes 0 into the same slot, per J~(0, q).)
     kmqx = kpx - qx
     kmqy = kpy - qy
     kmqz = kpz - qz
@@ -1794,32 +1804,35 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     for l in range(num_atoms):
         mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
         disp_amp = math.sqrt((hbar * hbar) / (2.0 * mass_l * omega))
-        
+
         for mu in range(3):
             e_mu = eig_phon[q_idx, lambda_phon, l, mu]
-            
-            calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
+
+            calc_fourier_transform_vec(kmqx, kmqy, kmqz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, m + 1, l + 1, mu, J_tilde_dyn)
 
             J_xx = J_tilde_dyn[0, 0]
             J_yy = J_tilde_dyn[1, 1]
             J_xy = J_tilde_dyn[0, 1]
             J_yx = J_tilde_dyn[1, 0]
-            
-            W_dynamic = (J_xx + J_yy - 
-                         1j  * J_xy + 
-                         1j  * J_yx) / math.sqrt(S_n * S_m)
-            
+
+            W_dynamic = (J_xx + (sigma_n * sigma_m) * J_yy -
+                         1j * sigma_m * J_xy +
+                         1j * sigma_n * J_yx) / math.sqrt(S_n * S_m)
+
             W_static = 0.0 + 0.0j
-            
+
             for mp in range(num_mag_branches):
-                
+                if math.fabs(mag_moments[mp]) <= 1e-2:
+                    continue
+                sigma_mp = gpu_copysign(1.0, mag_moments[mp])
+
                 calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
-                
-                W_static +=  (2.0 / S_n) * J_tilde_stat[2, 2]
-            
+
+                W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2]
+
             W_tot = W_dynamic - (W_static * is_n_eq_m_mask)
             V_complex += disp_amp * e_mu * W_tot
-            
+
     return V_complex #* omega_mask
 
 
@@ -1875,6 +1888,44 @@ def fill_hybrid_vertex_cache(
                     -kx, -ky, -kz, qx, qy, qz, q_idx, lam, n, m,
                     grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
                     eig_phon, w_phon, atom_masses, mag_moments
+                )
+
+
+@cuda.jit(device=True)
+def fill_hybrid_vertex_cache_pathq(
+    kx, ky, kz, qx, qy, qz, path_q_idx,
+    minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, minus_k_plus_q_idx,
+    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+    eig_phon, w_phon, path_eig_phon, path_w_phon,
+    atom_masses, mag_moments, num_phon, num_mag,
+    V1_cache, V2_cache, V3_cache
+):
+    """
+    Variant of fill_hybrid_vertex_cache for the configuration where the vertex's
+    "q" leg is the exact high-symmetry path point.
+
+    V1 and V3 both carry the phonon factor e^mu_{l,lam}(q) / sqrt(omega_{q,lam})
+    evaluated at q, so with q = path they read the path's OWN phonon
+    eigenvectors/frequencies rather than snapping to the nearest grid point.
+    V2's phonon leg is -(k+q), a genuine grid point, so it keeps the grid arrays.
+    """
+    for n in range(num_mag):
+        for m in range(num_mag):
+            for lam in range(num_phon):
+                V1_cache[n, m, lam] = calc_vertex_V(
+                    -minus_k_plus_qx, -minus_k_plus_qy, -minus_k_plus_qz, qx, qy, qz, path_q_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    path_eig_phon, path_w_phon, atom_masses, mag_moments
+                )
+                V2_cache[n, m, lam] = calc_vertex_V(
+                    -qx, -qy, -qz, minus_k_plus_qx, minus_k_plus_qy, minus_k_plus_qz, minus_k_plus_q_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    eig_phon, w_phon, atom_masses, mag_moments
+                )
+                V3_cache[n, m, lam] = calc_vertex_V(
+                    -kx, -ky, -kz, qx, qy, qz, path_q_idx, lam, n, m,
+                    grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    path_eig_phon, path_w_phon, atom_masses, mag_moments
                 )
 
 
@@ -2537,14 +2588,20 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                               path_q_frac, path_q_cart, path_w_hyb, path_eig_hyb,
                               w_hyb, Qmatrix,
                               slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-                              eig_phon, w_phon, atom_masses, mag_moments,
+                              eig_phon, w_phon, path_eig_phon, path_w_phon,
+                              atom_masses, mag_moments,
                               min_sigma, chan_indices, chan_weights, channel_count,
                               num_phon, num_mag):
     """
-    Unified hybridized phase space scan along the high-symmetry path:
-    hybrid(path, b_q) <-> hybrid(k, b_k) + hybrid(p, b_p), with k, p on the grid and
-    p = round_to_grid(path - k). Mirrors phase_1_scan_hybrid's splitting/coalescence
-    topology, with the parent leg pinned to an exact path point instead of a grid point.
+    Hybridized phase space scan along the high-symmetry path. Emits BOTH RTA
+    topologies for the path mode, tagged by chan_indices[0]:
+
+      c_type 0  SPLITTING    hybrid(path) -> hybrid(k) + hybrid(p),  p = round(path - k)
+      c_type 1  COALESCENCE  hybrid(path) + hybrid(k) -> hybrid(s),  s = round(path + k)
+
+    Both are required: the path mode is the parent in the first and a child in
+    the second, and only the two together reproduce the full 1/tau. k, p and s
+    are grid points; the path leg is exact.
     """
     path_idx, k_idx = cuda.grid(2)
     N_path = path_q_frac.shape[0]
@@ -2579,14 +2636,6 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
     my_q = int(math.floor(((-path_q_frac[path_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
     mz_q = int(math.floor(((-path_q_frac[path_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
     minus_path_grid_idx = grid_map[mx_q, my_q, mz_q]
-
-    # +path, rounded to the nearest grid point. Needed only by the coalescence
-    # channel below, where the path point occupies the vertex's "q" slot and so
-    # its phonon eigenvector / frequency must be looked up by a discrete index.
-    gx_q = int(math.floor((path_q_frac[path_idx, 0] % 1.0) * mesh[0] + 0.5)) % mesh[0]
-    gy_q = int(math.floor((path_q_frac[path_idx, 1] % 1.0) * mesh[1] + 0.5)) % mesh[1]
-    gz_q = int(math.floor((path_q_frac[path_idx, 2] % 1.0) * mesh[2] + 0.5)) % mesh[2]
-    path_grid_idx = grid_map[gx_q, gy_q, gz_q]
 
     # s = round_to_grid(path + k): the coalescence parent (path + k -> s).
     sx_int = int(math.floor(((path_q_frac[path_idx, 0] + grid_q_frac[k_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
@@ -2701,12 +2750,13 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
         eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag,
         V1_cache_kq, V2_cache_kq, V3_cache_kq
     )
-    fill_hybrid_vertex_cache(
+    fill_hybrid_vertex_cache_pathq(
         kx, ky, kz,
-        path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2], path_grid_idx,
+        path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2], path_idx,
         -sx_cart, -sy_cart, -sz_cart, minus_s_idx,
         grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
-        eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag,
+        eig_phon, w_phon, path_eig_phon, path_w_phon,
+        atom_masses, mag_moments, num_phon, num_mag,
         V1_cache_qk, V2_cache_qk, V3_cache_qk
     )
 
@@ -3672,7 +3722,8 @@ if __name__ == "__main__":
         d_path_q_frac, d_path_q_cart, d_path_w_hyb, d_path_eig_hyb,
         gpu_data["w_hyb"], gpu_data["Qmatrix"],
         gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
-        gpu_data["eig_phon"], gpu_data["w_phon"], gpu_data["atom_masses"], gpu_data["mag_moments"],
+        gpu_data["eig_phon"], gpu_data["w_phon"], d_path_eig_phon, d_path_w_phon,
+        gpu_data["atom_masses"], gpu_data["mag_moments"],
         min_sigma, d_path_hyb_chan_indices, d_path_hyb_chan_weights, d_path_hyb_channel_count,
         crystal_data.phon_branches, crystal_data.n_mag_branches
     )
