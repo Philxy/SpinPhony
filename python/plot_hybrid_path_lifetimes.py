@@ -5,6 +5,9 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.collections import LineCollection
 from scipy.interpolate import interp1d
+import scienceplots
+
+plt.style.use("science")
 
 
 def load_path_csv(path):
@@ -70,24 +73,25 @@ def plot_dense_with_scatter(
     cmap="rainbow_r",
     vmin=1.0,
     vmax=1e5,
+    margin=0.02,  # Relative margin added to left and right (0.02 = 2%)
     save_plot="Outputs/Hybrid/hybrid_bands_lifetime_scatter.png",
 ):
     """
-    Figure 1: dense hybrid band structure (thin grey lines per band, ticked
-    with its own high-symmetry labels) with the sparser lifetimes overlaid
-    as color-coded scatter points on a log scale, plotted at exactly the
-    path_dist stored in the lifetime file - no remapping.
+    Figure 1: dense hybrid band structure with lifetime scatter points overlaid.
     """
     df_disp, labels = load_path_csv(dense_csv)
     df_life, _ = load_path_csv(lifetime_csv)
     df_life = _prepare_tau(df_life, tau_col)
 
-    vmin = df_life[tau_col].min()
-    vmax = df_life[tau_col].max()
+    if vmin is None:
+        vmin = df_life[tau_col].min()
+
+    if vmax is None:
+        vmax = df_life[tau_col].max()
 
     norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(16/2.52, 16/2.52))  
 
     for band in sorted(df_disp["band"].unique()):
         subset = df_disp[df_disp["band"] == band].sort_values("path_dist")
@@ -96,17 +100,20 @@ def plot_dense_with_scatter(
     sc = ax.scatter(
         df_life["path_dist"], df_life["energy_meV"],
         c=df_life[tau_col], cmap=cmap, norm=norm,
-        s=30, zorder=2, edgecolors="k", linewidth=0.5,
+        s=10, zorder=2, linewidth=0.5,
     )
 
     cbar = fig.colorbar(sc, ax=ax)
-    cbar.set_label(r"Lifetime $\tau$ (ps) [log scale]", fontsize=12, fontweight="bold")
+    cbar.set_label(r"Lifetime $\tau$ (ps)", fontsize=12, fontweight="bold")
 
-    ax.set_xlim(df_disp["path_dist"].min(), df_disp["path_dist"].max())
+    # Expand x-limits dynamically based on total path distance
+    x_min = df_disp["path_dist"].min()
+    x_max = df_disp["path_dist"].max()
+    x_dist = x_max - x_min
+    ax.set_xlim(x_min - x_dist * margin, x_max + x_dist * margin)
+
     ax.set_ylim(bottom=0)
-    ax.set_xlabel("Path distance (1/A)", fontsize=12)
     ax.set_ylabel("Energy (meV)", fontsize=12, fontweight="bold")
-    ax.set_title("Hybrid Bands with Lifetime Scatter", fontsize=13, fontweight="bold")
     set_path_ticks(ax, labels)
 
     fig.tight_layout()
@@ -141,12 +148,17 @@ def plot_dense_interpolated_line(
     df_life, _ = load_path_csv(lifetime_csv)
     df_life = _prepare_tau(df_life, tau_col)
 
-    vmin =  df_life[tau_col].min()
-    vmax =  df_life[tau_col].max()
+
+    if vmin is None:
+        vmin =  df_life[tau_col].min()
+
+    if vmax is None:
+        vmax =  df_life[tau_col].max()
 
     norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(16/2.52, 16/2.52))  
+
 
     lc = None
     for branch in sorted(df_life["branch"].unique()):
@@ -182,13 +194,11 @@ def plot_dense_interpolated_line(
 
     if lc is not None:
         cbar = fig.colorbar(lc, ax=ax)
-        cbar.set_label(r"Interpolated lifetime $\tau$ (ps) [log scale]", fontsize=12, fontweight="bold")
+        cbar.set_label(r"Interpolated lifetime $\tau$ (ps)", fontsize=12, fontweight="bold")
 
     ax.set_xlim(df_disp["path_dist"].min(), df_disp["path_dist"].max())
     ax.set_ylim(df_disp["energy_meV"].min(), df_disp["energy_meV"].max() * 1.05)
-    ax.set_xlabel("Path distance (1/A)", fontsize=12)
     ax.set_ylabel("Energy (meV)", fontsize=12, fontweight="bold")
-    ax.set_title("Hybrid Bands Colored by Interpolated Lifetime", fontsize=13, fontweight="bold")
     set_path_ticks(ax, labels)
 
     fig.tight_layout()
@@ -204,19 +214,70 @@ def plot_dense_interpolated_line(
 
 if __name__ == "__main__":
 
-    df_dense, labels_dense = load_path_csv("Outputs/bccFeNonHybrid/hybrid_path_properties.csv")
-    df_sparse, labels_sparse = load_path_csv("Outputs/bccFeNonHybrid/hybrid_path_lifetimes.csv")
+    # CrI3 
+
+    # non hybrid
+    df_dense, labels_dense = load_path_csv("Outputs/NonHybrid_GK_32_dense/hybrid_path_properties.csv")
+    df_sparse, labels_sparse = load_path_csv("Outputs/NonHybrid_GK_32_sigma_0.15/hybrid_path_lifetimes.csv")
 
     print("Dense labels: ", labels_dense)
     print("Sparse labels:", labels_sparse)
 
     plot_dense_with_scatter(
-        dense_csv="Outputs/bccFeNonHybrid/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/bccFeNonHybrid/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/bccFeNonHybrid/hybrid_bands_lifetime_scatter.png",
+        dense_csv="Outputs/NonHybrid_GK_32_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/NonHybrid_GK_32_sigma_0.15/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/NonHybrid_GK_32_sigma_0.15/hybrid_bands_lifetime_scatter.png",
+        vmin=1E0,
+        vmax=1E5
     )
     plot_dense_interpolated_line(
-        dense_csv="Outputs/bccFeNonHybrid/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/bccFeNonHybrid/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/bccFeNonHybrid/hybrid_bands_lifetime_interpolated.png",
+        dense_csv="Outputs/NonHybrid_GK_32_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/NonHybrid_GK_32_sigma_0.15/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/NonHybrid_GK_32_sigma_0.15/hybrid_bands_lifetime_interpolated.png",
+        vmin=1E0,
+        vmax=1E5
+    )
+
+    # hybrid
+    df_dense, labels_dense = load_path_csv("Outputs/Hybrid_GK_32_dense/hybrid_path_properties.csv")
+    df_sparse, labels_sparse = load_path_csv("Outputs/Hybrid_GK_32_sigma_0.15/hybrid_path_lifetimes.csv")
+
+    print("Dense labels: ", labels_dense)
+    print("Sparse labels:", labels_sparse)
+
+    plot_dense_with_scatter(
+        dense_csv="Outputs/Hybrid_GK_32_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/Hybrid_GK_32_sigma_0.15/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/Hybrid_GK_32_sigma_0.15/hybrid_bands_lifetime_scatter.png",
+        vmin=1E0,
+        vmax=1E5
+    )
+    plot_dense_interpolated_line(
+        dense_csv="Outputs/Hybrid_GK_32_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/Hybrid_GK_32_sigma_0.15/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/Hybrid_GK_32_sigma_0.15/hybrid_bands_lifetime_interpolated.png",
+        vmin=1E0,
+        vmax=1E5
+    )
+
+
+
+
+    # bcc Fe
+
+    df_dense, labels_dense = load_path_csv("Outputs/bccFeHybrid/hybrid_path_properties.csv")
+    df_sparse, labels_sparse = load_path_csv("Outputs/bccFeHybrid/hybrid_path_lifetimes.csv")
+
+    print("Dense labels: ", labels_dense)
+    print("Sparse labels:", labels_sparse)
+
+    plot_dense_with_scatter(
+        dense_csv="Outputs/bccFeHybrid/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/bccFeHybrid/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/bccFeHybrid/hybrid_bands_lifetime_scatter.png",
+    )
+    plot_dense_interpolated_line(
+        dense_csv="Outputs/bccFeHybrid/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/bccFeHybrid/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/bccFeHybrid/hybrid_bands_lifetime_interpolated.png",
     )

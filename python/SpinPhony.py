@@ -1368,7 +1368,7 @@ class CrystalDataSoA:
                         # Hole Block: O_hole = -O_particle^*. Since val = -i*hbar*eps is
                         # purely imaginary, -(val)* = val, so the hole block equals the
                         # particle block unchanged.
-                        L_matrix[base_idx_h + alpha, base_idx_h + beta] = val
+                        L_matrix[base_idx_h + alpha, base_idx_h + beta] = -val
 
         # 3. Magnon Block (Spin Angular Momentum - Sz)
         # Magnons only carry intrinsic spin angular momentum along the quantization axis
@@ -2036,6 +2036,9 @@ def calc_hybrid_vertex_Gamma_path(
     cache); only the array lookups that require a discrete index are grid-snapped.
     """
     Gamma = 0.0 + 0.0j
+
+
+    # Question: Why is minus_path_grid_idx used in the Qmatrix? E.g. for term2, the maths says: V_-q,-(k+q) P^*(-(k+q))? What is the meaning of path here? Dont we cimply call the function with k and q?
 
     N_half = num_phon + num_mag
 
