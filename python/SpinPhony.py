@@ -606,7 +606,7 @@ class CrystalDataSoA:
                 Vm = V_minus_all[q_idx]
 
                 # Enable or disable the following block to include SLC interactions
-                """
+                #"""
                 # 1. Normal Particle-Particle
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
@@ -622,7 +622,7 @@ class CrystalDataSoA:
                 # 4. Anomalous Hole-Particle (Magnon_h, Phonon_p)
                 H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
-                """
+                #"""
 
             # --- 3. Diagonalization ---
             if return_full_matrices:
@@ -1824,11 +1824,10 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
             for mp in range(num_mag_branches):
                 if math.fabs(mag_moments[mp]) <= 1e-2:
                     continue
-                sigma_mp = gpu_copysign(1.0, mag_moments[mp])
 
                 calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
 
-                W_static += (2.0 / S_n) * (sigma_n * sigma_mp) * J_tilde_stat[2, 2]
+                W_static += (2.0 / S_n) * J_tilde_stat[2, 2]
 
             W_tot = W_dynamic - (W_static * is_n_eq_m_mask)
             V_complex += disp_amp * e_mu * W_tot
@@ -2022,7 +2021,7 @@ def calc_hybrid_vertex_Gamma_path(
     Qmatrix, path_Qmatrix, V1_cache, V2_cache, V3_cache, num_phon, num_mag
 ):
     """
-    Path variant of calc_hybrid_vertex_Gamma: the parent leg (k+q) is pinned to an
+    The parent leg (k+q) is pinned to an
     exact high-symmetry path point (path_idx), while k_idx/q_idx (the two children)
     remain grid indices, exactly as in the grid version. Reuses precomputed
     V1/V2/V3 (see fill_hybrid_vertex_cache) instead of recomputing them for
@@ -2086,10 +2085,8 @@ def calc_symmetrized_hybrid_vertex_squared_path(
     V1_cache_qk, V2_cache_qk, V3_cache_qk,
     num_phon, num_mag):
     """
-    Path variant of calc_symmetrized_hybrid_vertex_squared. The parent (path) leg is
-    held fixed between the two symmetrization calls; only the two grid children swap
-    roles, exactly mirroring the grid version's Gamma_kq / Gamma_qk swap. Reuses the
-    two precomputed per-configuration vertex caches instead of recomputing V1/V2/V3
+    The parent (path) leg is held fixed between the two symmetrization calls; only the two grid children swap
+    roles. Reuses the two precomputed vertex caches instead of recomputing V1/V2/V3
     for every hybrid band triple.
     """
 
@@ -2580,10 +2577,6 @@ def phase_lifetime_hybrid(chan_indices, chan_weights, num_channels, n_hyb, gamma
 
 
 @cuda.jit
-# Quasiparticles below this energy (meV) are excluded as scattering partners
-# in the hybrid path scan below - near-zero-energy modes (e.g. the acoustic
-# Goldstone magnon / acoustic phonons right at Gamma) have ill-defined or
-# divergent occupation numbers and shouldn't be allowed to participate.
 def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                               path_q_frac, path_q_cart, path_w_hyb, path_eig_hyb,
                               w_hyb, Qmatrix,
@@ -2593,26 +2586,23 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                               min_sigma, chan_indices, chan_weights, channel_count,
                               num_phon, num_mag):
     """
-    Hybridized phase space scan along the high-symmetry path. Emits BOTH RTA
-    topologies for the path mode, tagged by chan_indices[0]:
-
+      Scattering channels:
       c_type 0  SPLITTING    hybrid(path) -> hybrid(k) + hybrid(p),  p = round(path - k)
       c_type 1  COALESCENCE  hybrid(path) + hybrid(k) -> hybrid(s),  s = round(path + k)
 
-    Both are required: the path mode is the parent in the first and a child in
-    the second, and only the two together reproduce the full 1/tau. k, p and s
-    are grid points; the path leg is exact.
+    The path mode is the parent in the first and a child in
+    the second. k, p and s are grid points.
     """
     path_idx, k_idx = cuda.grid(2)
     N_path = path_q_frac.shape[0]
     N_grid = grid_q_cart.shape[0]
 
-    MIN_SCATTERING_ENERGY_MEV = 0.1
+    MIN_SCATTERING_ENERGY_MEV = 0.1 
 
     if path_idx >= N_path or k_idx >= N_grid:
         return
 
-    # p_idx = round_to_grid(path - k)
+    # p_idx = round_to_grid(path - k) | splitting
     px_int = int(math.floor(((path_q_frac[path_idx, 0] - grid_q_frac[k_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
     py_int = int(math.floor(((path_q_frac[path_idx, 1] - grid_q_frac[k_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
     pz_int = int(math.floor(((path_q_frac[path_idx, 2] - grid_q_frac[k_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
@@ -2637,7 +2627,7 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
     mz_q = int(math.floor(((-path_q_frac[path_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
     minus_path_grid_idx = grid_map[mx_q, my_q, mz_q]
 
-    # s = round_to_grid(path + k): the coalescence parent (path + k -> s).
+    # s = round_to_grid(path + k) | coalescence
     sx_int = int(math.floor(((path_q_frac[path_idx, 0] + grid_q_frac[k_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
     sy_int = int(math.floor(((path_q_frac[path_idx, 1] + grid_q_frac[k_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
     sz_int = int(math.floor(((path_q_frac[path_idx, 2] + grid_q_frac[k_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
@@ -2667,8 +2657,8 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
 
     num_bands = num_phon + num_mag
 
-    # Precompute the vertex caches once per (path_idx, k_idx) pair (see
-    # fill_hybrid_vertex_cache) instead of once per hybrid band triple below.
+    # Precompute the vertex caches once per (path_idx, k_idx) pair
+    # We have kq and qk caches for the symmetrized vertex calculation
     V1_cache_kq = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
     V2_cache_kq = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
     V3_cache_kq = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
@@ -2676,12 +2666,15 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
     V2_cache_qk = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
     V3_cache_qk = cuda.local.array((MAX_HYB_MAG_BRANCHES, MAX_HYB_MAG_BRANCHES, MAX_HYB_PHON_BRANCHES), dtype=np.complex128)
 
+    # kp
     fill_hybrid_vertex_cache(
         kx, ky, kz, px, py, pz, p_idx, mqx, mqy, mqz, minus_path_grid_idx,
         grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
         eig_phon, w_phon, atom_masses, mag_moments, num_phon, num_mag,
         V1_cache_kq, V2_cache_kq, V3_cache_kq
     )
+
+    # pk
     fill_hybrid_vertex_cache(
         px, py, pz, kx, ky, kz, k_idx, mqx, mqy, mqz, minus_path_grid_idx,
         grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
@@ -2690,8 +2683,8 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
     )
 
     # ---------------------------------------------------------------------
-    # Channel 0 - SPLITTING: hybrid(path, b_q) -> hybrid(k, b_k) + hybrid(p, b_p).
-    # Supplies the pi/hbar RTA term, weight (1 + n_k + n_p).
+    # SPLITTING channel: hybrid(path, b_q) -> hybrid(k, b_k) + hybrid(p, b_p).
+    # Determines the  RTA term with weight (1 + n_k + n_p).
     # ---------------------------------------------------------------------
     for b_q in range(num_bands):
         w_q = path_w_hyb[path_idx, b_q]
@@ -2733,8 +2726,9 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                         chan_weights[c_idx] = V_sq * delta_weight
 
     # ---------------------------------------------------------------------
-    # Channel 1 - COALESCENCE: hybrid(path, b_q) + hybrid(k, b_k) -> hybrid(s, b_s).
-    # Supplies the 2*pi/hbar RTA term, weight (n_k - n_s). The path mode is a
+    # COALESCENCE channel: hybrid(path, b_q) + hybrid(k, b_k) -> hybrid(s, b_s).
+    # Determines the RTA term with weight (n_k - n_s). 
+    # The path mode is a
     # CHILD here; the splitting scan above can never reach this topology because
     # there the path point is structurally always the parent.
     #
@@ -3453,13 +3447,6 @@ if __name__ == "__main__":
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
 
-    # NOTE: the O(N_points^2) channel-buffer allocation (chan_indices/
-    # chan_weights/channel_count, sized by anticipated_fraction) used to live
-    # here, but its kernel (phase_1_scan) isn't launched until much later.
-    # Allocating it this early meant it sat on the GPU, unused, through the
-    # entire path and hybrid-path sections below, stacking on top of their
-    # own buffers and needlessly inflating peak memory - moved down to right
-    # before phase_1_scan actually runs.
     threads_per_block = 256
 
     print(f"\nInitializing populations at thermal equilibrium:")
@@ -3469,20 +3456,14 @@ if __name__ == "__main__":
     # Generate population profiles matching the actual branch dispersions
     n_mag_cpu = init_bose_einstein(crystal_data.w_mag, T_mag_init)
     n_phon_cpu = init_bose_einstein(crystal_data.w_phon, T_phon_init)
-    
-    # Set Gamma point occupations to zero to avoid singularities
-    #n_mag_cpu[gamma_idx, :] = 0.0
-    #n_phon_cpu[gamma_idx, :] = 0.0
 
     # Push initial states
     d_n_mag = cuda.to_device(n_mag_cpu)
     d_n_phon = cuda.to_device(n_phon_cpu)
-    
-    d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
-    d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
 
 
-    # =============== Hybrid Lifetimes ===============
+
+    # =============== Hybrid Lifetimes ( Whole BZ) ===============
     """
     num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
 
@@ -3691,24 +3672,14 @@ if __name__ == "__main__":
 
 
     # ========================== Hybrid Path Lifetime Evaluation ==========================
-    # NOTE: the combinatorial phase space here (N_path * N_points * num_hyb_branches**3)
-    # is far larger than the plain magnon/phonon path scan (num_hyb_branches includes
-    # every phonon AND magnon branch, cubed), so max_path_hyb_channels can require a lot
-    # of GPU memory for large meshes. If you hit an out-of-memory error allocating
-    # d_path_hyb_chan_indices/d_path_hyb_chan_weights, lower anticipated_fraction for
-    # this section specifically rather than assuming the grid-tuned value applies here.
     print("\nStarting Hybrid Path Lifetime Evaluation...")
 
-    # Self-contained: does not assume the grid hybrid section above ran (it may be
-    # commented out if only path hybrid lifetimes are wanted), so num_hyb_branches
-    # and the grid hybrid occupations are (re)computed here.
     num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
     n_hyb_cpu = init_bose_einstein(crystal_data.w_hyb, T_mag_init)
     d_n_hyb = cuda.to_device(n_hyb_cpu)
 
-    # Factor 2: phase_1_scan_hybrid_path now scans two topologies per (path, k)
-    # pair - splitting (path -> k + p) and coalescence (path + k -> s) - so the
-    # enumerated loop count, and hence the channel buffer, doubles.
+    # phase_1_scan_hybrid_path now scans two scattering processes (coalesence and splitting) 
+    #  so the enumerated loop count, and hence the channel buffer, doubles.
     total_path_hyb_loops = 2 * N_path * N_points * num_hyb_branches**3
     max_path_hyb_channels = int(total_path_hyb_loops * anticipated_fraction)
 
@@ -3835,6 +3806,9 @@ if __name__ == "__main__":
     blocks_eval = math.ceil(num_channels / threads_per_block)
 
     # ====== Lifetime and scattering rate phase ======
+
+    d_dn_mag = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches, dtype=np.float64))
+    d_dn_phon = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches, dtype=np.float64))
 
     # Allocate dedicated arrays for the scattering rates
     # Shape flattened to match the atomic add logic: (N_points * branches)
