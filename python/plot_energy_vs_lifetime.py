@@ -1,0 +1,483 @@
+"""
+Standalone: energy vs. lifetime scatter for every hybrid magnon-polaron mode,
+colour-coded by magnon/phonon character.
+
+Combines the two CSVs written by the same SpinPhony run:
+
+  hybrid_path_lifetimes.csv   q_idx, qx, qy, qz, branch, energy_meV,
+                              gamma_ps-1, tau_ps, path_dist
+  hybrid_path_properties.csv  q_idx, qx, qy, qz, band, energy_meV,
+                              phon_character, mag_character, phon_AM_z_hbar,
+                              spin_AM_z_hbar, path_dist
+
+They are joined on (q_idx, branch/band). Since phon_character + mag_character
+= 1 by construction, a single scalar (the magnon character) fully encodes the
+mixing: 0 = pure phonon, 1 = pure magnon, ~0.5 = maximally hybridised.
+
+IMPORTANT: both files must come from the SAME run. q_idx is just a row index
+into that run's evaluation set, so pairing a dense band-structure properties
+file with a sparse lifetime file from a different run silently mismatches
+modes. The energy cross-check below catches that and refuses to plot.
+
+Usage:
+    python plot_energy_vs_lifetime.py \
+        --lifetimes Outputs/Hybrid/hybrid_path_lifetimes.csv \
+        --properties Outputs/Hybrid/hybrid_path_properties.csv \
+        --out Outputs/Hybrid/energy_vs_lifetime.png
+"""
+import os
+import argparse
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
+magnon_literature_scattering_rates = """3.5330366949927345, 0.09102981779915223
+7.1097094323124335, 0.21363397911526588
+10.706058931542348, 0.3442640548857818
+14.470842848333064, 0.4563947703262179
+17.656864338394996, 0.5710470594624236
+21.17999854447029, 0.6094377562050983
+24.976458841488746, 0.7145014915214672
+27.510987074215667, 0.8685113737513525
+31.712798486156796, 0.8811603465430217
+38.91557544867763, 0.9963917920135462
+44.60491499417326, 1.2199505557502925
+52.00551275510881, 1.2557439628235745
+60.29022624209932, 1.6173023172161325
+57.937928431613116, 1.2557439628235751
+81.95590434970995, 1.7638750529078007
+81.95590434971, 1.4199606034664953
+101.72024731297093, 1.828800808389492
+130.63194185325634, 1.6173023172161325
+157.5908014514459, 1.5045063827385736
+187.96373839101864, 1.5154225728627575
+221.65575534665635, 1.815627230483809
+259.9051079393094, 2.606228915488146
+294.5342488814524, 3.5054273703936762
+330.00347911252817, 4.923882631706749
+369.74408456724194, 5.9421053233155
+438.50576628007633, 9.785451025760969
+547.358170107669, 7.119234215334258
+491.3127387829667, 3.7682364621484377
+494.1140015119873, 4.7490758412131004
+514.1751827683922, 5.731149775014003
+391.3745601980384, 7.877516562652843
+245.5406814401623, 2.1596327552241537
+318.9361179185746, 4.050748891445512
+112.68130079648533, 1.3894954943731381
+154.92569632334198, 1.3019661288117441
+226.7543125870802, 1.5045063827385743
+256.9665200810953, 1.8824579107057196
+289.5532174388399, 2.389659095901388
+320.7545602050025, 2.968434514256669
+359.38136638046257, 3.6608276068155456
+451.1500269578206, 7.543120063354623
+414.27044478476745, 4.680903310144551
+446.0491499417328, 5.9852192324297695
+491.3127387829667, 7.708505252846041"""
+
+literature_phonon_scatt_rates_per_ps = """4.48783529925765, 0.02417798122601752
+5.888869366178223, 0.03018961164785434
+7.72715099685385, 0.03592133496112259
+9.552576079607517, 0.0448030835375812
+11.498811546775325, 0.03797595526262054
+2.819945410807872, 0.0018608683755954732
+2.205492307903121, 0.0003036605033083713
+4.450439241168672, 0.00018995045631324254
+6.710237827390981, 0.00014331969094337878
+8.861676208828554, 0.00009795239460169727
+10.88051628597797, 0.00006848671723329059
+12.923347784635489, 0.00004140970996091235
+14.461402786530698, 0.00002562047919458797
+16.50676813613766, 0.000014399516021145573
+17.98638352798355, 0.000006667506035524671
+19.34066700750141, 0.00000308653933925039
+21.76989381385246, 2.3442804949386288e-7
+22.21150529579873, 4.1829323583566974e-7
+20.79061045149376, 6.144486797269541e-7
+30.53377425516116, 8.068191541300666e-7
+23.27042469457957, 7.289455365444654e-7
+32.8536022169316, 0.000002171138969964886
+32.213529222940345, 0.000003778907373660745
+37.274005751938304, 0.000005990992992441711
+36.0655132196093, 0.000009466407938056631
+37.78360310758767, 0.000014980087765876983
+37.29081640863232, 0.000020989644109504375
+36.80764831549063, 0.00003742902679541909
+36.570319566573744, 0.0000577614265829801
+37.307958148953894, 0.00007533254030118384
+37.31410521967911, 0.00011910687334609841
+38.06740644022548, 0.0001630136886027892
+38.58316675921735, 0.00029083172595973267
+38.33638427781492, 0.0005186791640562766
+38.092171143636584, 0.0009944195336829467
+36.37329443616216, 0.0017299518875646077
+35.428852387763236, 0.0029389203320260254
+33.16789309208566, 0.006825693748558308
+32.308921292763465, 0.014062767011255488
+29.45071032555504, 0.01967518210022706
+26.318682767796464, 0.03257654148508324
+23.67299124493301, 0.03757297961500052
+20.599497361035734, 0.04330903340752583
+17.806219042213936, 0.046431633292903694
+16.119485867090166, 0.03076088847880551
+14.21178468983274, 0.024113955973496384
+16.33122538157716, 0.017671226335935375
+19.91918347482425, 0.012059606741113765
+21.708065122359866, 0.008618498399364556
+24.13122704692414, 0.00533166806358697
+26.647290954291396, 0.0031426679144979028
+28.09325635747641, 0.0020381870894790404
+29.42084696312597, 0.0011716008229174818
+31.84940281004941, 0.0007071729593616644
+32.91776254713872, 0.000492860869656832
+33.3539175298224, 0.00038736352044241063
+34.24215638404002, 0.00021210509834114111
+36.57602794170704, 0.00008914989749269242
+19.404332167011614, 0.02871341014344943
+20.72904644147398, 0.016117950083224756
+23.662524668714553, 0.010986026640499313
+23.822075919770004, 0.014324458929957002
+21.716537312924185, 0.02550579992248868
+24.791265392849553, 0.02058110602859472
+26.307502677228335, 0.00999568438416322
+26.47799969148959, 0.0063228355236533
+27.737675675906697, 0.008451661734235422
+27.01839682163299, 0.015811788347656845
+32.73104854405593, 0.006661444307982777
+29.631042008063712, 0.00463122482335295
+28.861414034076653, 0.007680303434886697
+29.25092410564113, 0.011856825789249426
+30.628175632789933, 0.004310720343112179
+34.27453588945389, 0.0029371086065807963
+31.651453304831524, 0.002092567267547945
+33.59104698984424, 0.0013904322047930025
+34.033761901261435, 0.000901102104394745
+36.60045716226939, 0.0005707014406665525
+36.354060198752066, 0.00039745346996477237
+3.84979904629312, 0.0015810082131400367
+4.543593440471047, 0.001970219587118185
+5.617144983630647, 0.0027061705676656076
+6.8975435207454, 0.0025269796825938503
+8.47024281279611, 0.0027269424944705825
+9.669834466532574, 0.002423208804549792
+10.821709075404096, 0.001954609094920877
+12.436657263396148, 0.0018229337431930857
+13.554143491507192, 0.0014696899177669414
+15.575238314840613, 0.0010263166913905854
+17.430567028489264, 0.0008278477428336345
+19.637071795532684, 0.0007179379825630434
+21.97548553774678, 0.0005258609359733531
+23.63340681035368, 0.0003580302303372937
+25.08187396214061, 0.0002437032734623337
+26.09530218251285, 0.00016582207412149487
+27.51179206175554, 0.00011285750539076553
+28.06063275278628, 0.00008055514630399777
+29.001398630201955, 0.00005349946453265148
+29.777341409421236, 0.00004105628637951391
+30.369534768897857, 0.000024753897503073283
+34.66578706360583, 0.000014956089598947628
+4.279903816377769, 0.0012447392010800492
+5.881520833116225, 0.0009375491143307623
+8.135508671740649, 0.0005549457211472995
+10.188717308882618, 0.0003200606549059669
+11.631182307179714, 0.0002521104088510457
+12.426308903996297, 0.00018010615369414866
+13.452510242901413, 0.00011971804789301572
+15.152417560616993, 0.000059628897447650664
+17.182062208380483, 0.00003780247511765629
+7.769882872274368, 0.0016409030411369252
+6.2848444959483585, 0.0011661948295607954
+6.040716046811293, 0.0016730882800491326
+11.557088530759623, 0.00048334988675016944
+11.714585154205448, 0.001071323905660601
+10.05801269678106, 0.000819416800514051
+10.39864529263987, 0.0013604087975356619
+8.084173961065334, 0.0012595640935558253
+11.406653744902375, 0.0007280583065504387
+14.288270816548787, 0.0007311176230224562
+13.106621362405011, 0.0004192293155021089
+15.779965627873809, 0.0006039771112262869
+14.571289919792358, 0.00035482132066059585
+13.908706581863724, 0.00022422321010324018
+15.462203911393695, 0.00016421430406608902
+16.091834222669647, 0.0002598283675638897
+16.8585636365404, 0.00042119866034329455
+21.539313696074792, 0.00032455233622302634
+20.97276422295791, 0.00021017814578466423
+18.008856207715798, 0.00021469746469324796
+20.287861893361214, 0.00016907456554769148
+19.75268784044839, 0.00008813321807783798
+20.96112852338841, 0.00004491857822834452
+19.22179479862899, 0.000011076327613528422
+23.13682665588415, 0.000008123981935882013
+23.912308766112634, 0.000005266884799028793
+24.876755190031894, 0.000002955048445872974
+24.224311255884512, 0.000002377436305876912
+23.432411206801298, 0.0000017366588633680271
+22.517321000874094, 0.0000013635793171180275
+20.390505744080144, 0.0000021006800931885603
+20.393511725426162, 0.000003164984466999983
+20.798003195230883, 0.000001651231106752081
+25.37126872064914, 0.0000017392309502530048
+27.469599464048382, 0.0000015816664265930465
+24.71378288087261, 0.0000034145909856985495
+29.36248405978752, 0.00000468659963601712
+27.849983773423585, 0.000006405542665577084
+26.588896091042262, 0.000007048003237506703
+29.370123259951402, 0.000009660421666986051
+26.417226853058562, 0.000010617547104639775
+24.55996951387645, 0.000009863276249549688
+27.677611325870274, 0.00002037621586662683
+26.95544869624374, 0.000024110610486692646
+24.084819160301755, 0.000025248769055436327
+25.066654350326466, 0.00004506840227041166
+22.85230130798525, 0.00009273859881318703
+24.257312027490137, 0.000104736716560433
+22.698851586050946, 0.0000677766973457672
+21.09789077146501, 0.00003205396237418737
+23.607804547493878, 0.000017579657558550953
+26.067937069913906, 0.000008966400909731527
+29.56354493956374, 0.000008161138059648034
+28.61074534013592, 0.000022453106567528304
+24.739511933481317, 0.0000616441125776425
+16.967528504147154, 0.0002538889400689191
+18.866598987642874, 0.0003316536519671069
+18.493575857403105, 0.00025429632390578267
+27.293663999901057, 0.000002753598671205664
+28.395966708527638, 0.0000017854145724009856
+29.354592307028277, 0.000002219465258234286
+31.988343013691466, 0.000001276748458247854
+34.18134199076503, 0.000001513351728790208
+30.341370543452946, 0.0000018759326350961785
+30.75805420076251, 0.000005553051549190054
+32.43945678612649, 0.000010404311080699466
+33.09578293667771, 0.00001606412040410882
+33.76860889233399, 0.000032335872941472364
+33.32992113371684, 0.00005236039963279138
+33.55523945480777, 0.00007164453691910147
+""" 
+
+def parse_literature_block(block):
+    """
+    Parses one of the embedded "energy_meV, scattering_rate_ps^-1" blocks into
+    (energy, tau) arrays, sorted by energy.
+
+    The literature values are RATES; the plot's y-axis is a lifetime, so they
+    are inverted here (tau = 1 / Gamma). Non-positive or non-finite rates are
+    dropped, since they have no finite lifetime to place on a log axis.
+    """
+    energies, rates = [], []
+    for line in block.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        e_str, r_str = line.split(",")
+        energies.append(float(e_str))
+        rates.append(float(r_str))
+
+    energy = np.asarray(energies, dtype=float)
+    rate = np.asarray(rates, dtype=float)
+
+    good = np.isfinite(rate) & (rate > 0) & np.isfinite(energy) & (energy > 0)
+    energy, rate = energy[good], rate[good]
+
+    order = np.argsort(energy)
+    energy, rate = energy[order], rate[order]
+
+    return energy, 1.0 / rate
+
+
+def load_path_csv(path):
+    """
+    Loads a SpinPhony path-output CSV, skipping the leading
+    "# path_labels: ..." comment line when present.
+    """
+    with open(path) as f:
+        first_line = f.readline().strip()
+
+    if first_line.startswith("# path_labels:"):
+        return pd.read_csv(path, skiprows=1)
+    return pd.read_csv(path)
+
+
+def merge_lifetimes_with_character(lifetimes_csv, properties_csv, energy_tol=1e-3):
+    """
+    Joins the lifetime and property files on (q_idx, band) and verifies that
+    the two files really describe the same modes by comparing the energy each
+    one reports for every matched row.
+    """
+    df_life = load_path_csv(lifetimes_csv)
+    df_prop = load_path_csv(properties_csv)
+
+    # The lifetime writer calls the branch index 'branch'; the property
+    # writer calls it 'band'. Same physical hybrid-mode ordering.
+    df_life = df_life.rename(columns={"branch": "band"})
+
+    keep = ["q_idx", "band", "phon_character", "mag_character", "energy_meV"]
+    missing = [c for c in keep if c not in df_prop.columns]
+    if missing:
+        raise ValueError(f"{properties_csv} is missing column(s): {missing}")
+
+    merged = df_life.merge(
+        df_prop[keep], on=["q_idx", "band"],
+        how="inner", suffixes=("", "_prop"),
+    )
+
+    if merged.empty:
+        raise ValueError(
+            "No (q_idx, band) pairs are common to the two files. They almost "
+            "certainly come from different runs - q_idx is only a row index "
+            "into a single run's evaluation set, not a physical label."
+        )
+
+    dE = np.abs(merged["energy_meV"] - merged["energy_meV_prop"])
+    worst = float(dE.max())
+    if worst > energy_tol:
+        n_bad = int((dE > energy_tol).sum())
+        raise ValueError(
+            f"Energy mismatch between the two files: {n_bad} of {len(merged)} "
+            f"matched rows differ by more than {energy_tol} meV (worst "
+            f"{worst:.4g} meV). The files are not from the same run, so the "
+            "(q_idx, band) join is pairing unrelated modes."
+        )
+
+    # Characters are weights of a para-unitary decomposition and must sum to 1.
+    char_sum = merged["phon_character"] + merged["mag_character"]
+    if np.abs(char_sum - 1.0).max() > 1e-3:
+        print(f"Warning: phon_character + mag_character deviates from 1 by up to "
+              f"{np.abs(char_sum - 1.0).max():.3e} - the hybrid decomposition may "
+              "not be normalised.")
+
+    print(f"Matched {len(merged):,} modes "
+          f"({merged['q_idx'].nunique():,} q-points x {merged['band'].nunique()} branches).")
+    return merged
+
+
+def plot_energy_vs_lifetime(
+    lifetimes_csv="Outputs/Hybrid/hybrid_path_lifetimes.csv",
+    properties_csv="Outputs/Hybrid/hybrid_path_properties.csv",
+    out_png="Outputs/Hybrid/energy_vs_lifetime.png",
+    cmap="coolwarm",
+    tau_min=None,
+    tau_max=None,
+    energy_min=1e-6,
+    point_size=6,
+    alpha=0.8,
+    show_literature=True,
+):
+    """
+    Energy (y) against lifetime (x, log scale), one dot per mode, coloured by
+    magnon character. Mixed-character (strongly hybridised) modes are drawn
+    last so they are not buried under the pure-phonon/pure-magnon majority.
+    """
+    df = merge_lifetimes_with_character(lifetimes_csv, properties_csv)
+
+    n_total = len(df)
+
+    # tau = 1/gamma is infinite wherever no scattering channel was found; those
+    # modes cannot be placed on a log axis and are reported rather than hidden.
+    finite = np.isfinite(df["tau_ps"]) & (df["tau_ps"] > 0)
+    n_inf = int((~finite).sum())
+    df = df[finite]
+
+    # Drop zero/negative energies (failed diagonalisations, if any).
+    df = df[df["energy_meV"] > energy_min]
+
+    if df.empty:
+        raise ValueError("Nothing left to plot after removing non-finite lifetimes.")
+
+    if n_inf:
+        print(f"Note: {n_inf:,} of {n_total:,} modes have infinite lifetime "
+              "(no scattering channel found) and are omitted from the log axis.")
+
+    if tau_min is None:
+        tau_min = df["tau_ps"].min()
+    if tau_max is None:
+        tau_max = df["tau_ps"].max()
+
+    # Draw the most strongly hybridised points last.
+    df = df.assign(_mix=-(df["mag_character"] - 0.5).abs()).sort_values("_mix")
+
+    fig, ax = plt.subplots(figsize=(16 / 2.52, 12 / 2.52))
+
+    sc = ax.scatter(
+        df["energy_meV"], df["tau_ps"], 
+        c=df["mag_character"],
+        cmap=cmap, vmin=0.0, vmax=1.0,
+        s=point_size, alpha=alpha, linewidths=0,
+    )
+
+    cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+    cbar.set_label("Magnon character", fontsize=12, fontweight="bold")
+    cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    cbar.set_ticklabels(["0\n(phonon)", "0.25", "0.5", "0.75", "1\n(magnon)"])
+
+    # --- Literature reference data -------------------------------------
+    # Stored as scattering rates, so inverted to lifetimes to share this axis.
+    # Drawn as open markers with dark edges so they stay legible on top of the
+    # filled, colour-mapped calculation points.
+    if show_literature:
+        e_mag, tau_mag = parse_literature_block(magnon_literature_scattering_rates)
+        e_phon, tau_phon = parse_literature_block(literature_phonon_scatt_rates_per_ps)
+
+        ax.scatter(e_mag, tau_mag,
+                   marker="o", s=28, facecolors="none", edgecolors="darkred",
+                   linewidths=1.1, zorder=5, label="Magnon (literature)")
+        ax.scatter(e_phon, tau_phon,
+                   marker="s", s=22, facecolors="none", edgecolors="navy",
+                   linewidths=1.0, zorder=5, label="Phonon (literature)")
+
+        ax.legend(loc="best", fontsize=9, framealpha=0.9)
+        print(f"Literature overlay: {len(e_mag)} magnon and {len(e_phon)} phonon points "
+              f"(rates inverted to lifetimes).")
+
+    ax.set_ylim(tau_min, tau_max)
+    ax.set_ylabel(r"Lifetime $\tau$ (ps)", fontsize=12, fontweight="bold")
+    ax.set_xlabel("Energy (meV)", fontsize=12, fontweight="bold")
+    ax.grid(True, which="both", linestyle="--", alpha=0.3)
+    ax.set_yscale("log")
+    ax.set_xscale("log")
+    fig.tight_layout()
+
+    if out_png:
+        os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
+        fig.savefig(out_png, dpi=300)
+        print(f"Plot saved to '{out_png}'")
+
+    plt.show()
+    return fig, ax
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description="Energy vs. lifetime scatter for hybrid modes, coloured by magnon/phonon character.")
+    p.add_argument("--lifetimes", default="Outputs/bccFe_whole_BZ/hybrid_path_lifetimes.csv",
+                   help="hybrid_path_lifetimes.csv from the run")
+    p.add_argument("--properties", default="Outputs/bccFe_whole_BZ/hybrid_path_properties.csv",
+                   help="hybrid_path_properties.csv from the SAME run")
+    p.add_argument("--out", default="Outputs/bccFe_whole_BZ/energy_vs_lifetime.png",
+                   help="Output PNG path")
+    p.add_argument("--cmap", default="coolwarm", help="Matplotlib colormap for the character axis")
+    p.add_argument("--tau_min", type=float, default=None, help="Lower lifetime limit (ps)")
+    p.add_argument("--tau_max", type=float, default=None, help="Upper lifetime limit (ps)")
+    p.add_argument("--size", type=float, default=6.0, help="Marker size")
+    p.add_argument("--alpha", type=float, default=0.8, help="Marker alpha")
+    args = p.parse_args()
+
+    plot_energy_vs_lifetime(
+        lifetimes_csv=args.lifetimes,
+        properties_csv=args.properties,
+        out_png=args.out,
+        cmap=args.cmap,
+        tau_min=args.tau_min,
+        tau_max=args.tau_max,
+        point_size=args.size,
+        alpha=args.alpha,
+    )
+
+
+if __name__ == "__main__":
+    main()
