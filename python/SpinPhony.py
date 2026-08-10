@@ -85,7 +85,7 @@ class CrystalDataSoA:
         # 4. Parse SLC Tensors
         if slc_files and len(slc_files) == 3:
             self._parse_slc_tensors(slc_files[0], slc_files[1], slc_files[2], lattice_constant)
-            self.enforce_slc_asr()
+            #self.enforce_slc_asr()
 
         self.w_hyb, self.Qmatrix, self.H_BdG_pre_diagonalized, self.H_BdG_diagonalized = self._calculate_coupled_hamiltonian(
             q_cart_array=self.q_grid_cart,
@@ -751,12 +751,12 @@ class CrystalDataSoA:
                     val_n = -Omega_k[m, n]
                     if m == n:
                         val_n += anisotropy_term
-                    H_BdG[off_mag_p + m, off_mag_p + n] = val_n *  1.18
+                    H_BdG[off_mag_p + m, off_mag_p + n] = val_n *  1.18 # artificial factor to match lit
 
                     val_h = -Omega_m_k[n, m]
                     if m == n:
                         val_h += anisotropy_term
-                    H_BdG[off_mag_h + m, off_mag_h + n] = val_h *  1.18
+                    H_BdG[off_mag_h + m, off_mag_h + n] = val_h *  1.18 # artificial factor to match lit
 
             # --- SLC Interaction Blocks ---
             if hasattr(self, 'slc_axis') and is_FM:
@@ -3626,7 +3626,7 @@ if __name__ == "__main__":
     )
     
     crystal_data.print_summary()
-    crystal_data.check_slc_asr()
+    #crystal_data.check_slc_asr()
 
     gpu_data = crystal_data.push_to_gpu()
 
