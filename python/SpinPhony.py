@@ -2890,8 +2890,8 @@ def phase_lifetime_hybrid_path(chan_indices, chan_weights, num_channels, n_hyb_g
     V_sq = chan_weights[idx]
 
     hbar = 0.6582119569  # meV * ps
-    prefactor_split = (4 * math.pi / hbar) / N_grid_points
-    prefactor_coal  = (8 * math.pi / hbar) / N_grid_points
+    prefactor_split = (2 * math.pi / hbar) / N_grid_points
+    prefactor_coal  = (2 * math.pi / hbar) / N_grid_points
 
     n_k = n_hyb_grid[k_idx, b_k]
     n_o = n_hyb_grid[o_idx, b_o]
