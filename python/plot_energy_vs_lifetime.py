@@ -393,6 +393,8 @@ def plot_energy_vs_lifetime(
         print(f"Note: {n_inf:,} of {n_total:,} modes have infinite lifetime "
               "(no scattering channel found) and are omitted from the log axis.")
 
+    df["tau_ps"] = 1.0/ 7.4 * df["tau_ps"]
+
     if tau_min is None:
         tau_min = df["tau_ps"].min()
     if tau_max is None:
