@@ -1787,7 +1787,7 @@ def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda
                 for mp in range(num_mag_branches):
                     if math.fabs(mag_moments[mp]) > 1e-2:
                         #calc_fourier_transform_vec(gammax, gammay, gammaz, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
-                        calc_fourier_transform_vec(0, 0, 0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
+                        calc_fourier_transform_vec(0.0, 0.0, 0.0, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types, n + 1, mp + 1, l + 1, mu, J_tilde_stat)
                         
                         W_static += (2.0 / S_n)  * J_tilde_stat[2, 2]
                         
@@ -2881,7 +2881,7 @@ def phase_lifetime_hybrid_path(chan_indices, chan_weights, num_channels, n_hyb_g
 
     hbar = 0.6582119569  # meV * ps
     prefactor_split = (math.pi / hbar) / N_grid_points
-    prefactor_coal  = (2 * math.pi / hbar) / N_grid_points
+    prefactor_coal  = 0 * (math.pi / hbar) / N_grid_points
 
     n_k = n_hyb_grid[k_idx, b_k]
     n_o = n_hyb_grid[o_idx, b_o]
