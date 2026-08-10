@@ -3683,7 +3683,7 @@ if __name__ == "__main__":
     # Slice active channels
     d_path_chan_indices_active = d_path_chan_indices[:, :path_num_channels]
     d_path_chan_weights_active = d_path_chan_weights[:path_num_channels]
-v
+
     # 4. Allocate Path Scattering Rate Arrays
     d_gamma_mag_path = cuda.to_device(np.zeros(N_path * crystal_data.n_mag_branches, dtype=np.float64))
     d_gamma_phon_path = cuda.to_device(np.zeros(N_path * crystal_data.phon_branches, dtype=np.float64))
