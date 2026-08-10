@@ -751,12 +751,12 @@ class CrystalDataSoA:
                     val_n = -Omega_k[m, n]
                     if m == n:
                         val_n += anisotropy_term
-                    H_BdG[off_mag_p + m, off_mag_p + n] = val_n
+                    H_BdG[off_mag_p + m, off_mag_p + n] = val_n *  1.18
 
                     val_h = -Omega_m_k[n, m]
                     if m == n:
                         val_h += anisotropy_term
-                    H_BdG[off_mag_h + m, off_mag_h + n] = val_h
+                    H_BdG[off_mag_h + m, off_mag_h + n] = val_h *  1.18
 
             # --- SLC Interaction Blocks ---
             if hasattr(self, 'slc_axis') and is_FM:
