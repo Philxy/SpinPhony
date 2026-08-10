@@ -1958,7 +1958,7 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     
     omega = w_phon[q_idx, lambda_phon]
 
-    if omega < 1.0:
+    if omega < 0.01:
         return 0.0 + 0.0j
     
     omega_mask = 1.0 * (omega >= 1e-3)
