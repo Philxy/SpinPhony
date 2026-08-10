@@ -2747,9 +2747,7 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                 # min_sigma acts as a floor for flat regions.
                 variance = 0.0
                 for i in range(3):
-                    d_g = (grad_f_hyb[path_idx, b_q, i]
-                           - grad_f_hyb[k_idx, b_k, i]
-                           - grad_f_hyb[p_idx, b_p, i])
+                    d_g = grad_f_hyb[p_idx, b_p, i] - grad_f_hyb[k_idx, b_k, i]
                     step_width = d_g / mesh[i]
                     variance += step_width * step_width
 
@@ -2826,9 +2824,7 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                 # children are the path mode and k, matching dE's sign pattern.
                 variance = 0.0
                 for i in range(3):
-                    d_g = (grad_f_hyb[s_idx, b_s, i]
-                           - grad_f_hyb[path_idx, b_q, i]
-                           - grad_f_hyb[k_idx, b_k, i])
+                    d_g = grad_f_hyb[s_idx, b_s, i] - grad_f_hyb[k_idx, b_k, i]
                     step_width = d_g / mesh[i]
                     variance += step_width * step_width
 
