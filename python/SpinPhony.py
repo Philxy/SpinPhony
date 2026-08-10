@@ -1801,8 +1801,8 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
     
     omega = w_phon[q_idx, lambda_phon]
 
-    if omega < 2.0:
-        return 0
+    if omega < 1.0:
+        return 0.0 + 0.0j
     
     omega_mask = 1.0 * (omega >= 1e-3)
     
@@ -2634,7 +2634,7 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
     N_path = path_q_frac.shape[0]
     N_grid = grid_q_cart.shape[0]
 
-    MIN_SCATTERING_ENERGY_MEV = 0.01
+    MIN_SCATTERING_ENERGY_MEV = 1.0
 
     if path_idx >= N_path or k_idx >= N_grid:
         return
