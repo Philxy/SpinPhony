@@ -3483,21 +3483,6 @@ if __name__ == "__main__":
     crystal_data.save_hybrid_path_properties(f"{out_dir}/hybrid_path_properties.csv")
 
 
-
-
-    print("\nEvaluating magnon-polaron hybridization along the high-symmetry path...")
-    crystal_data.path_w_hyb, crystal_data.path_eig_hyb = crystal_data._calculate_coupled_hamiltonian(
-        q_cart_array=crystal_data.path_q_cart,
-        dyn_mat=crystal_data.path_dyn_mat,
-        K_anisotropy=anisotropy,
-        lattice_constant=lattice_constant
-    )
-
-    crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_character.png", color_mode='character')
-    crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_spin_AM.png", color_mode='spin_am')
-    crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_phon_AM.png", color_mode='phon_am')
-    crystal_data.save_hybrid_path_properties(f"{out_dir}/hybrid_path_properties.csv")
-
     # Push path data to GPU for scanning kernels
     d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
     d_path_q_cart = cuda.to_device(crystal_data.path_q_cart)
