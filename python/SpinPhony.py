@@ -2634,7 +2634,7 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
     N_path = path_q_frac.shape[0]
     N_grid = grid_q_cart.shape[0]
 
-    MIN_SCATTERING_ENERGY_MEV = 0.01 
+    MIN_SCATTERING_ENERGY_MEV = 1.0
 
     if path_idx >= N_path or k_idx >= N_grid:
         return
@@ -2876,12 +2876,14 @@ def phase_lifetime_hybrid_path(chan_indices, chan_weights, num_channels, n_hyb_g
     b_q   = chan_indices[4, idx]
     b_k   = chan_indices[5, idx]
     b_o   = chan_indices[6, idx]
-
     V_sq = chan_weights[idx]
 
     hbar = 0.6582119569  # meV * ps
-    prefactor_split = 0.0 * (math.pi / hbar) / N_grid_points
-    prefactor_coal  = (math.pi / hbar) / N_grid_points
+    prefactor_split = (math.pi / hbar) / N_grid_points
+    prefactor_coal  = (math.pi / hbar) / N_grid_points 
+
+
+    # as far as I can see: in the case of bcc Fe only coalesence gives phonon lifetimes
 
     n_k = n_hyb_grid[k_idx, b_k]
     n_o = n_hyb_grid[o_idx, b_o]
@@ -2890,7 +2892,7 @@ def phase_lifetime_hybrid_path(chan_indices, chan_weights, num_channels, n_hyb_g
 
     if c_type == 0:
         rate_q = prefactor_split * V_sq * (n_k + n_o + 1.0)
-    else:
+    if c_type == 1:
         rate_q = prefactor_coal * V_sq * (n_k - n_o)
 
     cuda.atomic.add(gamma_hyb_path, path_idx * num_bands + b_q, rate_q)
