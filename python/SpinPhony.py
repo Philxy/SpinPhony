@@ -1235,6 +1235,48 @@ class CrystalDataSoA:
         #plt.show()
         print(f"-> Saved true path dispersion plot to '{filename}'")
 
+    def use_full_bz_as_path(self):
+        """
+        Uses the entire Monkhorst-Pack grid as the "path", so the hybrid path
+        lifetime pipeline evaluates 1/tau over the whole Brillouin zone. Drop-in
+        replacement for load_and_evaluate_path_hdf5() - no band.h5 is read and
+        no second diagonalization is done; every array the path kernels consume
+        already exists for the grid with identical shapes, so this just aliases.
+
+        Note the deliberate frac/cart asymmetry, mirroring how the kernels
+        already treat their grid legs: path_q_frac is the UNCENTERED q/mesh (it
+        is only ever used modulo 1 for grid rounding), while path_q_cart is the
+        CENTERED cartesian vector (it sets the phase factors in calc_vertex_V,
+        where a reciprocal-lattice offset would NOT cancel, since r_ij / r_ik
+        are inter-atomic rather than lattice vectors).
+        """
+        print("\nUsing the full Brillouin zone as the evaluation set (no path file).")
+
+        self.N_path = self.N
+        self.path_q_frac = self.q_grid.astype(np.float64) / self.mesh
+        self.path_q_cart = self.q_grid_cart
+        self.path_reciprocal_lattice = self.reciprocal_lattice
+
+        self.path_w_hyb   = self.w_hyb
+        self.path_eig_hyb = self.Qmatrix
+        self.path_w_phon  = self.w_phon
+        self.path_eig_phon = self.eig_phon
+        self.path_w_mag   = self.w_mag
+        self.path_eig_mag = self.eig_mag
+        self.path_dyn_mat = self.dyn_mat_phon
+
+        # A cumulative arc length is meaningless for an unordered BZ sweep;
+        # report |q| from Gamma so path_dist stays physically plottable.
+        self.path_dist_native = np.linalg.norm(self.path_q_cart, axis=1)
+
+        # Stale high-symmetry labels would mislabel the output.
+        for attr in ("path_labels", "path_segments"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+        print(f"-> Full-BZ evaluation set: {self.N_path} q-points, "
+              f"{self.phon_branches + self.n_mag_branches} hybrid branches.")
+
 
     def save_path_dispersions(self, output_filename="Outputs/path_dispersions.csv"):
         """
@@ -1368,7 +1410,7 @@ class CrystalDataSoA:
                         # Hole Block: O_hole = -O_particle^*. Since val = -i*hbar*eps is
                         # purely imaginary, -(val)* = val, so the hole block equals the
                         # particle block unchanged.
-                        L_matrix[base_idx_h + alpha, base_idx_h + beta] = -val
+                        L_matrix[base_idx_h + alpha, base_idx_h + beta] = val
 
         # 3. Magnon Block (Spin Angular Momentum - Sz)
         # Magnons only carry intrinsic spin angular momentum along the quantization axis
@@ -3321,7 +3363,7 @@ def apply_euler_and_reset(n_mag, n_phon, dn_mag, dn_phon, dt):
         n_phon[q_idx, b] = new_n if new_n > 1e-15 else 1e-15
         dn_phon[idx] = 0.0
         
-        
+
 
 
 def init_bose_einstein(w_distribution, temperature_K):
@@ -3358,6 +3400,7 @@ if __name__ == "__main__":
     parser.add_argument("--tmag", type=float, help="Override initial Magnon temperature (K)")
     parser.add_argument("--tphon", type=float, help="Override initial Phonon temperature (K)")
     parser.add_argument("--steps", type=int, help="Override total integration steps")
+    parser.add_argument("--full_bz", action="store_true",help="Evaluate hybrid lifetimes over the whole Brillouin zone.")
     
     args = parser.parse_args()
 
@@ -3417,12 +3460,30 @@ if __name__ == "__main__":
 
     gamma_idx = int(crystal_data.grid_map[0, 0, 0])
 
-    # Load the high-symmetry path from the HDF5 band file
-    crystal_data.load_and_evaluate_path_hdf5(band, K_anisotropy=anisotropy, lattice_constant=lattice_constant)
-    # Save the exact path energies to a CSV
-    crystal_data.save_path_dispersions(f"{out_dir}/path_dispersions.csv")
-    # Plot the exact path
-    crystal_data.plot_path_dispersions(f"{out_dir}/exact_path_dispersions.png")
+    if args.full_bz:
+        crystal_data.use_full_bz_as_path()
+    else:
+        # Load the high-symmetry path from the HDF5 band file
+        crystal_data.load_and_evaluate_path_hdf5(band, K_anisotropy=anisotropy, lattice_constant=lattice_constant)
+        crystal_data.save_path_dispersions(f"{out_dir}/path_dispersions.csv")
+        crystal_data.plot_path_dispersions(f"{out_dir}/exact_path_dispersions.png")
+
+        print("\nEvaluating magnon-polaron hybridization along the high-symmetry path...")
+        crystal_data.path_w_hyb, crystal_data.path_eig_hyb = crystal_data._calculate_coupled_hamiltonian(
+            q_cart_array=crystal_data.path_q_cart,
+            dyn_mat=crystal_data.path_dyn_mat,
+            K_anisotropy=anisotropy,
+            lattice_constant=lattice_constant
+        )
+
+        crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_character.png", color_mode='character')
+        crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_spin_AM.png", color_mode='spin_am')
+        crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_phon_AM.png", color_mode='phon_am')
+
+    crystal_data.save_hybrid_path_properties(f"{out_dir}/hybrid_path_properties.csv")
+
+
+
 
     print("\nEvaluating magnon-polaron hybridization along the high-symmetry path...")
     crystal_data.path_w_hyb, crystal_data.path_eig_hyb = crystal_data._calculate_coupled_hamiltonian(
@@ -3622,7 +3683,7 @@ if __name__ == "__main__":
     # Slice active channels
     d_path_chan_indices_active = d_path_chan_indices[:, :path_num_channels]
     d_path_chan_weights_active = d_path_chan_weights[:path_num_channels]
-
+v
     # 4. Allocate Path Scattering Rate Arrays
     d_gamma_mag_path = cuda.to_device(np.zeros(N_path * crystal_data.n_mag_branches, dtype=np.float64))
     d_gamma_phon_path = cuda.to_device(np.zeros(N_path * crystal_data.phon_branches, dtype=np.float64))

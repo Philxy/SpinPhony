@@ -5,9 +5,25 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.collections import LineCollection
 import scienceplots
+from matplotlib.colors import LinearSegmentedColormap
 
 # Apply SciencePlots style matching your existing figure setup
 plt.style.use("science")
+
+def get_contrast_coolwarm():
+    """
+    Creates a diverging Blue-Grey-Red colormap where the neutral midpoint 
+    is a medium charcoal grey (#A0A0A0FF) instead of white, ensuring high 
+    contrast on white plot backgrounds.
+    """
+    colors = [
+        "#0571b0",  # -1.0 : Deep Blue
+        "#92c5de",  # -0.5 : Soft Blue
+        "#A0A0A0FF",  #  0.0 : Medium Charcoal Grey (Visible on white!)
+        "#f4a582",  # +0.5 : Soft Red/Orange
+        "#ca0020",  # +1.0 : Deep Red
+    ]
+    return LinearSegmentedColormap.from_list("coolwarm_dark_center", colors)
 
 
 def load_path_csv(path):
@@ -48,11 +64,14 @@ def set_path_ticks(ax, labels):
 def _detect_column(df, candidate_names):
     """Utility to find matching column names regardless of exact casing or formatting."""
     df_cols_lower = {col.lower(): col for col in df.columns}
+    # Pass 1: Exact match priority
     for cand in candidate_names:
         cand_lower = cand.lower()
         if cand_lower in df_cols_lower:
             return df_cols_lower[cand_lower]
-        # Partial match
+    # Pass 2: Partial match fallback
+    for cand in candidate_names:
+        cand_lower = cand.lower()
         for col_lower, orig_col in df_cols_lower.items():
             if cand_lower in col_lower:
                 return orig_col
@@ -65,6 +84,8 @@ def plot_dense_property(
     cbar_label,
     cmap="RdBu_r",
     is_diverging=True,
+    use_log=False,
+    linthresh=1e-2,
     vlim=None,
     linewidth=2.0,
     margin=0.0,
@@ -72,6 +93,7 @@ def plot_dense_property(
 ):
     """
     Plots the dense band structure colored by a specific property using LineCollection.
+    Supports linear (with exact min/max bounds) and logarithmic colormap scaling.
     """
     df_disp, labels = load_path_csv(dense_csv)
 
@@ -83,9 +105,9 @@ def plot_dense_property(
             f"Available columns: {list(df_disp.columns)}"
         )
 
-    # Determine Normalization
     vals = df_disp[target_col].dropna().to_numpy()
 
+    # Determine vmin and vmax bounds
     if vlim is not None:
         if isinstance(vlim, (tuple, list)):
             vmin, vmax = vlim
@@ -98,24 +120,42 @@ def plot_dense_property(
         else:
             vmin, vmax = vals.min(), vals.max()
 
-    if is_diverging:
-        # Guarantees 0 is exactly at the neutral midpoint of the colormap
-        norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+    # Determine Normalization (Logarithmic vs Linear)
+    if use_log:
+        if is_diverging:
+            # Symmetric Log Scale for diverging properties with zero/negative values (e.g. PAM)
+            norm = mcolors.SymLogNorm(
+                linthresh=linthresh, vmin=vmin, vmax=vmax, base=10
+            )
+        else:
+            # Standard Log Scale for strictly positive properties
+            pos_vals = vals[vals > 0]
+            min_pos = pos_vals.min() if len(pos_vals) > 0 else 1e-4
+            vmin_log = max(vmin, min_pos) if vmin > 0 else min_pos
+            vmax_log = max(vmax, vmin_log * 10)
+            norm = mcolors.LogNorm(vmin=vmin_log, vmax=vmax_log)
     else:
-        norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+        # Linear Normalization
+        if is_diverging and vmin < 0.0 < vmax:
+            norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+        else:
+            if vmin == vmax:
+                vmin, vmax = vmin - 0.1, vmax + 0.1
+            norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
     # Setup Plot
     fig, ax = plt.subplots(figsize=(16 / 2.52, 16 / 2.52))
 
     band_col = _detect_column(df_disp, ["band", "branch"]) or "band"
+    path_col = _detect_column(df_disp, ["path_dist", "q_path", "q_idx"]) or "path_dist"
     lc = None
 
     for band_id in sorted(df_disp[band_col].unique()):
-        subset = df_disp[df_disp[band_col] == band_id].sort_values("path_dist")
+        subset = df_disp[df_disp[band_col] == band_id].sort_values(path_col)
         if len(subset) < 2:
             continue
 
-        x = subset["path_dist"].to_numpy()
+        x = subset[path_col].to_numpy()
         y = subset["energy_meV"].to_numpy()
         c = subset[target_col].to_numpy()
 
@@ -135,7 +175,7 @@ def plot_dense_property(
         cbar.set_label(cbar_label, fontsize=12, fontweight="bold")
 
     # Set axis limits
-    x_min, x_max = df_disp["path_dist"].min(), df_disp["path_dist"].max()
+    x_min, x_max = df_disp[path_col].min(), df_disp[path_col].max()
     x_dist = x_max - x_min
     ax.set_xlim(x_min - x_dist * margin, x_max + x_dist * margin)
 
@@ -158,6 +198,8 @@ def plot_all_cri3_properties(
     dense_csv,
     output_dir="Outputs/CrI3_Properties",
 ):
+    cmap_contrast = get_contrast_coolwarm()
+
     """
     Plots the three key dense properties for CrI3 matching exact header columns:
     - phon_AM_z_hbar
@@ -165,48 +207,44 @@ def plot_all_cri3_properties(
     - spin_AM_z_hbar
     """
 
-    # 1. Phonon Angular Momentum (Diverging Colormap: RdBu_r centered at 0 hbar)
+    # 1. Phonon Angular Momentum (Linear scaling with min/max vlim bounds; set use_log=True if logarithmic scaling is desired)
     plot_dense_property(
         dense_csv=dense_csv,
         prop_column_candidates=["phon_AM_z_hbar", "phonon_Lz", "Lz_ph", "L_z"],
         cbar_label=r"Phonon Angular Momentum $L_z$ ($\hbar$)",
-        cmap="RdBu_r",
+        cmap=cmap_contrast,
         is_diverging=True,
+        use_log=True,       # Set to True to enable symmetric logarithmic colormap
+        vlim=(-1.0, 1.0),    # Explicit min and max for linear/log scaling
         save_plot=os.path.join(output_dir, "cri3_phonon_angular_momentum.png"),
     )
 
-    # 2. Magnon / Phonon Character (Sequential Colormap: inferno from 0 to 1)
+    # 2. Magnon / Phonon Character
     plot_dense_property(
         dense_csv=dense_csv,
         prop_column_candidates=["mag_character", "magnon_character", "character"],
         cbar_label=r"Magnon Character",
-        cmap="inferno",
+        cmap="coolwarm",
         is_diverging=False,
+        use_log=False,
         vlim=(0.0, 1.0),
         save_plot=os.path.join(output_dir, "cri3_magnon_character.png"),
     )
 
-    # 3. Spin Angular Momentum (Diverging Colormap: coolwarm centered at 0 hbar)
+    # 3. Spin Angular Momentum
     plot_dense_property(
         dense_csv=dense_csv,
         prop_column_candidates=["spin_AM_z_hbar", "spin_Sz", "Sz_spin", "S_z"],
         cbar_label=r"Spin Angular Momentum $S_z$ ($\hbar$)",
-        cmap="coolwarm",
-        is_diverging=True,
+        cmap="copper",
+        is_diverging=False,
+        use_log=False,
+        vlim=(-1.0, 0.0),
         save_plot=os.path.join(output_dir, "cri3_spin_angular_momentum.png"),
     )
 
 
 if __name__ == "__main__":
-
-    # Non-Hybrid CrI3
-    nonhybrid_dense_csv = "Outputs/NonHybrid_GK_32_dense/hybrid_path_properties.csv"
-    if os.path.exists(nonhybrid_dense_csv):
-        print("Plotting Non-Hybrid CrI3 Properties...")
-        plot_all_cri3_properties(
-            dense_csv=nonhybrid_dense_csv,
-            output_dir="Outputs/NonHybrid_GK_32_dense/properties",
-        )
 
     # Hybrid CrI3
     hybrid_dense_csv = "Outputs/Hybrid_GK_dense//hybrid_path_properties.csv"
@@ -215,4 +253,13 @@ if __name__ == "__main__":
         plot_all_cri3_properties(
             dense_csv=hybrid_dense_csv,
             output_dir="Outputs/Hybrid_GK_32_dense/properties",
+        )
+
+    # Non-Hybrid CrI3
+    nonhybrid_dense_csv = "Outputs/NonHybrid_GK_32_dense/hybrid_path_properties.csv"
+    if os.path.exists(nonhybrid_dense_csv):
+        print("Plotting Non-Hybrid CrI3 Properties...")
+        plot_all_cri3_properties(
+            dense_csv=nonhybrid_dense_csv,
+            output_dir="Outputs/NonHybrid_GK_32_dense/properties",
         )
