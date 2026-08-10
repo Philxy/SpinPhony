@@ -175,6 +175,81 @@ class CrystalDataSoA:
         self.slc_J = np.array(temp_J, dtype=np.float64) / BOHR_TO_ANGSTROM
         self.slc_types = np.array(temp_types, dtype=np.int32)
 
+    def check_slc_asr(self, mu=0, n_type=1, m_type=1, l_type=1,
+                      x_cart=(0.3, 0.0, 0.0), n_pts=6):
+        """
+        Tests the soft-phonon limit of the magnon-phonon vertex.
+
+        Translational invariance requires that a rigid displacement of the whole
+        crystal leave the exchange energy unchanged, i.e. sum_k J^{ab,mu}_{ij,k} = 0
+        for every spin pair (i,j). In Fourier space that means
+
+            J~^{ab,mu}_{nml}(x, q)  ->  0   linearly in q,
+
+        which is what makes |V^{+-}|^2 ~ |J~|^2 / omega vanish as q->0 rather than
+        diverge. If it holds, results are insensitive to the `omega < ...` guard
+        in calc_vertex_V; if it fails, the near-Gamma region dominates the whole
+        scattering sum and the guard silently sets the answer.
+
+        This is a plain NumPy replica of calc_fourier_transform_vec operating on
+        the same slc_* arrays the CUDA kernel reads, so it cannot disagree with
+        what the vertex actually computes.
+        """
+        sel = ((self.slc_axis == mu)
+               & (self.slc_types[:, 0] == n_type)
+               & (self.slc_types[:, 1] == m_type)
+               & (self.slc_types[:, 2] == l_type))
+
+        J, rij, rik = self.slc_J[sel], self.slc_rij[sel], self.slc_rik[sel]
+        if J.shape[0] == 0:
+            print(f"[ASR] no SLC entries for (mu={mu}, n={n_type}, m={m_type}, l={l_type})")
+            return None
+
+        scale = np.abs(J).max()
+        print(f"\n[ASR] mu={mu} types=({n_type},{m_type},{l_type}): "
+              f"{J.shape[0]} entries, max|J| = {scale:.4e}")
+
+        # --- 1. Raw sum rule, grouped by spin-pair vector r_ij --------------
+        # J~(x, 0) vanishes for EVERY x only if the sum over the displaced atom
+        # vanishes separately within each r_ij group.
+        worst, worst_r = 0.0, None
+        keys = np.round(rij, 6)
+        for r in np.unique(keys, axis=0):
+            grp = np.all(keys == r, axis=1)
+            v = np.abs(J[grp].sum(axis=0)).max()
+            if v > worst:
+                worst, worst_r = v, r
+        print(f"[ASR] max |sum_k J| over r_ij groups = {worst:.4e}"
+              f"  ({worst / scale * 100:.2f}% of max|J|)  at r_ij = {worst_r}")
+
+        # --- 2. Direct q -> 0 scaling of J~ ---------------------------------
+        b1 = np.dot(np.array([1.0, 0.0, 0.0]), self.reciprocal_lattice) * 2.0 * np.pi
+        x = np.asarray(x_cart, dtype=np.float64)
+        phase_x = rij @ x
+
+        qs, mags = [], []
+        for i in range(n_pts):
+            q = b1 * (0.25 * 0.5 ** i)
+            Jt = (J * np.exp(1j * (phase_x + rik @ q))[:, None, None]).sum(axis=0)
+            qs.append(np.linalg.norm(q))
+            mags.append(np.abs(Jt).max())
+            print(f"      |q| = {qs[-1]:.5f} 1/A   max|J~| = {mags[-1]:.4e}")
+
+        qs, mags = np.array(qs), np.array(mags)
+        good = mags > 0
+        slope = (np.polyfit(np.log(qs[good]), np.log(mags[good]), 1)[0]
+                 if good.sum() > 1 else float('nan'))
+        print(f"[ASR] log-log slope d ln|J~| / d ln|q| = {slope:.3f}")
+        if slope > 0.8:
+            print("      -> OK: J~ vanishes ~linearly in q. |V|^2 ~ q, soft phonons")
+            print("         are harmless and the omega cutoff should not matter.")
+        else:
+            print("      -> BROKEN: J~ tends to a constant as q->0, so |V|^2 ~ 1/omega")
+            print("         and the near-Gamma region dominates the scattering sum.")
+            print("         The omega cutoff is masking this, not fixing it.")
+
+        return slope
+
     
 
     def _parse_phonons(self, phonon_list):
@@ -3469,6 +3544,7 @@ if __name__ == "__main__":
     )
     
     crystal_data.print_summary()
+    crystal_data.check_slc_asr()
 
     gpu_data = crystal_data.push_to_gpu()
 
