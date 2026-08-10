@@ -3950,8 +3950,9 @@ if __name__ == "__main__":
     # Decomposes 1/tau for selected modes by process type, partner bands and
     # |q| shell. The channel buffers are still live here, and gamma_hyb_path_cpu
     # gives the GPU's own answer to cross-check the host reconstruction against.
-    from diagnose_channels import breakdown
-    for _pi, _b in [(5, 3), (N_path // 2, 3)]:
+    from diagnose_channels import breakdown, pick_modes
+    _b = num_hyb_branches - 1          # magnon is the last hybrid branch
+    for _pi in pick_modes(crystal_data, _b, n=2):
         if _pi < N_path and _b < num_hyb_branches:
             _tot = breakdown(
                 crystal_data,

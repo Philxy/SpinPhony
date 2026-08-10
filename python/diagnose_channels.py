@@ -23,6 +23,25 @@ import numpy as np
 HBAR = 0.6582119569  # meV * ps
 
 
+def pick_modes(crystal_data, band, n=2, e_min=1.0):
+    """
+    Returns path indices for the lowest- and highest-energy modes of `band`.
+
+    In --full_bz mode path_idx is only a row index into the mesh, which is NOT
+    ordered by energy, so guessing an index gives an arbitrary point. Modes
+    below e_min are skipped (near-Gamma numerical noise).
+    """
+    w = crystal_data.path_w_hyb[:, band]
+    ok = np.where(w > e_min)[0]
+    if ok.size == 0:
+        return []
+    order = ok[np.argsort(w[ok])]
+    picks = list(order[:n]) + list(order[-n:])
+    for p in picks:
+        print(f"[pick_modes] band {band}: path_idx {int(p)} -> {w[p]:.3f} meV")
+    return [int(p) for p in picks]
+
+
 def breakdown(crystal_data, d_chan_indices, d_chan_weights, num_channels,
               n_hyb, N_grid_points, path_idx, band, n_shells=6, top=12):
     """
@@ -67,13 +86,41 @@ def breakdown(crystal_data, d_chan_indices, d_chan_weights, num_channels,
             print(f"   {name}: {rate[m].sum():+.4e} 1/ps  "
                   f"({rate[m].sum() / total * 100:6.2f}%)  {m.sum():,} channels")
 
-    # --- partner band pairs ---------------------------------------------
-    print("   by partner bands (b_k, b_other), largest |rate| first:")
-    pairs = {}
-    for bk, bo, r in zip(b_k, b_o, rate):
-        pairs[(int(bk), int(bo))] = pairs.get((int(bk), int(bo)), 0.0) + r
-    for (bk, bo), r in sorted(pairs.items(), key=lambda kv: -abs(kv[1]))[:top]:
-        print(f"      ({bk:2d},{bo:2d})  {r:+.4e}  ({r / total * 100:6.2f}%)")
+    # --- partner band pairs, SPLIT BY PROCESS ---------------------------
+    # Splitting and coalescence have different symmetry, so they must not be
+    # pooled. For SPLITTING the two children are interchangeable: the scan
+    # enumerates each unordered final pair twice, once as (b1,b2) and once as
+    # (b2,b1), with identical |Gamma~|^2 and identical (1 + n_k + n_p). So the
+    # splitting table MUST be symmetric - any asymmetry is a bug.
+    # For COALESCENCE (b_k, b_s) are partner and parent, i.e. genuinely
+    # different roles, so no symmetry is expected there.
+    for t, name in ((0, "splitting"), (1, "coalescence")):
+        m = c_type == t
+        if not m.any():
+            continue
+        pairs = {}
+        for bk, bo, r in zip(b_k[m], b_o[m], rate[m]):
+            pairs[(int(bk), int(bo))] = pairs.get((int(bk), int(bo)), 0.0) + r
+        print(f"   {name} by partner bands (b_k, b_other):")
+        for (bk, bo), r in sorted(pairs.items(), key=lambda kv: -abs(kv[1]))[:top]:
+            print(f"      ({bk:2d},{bo:2d})  {r:+.4e}  ({r / total * 100:6.2f}%)")
+
+        if t == 0:
+            worst, wpair = 0.0, None
+            for (bk, bo), r in pairs.items():
+                if bk == bo:
+                    continue
+                mirror = pairs.get((bo, bk), 0.0)
+                denom = max(abs(r), abs(mirror))
+                if denom > 0:
+                    asym = abs(r - mirror) / denom
+                    if asym > worst:
+                        worst, wpair = asym, (bk, bo)
+            print(f"      -> splitting symmetry: worst |A-B|/max = {worst:.3e}"
+                  + (f" at {wpair}" if wpair else ""))
+            if worst > 1e-6:
+                print("         BUG: splitting must be symmetric under swapping "
+                      "the two children.")
 
     # --- |q| shells of the grid partner ---------------------------------
     # Folded to [-0.5, 0.5) so |q| is the physical distance from Gamma.
