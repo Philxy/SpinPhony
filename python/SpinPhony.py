@@ -85,6 +85,7 @@ class CrystalDataSoA:
         # 4. Parse SLC Tensors
         if slc_files and len(slc_files) == 3:
             self._parse_slc_tensors(slc_files[0], slc_files[1], slc_files[2], lattice_constant)
+            self.enforce_slc_asr()
 
         self.w_hyb, self.Qmatrix, self.H_BdG_pre_diagonalized, self.H_BdG_diagonalized = self._calculate_coupled_hamiltonian(
             q_cart_array=self.q_grid_cart,
@@ -175,6 +176,60 @@ class CrystalDataSoA:
         self.slc_J = np.array(temp_J, dtype=np.float64) / BOHR_TO_ANGSTROM
         self.slc_types = np.array(temp_types, dtype=np.int32)
 
+    def enforce_slc_asr(self, verbose=True):
+        """
+        Imposes the acoustic sum rule sum_k J^{ab,mu}_{ij,k} = 0 on the parsed
+        spin-lattice tensor, the same remedy used for truncated force constants.
+
+        A rigid translation of the crystal cannot change the exchange between
+        i and j, so the derivative summed over all displaced atoms must vanish.
+        A real-space cutoff breaks this, leaving a residual that makes
+        J~(x, q->0) tend to a constant instead of to zero - which turns
+        |V^{+-}|^2 ~ |J~|^2 / omega into a 1/omega divergence and lets the
+        near-Gamma region dominate the whole scattering sum.
+
+        The residual of each (mu, n, m, r_ij) group is subtracted from that
+        group's SELF-displacement entry (r_ik = 0, i.e. displacing atom i),
+        which is the term the truncation determines least well.
+
+        Must be called before push_to_gpu(), and before the coupled Hamiltonian
+        is built if the SLC hybridization blocks are enabled.
+        """
+        rij_r = np.round(self.slc_rij, 6)
+        rik_r = np.round(self.slc_rik, 6)
+
+        groups = {}
+        for idx in range(self.slc_axis.shape[0]):
+            key = (int(self.slc_axis[idx]), int(self.slc_types[idx, 0]),
+                   int(self.slc_types[idx, 1]), tuple(rij_r[idx]))
+            groups.setdefault(key, []).append(idx)
+
+        scale = np.abs(self.slc_J).max()
+        worst_before = 0.0
+        n_no_self = 0
+
+        for idxs in groups.values():
+            idxs = np.asarray(idxs)
+            residual = self.slc_J[idxs].sum(axis=0)
+            worst_before = max(worst_before, np.abs(residual).max())
+
+            norms = np.linalg.norm(rik_r[idxs], axis=1)
+            j = int(np.argmin(norms))
+            if norms[j] > 1e-6:
+                n_no_self += 1  # no exact r_ik = 0 term; use the closest one
+            self.slc_J[idxs[j]] -= residual
+
+        worst_after = max(np.abs(self.slc_J[np.asarray(v)].sum(axis=0)).max()
+                          for v in groups.values())
+
+        if verbose:
+            print(f"\n[ASR] enforced over {len(groups)} (mu, n, m, r_ij) groups")
+            print(f"[ASR] max |sum_k J|: {worst_before:.4e} -> {worst_after:.4e} "
+                  f"({worst_before / scale * 100:.2f}% -> {worst_after / scale * 100:.2e}% of max|J|)")
+            if n_no_self:
+                print(f"      note: {n_no_self} group(s) had no r_ik = 0 entry; the "
+                      "correction went to the nearest displaced atom instead.")
+
     def check_slc_asr(self, mu=0, n_type=1, m_type=1, l_type=1,
                       x_cart=(0.3, 0.0, 0.0), n_pts=6):
         """
@@ -235,20 +290,26 @@ class CrystalDataSoA:
             mags.append(np.abs(Jt).max())
             print(f"      |q| = {qs[-1]:.5f} 1/A   max|J~| = {mags[-1]:.4e}")
 
-        qs, mags = np.array(qs), np.array(mags)
-        good = mags > 0
-        slope = (np.polyfit(np.log(qs[good]), np.log(mags[good]), 1)[0]
-                 if good.sum() > 1 else float('nan'))
-        print(f"[ASR] log-log slope d ln|J~| / d ln|q| = {slope:.3f}")
-        if slope > 0.8:
-            print("      -> OK: J~ vanishes ~linearly in q. |V|^2 ~ q, soft phonons")
-            print("         are harmless and the omega cutoff should not matter.")
-        else:
-            print("      -> BROKEN: J~ tends to a constant as q->0, so |V|^2 ~ 1/omega")
-            print("         and the near-Gamma region dominates the scattering sum.")
-            print("         The omega cutoff is masking this, not fixing it.")
+        # The verdict rests on the REAL-SPACE sum, which is exact and
+        # unambiguous. A log-log slope over the q-scan is unreliable: the
+        # large-q points dominate any fit and say nothing about the q->0
+        # limit, and J~ can pass accidentally close to zero at isolated q.
+        mags = np.array(mags)
+        monotonic = bool(np.all(np.diff(mags) < 0))
+        rel = worst / scale
 
-        return slope
+        print(f"[ASR] |J~| decreasing monotonically toward q=0: {monotonic}")
+        if rel < 0.01 and monotonic:
+            print("      -> OK: sum_k J cancels and J~ vanishes with q. |V|^2 ~ q,")
+            print("         soft phonons are harmless and the omega cutoff is inert.")
+        else:
+            print(f"      -> BROKEN: sum_k J leaves {rel * 100:.1f}% of the tensor scale,")
+            print("         so J~ tends to a constant as q->0 and |V|^2 ~ 1/omega.")
+            print("         The near-Gamma region then dominates the scattering sum and")
+            print("         the omega cutoff is masking that, not fixing it.")
+            print("         Call enforce_slc_asr() before push_to_gpu() and re-check.")
+
+        return rel
 
     
 
