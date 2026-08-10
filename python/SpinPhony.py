@@ -176,7 +176,7 @@ class CrystalDataSoA:
         self.slc_J = np.array(temp_J, dtype=np.float64) / BOHR_TO_ANGSTROM
         self.slc_types = np.array(temp_types, dtype=np.int32)
 
-    def enforce_slc_asr(self, verbose=True):
+    def enforce_slc_asr(self, mode="proportional", verbose=True):
         """
         Imposes the acoustic sum rule sum_k J^{ab,mu}_{ij,k} = 0 on the parsed
         spin-lattice tensor, the same remedy used for truncated force constants.
@@ -188,9 +188,23 @@ class CrystalDataSoA:
         |V^{+-}|^2 ~ |J~|^2 / omega into a 1/omega divergence and lets the
         near-Gamma region dominate the whole scattering sum.
 
-        The residual of each (mu, n, m, r_ij) group is subtracted from that
-        group's SELF-displacement entry (r_ik = 0, i.e. displacing atom i),
-        which is the term the truncation determines least well.
+        mode = "self":
+            Subtract the whole residual from the group's r_ik = 0 entry. This
+            is the usual force-constant remedy, but note that entry's Fourier
+            phase is 1 for EVERY q, so the correction shifts J~(x, q) by a
+            q-independent constant at all momenta - a blunt change when the
+            residual is a large fraction of the tensor.
+
+        mode = "proportional" (default):
+            Spread the residual over the group weighted by |J| of each entry.
+            The correction then carries the group's own phase structure and
+            perturbs each term by the same relative amount, rather than
+            concentrating a large error on one physically meaningful term.
+
+        Neither recovers the missing data: a large residual means the
+        real-space sum over displaced atoms was truncated too early, and the
+        only real fix is extending that cutoff upstream. Enforcement removes
+        the unphysical 1/omega divergence but redistributes the error.
 
         Must be called before push_to_gpu(), and before the coupled Hamiltonian
         is built if the SLC hybridization blocks are enabled.
@@ -213,11 +227,18 @@ class CrystalDataSoA:
             residual = self.slc_J[idxs].sum(axis=0)
             worst_before = max(worst_before, np.abs(residual).max())
 
-            norms = np.linalg.norm(rik_r[idxs], axis=1)
-            j = int(np.argmin(norms))
-            if norms[j] > 1e-6:
-                n_no_self += 1  # no exact r_ik = 0 term; use the closest one
-            self.slc_J[idxs[j]] -= residual
+            if mode == "proportional":
+                w = np.abs(self.slc_J[idxs]).reshape(len(idxs), -1).max(axis=1)
+                total = w.sum()
+                if total <= 0:
+                    continue
+                self.slc_J[idxs] -= residual[None, :, :] * (w / total)[:, None, None]
+            else:
+                norms = np.linalg.norm(rik_r[idxs], axis=1)
+                j = int(np.argmin(norms))
+                if norms[j] > 1e-6:
+                    n_no_self += 1  # no exact r_ik = 0 term; use the closest one
+                self.slc_J[idxs[j]] -= residual
 
         worst_after = max(np.abs(self.slc_J[np.asarray(v)].sum(axis=0)).max()
                           for v in groups.values())
