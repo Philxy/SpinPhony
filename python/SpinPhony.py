@@ -655,9 +655,73 @@ class CrystalDataSoA:
                 J_k_all[:, mi, mj] += exp_phases_k[:, b_idx]
                 J_m_k_all[:, mi, mj] += exp_phases_m_k[:, b_idx]
 
+
         # ==========================================
-        # 1.5 Precalculate SLC Tensors (FM Case)
+        # Bare magnon and phonon HAMILTONIAN ASSEMBLY
         # ==========================================
+        for q_idx in range(N_pts):
+            H_BdG = np.zeros((dim, dim), dtype=np.complex128)
+            
+            """
+            # --- Phonon Blocks from the Dynamical Matrix ---
+            D_complex = dyn_mat[q_idx]
+            D_meV2 = D_complex * (CONV_FACTOR ** 2)
+
+            evals_D, evecs_D = np.linalg.eigh(D_meV2)
+            if np.any(evals_D < 1e-5):
+                evals_clamped = np.maximum(evals_D, 1e-5)
+                D_meV2 = evecs_D @ np.diag(evals_clamped) @ evecs_D.conj().T
+
+            A_phon = 0.5 * (D_meV2 / ref_omega + ref_omega * I_phon)
+            B_phon = 0.5 * (D_meV2 / ref_omega - ref_omega * I_phon)
+
+            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
+            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon
+            """
+
+            
+            # --- Phonon Block from Eigenvalues ---
+            A_phon = np.diag(w_phon_source[q_idx])
+            
+            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
+
+            # --- Magnon Blocks ---
+            J_k = J_k_all[q_idx] 
+            J_m_k = J_m_k_all[q_idx] 
+
+            Omega_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
+            Omega_m_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
+
+            for i in range(num_mag):
+                for j in range(num_mag):
+                    if i == j:
+                        Omega_k[i, i] = S_val * (J_k[i, i] - sum_J0_row[i]) 
+                        Omega_m_k[i, i] = S_val * (J_m_k[i, i] - sum_J0_row[i])
+                    else:
+                        Omega_k[i, j] = S_val * J_k[i, j]
+                        Omega_m_k[i, j] = S_val * J_m_k[i, j]
+
+            for m in range(num_mag):
+                for n in range(num_mag):
+                    val_n = -Omega_k[m, n]
+                    if m == n:
+                        val_n += anisotropy_term
+                    H_BdG[off_mag_p + m, off_mag_p + n] = val_n #*  1.18 # artificial factor to match lit for bccFe
+
+                    val_h = -Omega_m_k[n, m]
+                    if m == n:
+                        val_h += anisotropy_term
+                    H_BdG[off_mag_h + m, off_mag_h + n] = val_h #*  1.18 # artificial factor to match lit for bccFe
+        
+
+
+        """"
+        # =====================================================================
+        # 1.5 Precalculate SLC Tensors (FM Case) using the reference frequency
+        # =====================================================================
         V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
         V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
 
@@ -692,72 +756,63 @@ class CrystalDataSoA:
                 
                 V_plus_all[:, :, p] *= prefactor
                 V_minus_all[:, :, p] *= prefactor
-
-
-
-
-        # ==========================================
-        # 2. HAMILTONIAN ASSEMBLY
-        # ==========================================
-        for q_idx in range(N_pts):
-            H_BdG = np.zeros((dim, dim), dtype=np.complex128)
-            
-            """
-            # --- Phonon Blocks from the Dynamical Matrix ---
-            D_complex = dyn_mat[q_idx]
-            D_meV2 = D_complex * (CONV_FACTOR ** 2)
-
-            evals_D, evecs_D = np.linalg.eigh(D_meV2)
-            if np.any(evals_D < 1e-5):
-                evals_clamped = np.maximum(evals_D, 1e-5)
-                D_meV2 = evecs_D @ np.diag(evals_clamped) @ evecs_D.conj().T
-
-            A_phon = 0.5 * (D_meV2 / ref_omega + ref_omega * I_phon)
-            B_phon = 0.5 * (D_meV2 / ref_omega - ref_omega * I_phon)
-
-            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
-            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
-            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
-            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon
             """
 
-            
-            # --- Phonon Block from Eigenvalues ---
-            #"""
-            A_phon = np.diag(w_phon_source[q_idx])
-            
-            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
-            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
-            #"""
 
-            # --- Magnon Blocks ---
-            J_k = J_k_all[q_idx] 
-            J_m_k = J_m_k_all[q_idx] 
+            # =====================================================================
+            # 1.5 Precalculate SLC Tensors (FM Case) using the real frequency
+            # =====================================================================
+            V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
+            V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
 
-            Omega_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
-            Omega_m_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
+            if hasattr(self, 'slc_axis') and is_FM:
+                for i in range(self.slc_axis.shape[0]):
+                    type_i = self.slc_types[i, 0] - 1
+                    type_j = self.slc_types[i, 1] - 1
+                    disp_atom_idx = self.slc_types[i, 2] - 1
 
-            for i in range(num_mag):
-                for j in range(num_mag):
-                    if i == j:
-                        Omega_k[i, i] = S_val * (J_k[i, i] - sum_J0_row[i]) 
-                        Omega_m_k[i, i] = S_val * (J_m_k[i, i] - sum_J0_row[i])
-                    else:
-                        Omega_k[i, j] = S_val * J_k[i, j]
-                        Omega_m_k[i, j] = S_val * J_m_k[i, j]
+                    n_mag_i = atom_to_mag[type_i]
+                    n_mag_j = atom_to_mag[type_j]
 
-            for m in range(num_mag):
-                for n in range(num_mag):
-                    val_n = -Omega_k[m, n]
-                    if m == n:
-                        val_n += anisotropy_term
-                    H_BdG[off_mag_p + m, off_mag_p + n] = val_n #*  1.18 # artificial factor to match lit for bccFe
+                    if n_mag_i == -1 or n_mag_j == -1:
+                        continue
 
-                    val_h = -Omega_m_k[n, m]
-                    if m == n:
-                        val_h += anisotropy_term
-                    H_BdG[off_mag_h + m, off_mag_h + n] = val_h #*  1.18 # artificial factor to match lit for bccFe
+                    mu = self.slc_axis[i]
+                    p_idx = 3 * disp_atom_idx + mu
 
+                    Jxz = self.slc_J[i, 0, 2]  # X=0, Z=2
+                    Jyz = self.slc_J[i, 1, 2]  # Y=1, Z=2
+
+                    phases_slc = np.dot(q_cart_array, self.slc_rik[i])
+                    phase_factor = np.exp(1j * phases_slc)
+
+                    V_plus_all[:, n_mag_i, p_idx] += (Jxz + 1j * Jyz) * phase_factor
+                    V_minus_all[:, n_mag_i, p_idx] += (Jxz - 1j * Jyz) * phase_factor
+
+                # (a) mass weighting, still per Cartesian coordinate p = 3*l + mu
+                for p in range(num_phon):
+                    atom_l = p // 3
+                    mass = self.atom_masses[atom_l] * DALTON_TO_meV_PS2_PER_A2
+                    V_plus_all[:, :, p] /= np.sqrt(mass)
+                    V_minus_all[:, :, p] /= np.sqrt(mass)
+
+                # (b) Cartesian -> branch: contract with the phonon polarisation
+                #     vectors. eig_phon[q, lambda, atom, mu] -> E[q, lambda, p].
+                E = eig_phon_source.reshape(N_pts, num_phon, num_phon)
+                V_plus_all = np.einsum('qnp,qlp->qnl', V_plus_all, E)
+                V_minus_all = np.einsum('qnp,qlp->qnl', V_minus_all, E)
+
+                # (c) frequency factor, now per BRANCH with the REAL frequency
+                #     (this is what replaces the old 1/sqrt(ref_omega)).
+                w_safe = np.maximum(w_phon_source, 1e-6)          # [q, lambda]
+                freq = np.sqrt((hbar * hbar) / (S_val * w_safe))  # [q, lambda]
+                V_plus_all *= freq[:, None, :]
+                V_minus_all *= freq[:, None, :]
+
+
+
+
+        
             # --- SLC Interaction Blocks ---
             if hasattr(self, 'slc_axis') and is_FM:
                 Vp = V_plus_all[q_idx]

@@ -417,6 +417,18 @@ def plot_energy_vs_lifetime(
     cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
     cbar.set_ticklabels(["0\n(phonon)", "0.25", "0.5", "0.75", "1\n(magnon)"])
 
+    # --- Guides for the eye ---------------------------------------------------
+    # The y-axis plots lifetime (tau = 1/Gamma). 
+    # Therefore, Gamma ~ E^1 corresponds to tau ~ E^-1, and Gamma ~ E^2 corresponds to tau ~ E^-2.
+    e_low = np.geomspace(10, 100, 50)
+    tau_low = 25.0 * (e_low ** -1)
+    ax.plot(e_low, tau_low, color='black', linestyle='--', linewidth=1.5, zorder=6, label=r"$\Gamma \propto \epsilon^1 \ (\tau \propto \epsilon^{-1})$")
+
+    e_high = np.geomspace(200, 600, 50)
+    tau_high = 35000.0 * (e_high ** -2)
+    ax.plot(e_high, tau_high, color='black', linestyle=':', linewidth=2.0, zorder=6, label=r"$\Gamma \propto \epsilon^2 \ (\tau \propto \epsilon^{-2})$")
+    # --------------------------------------------------------------------------
+
     # --- Literature reference data -------------------------------------
     # Stored as scattering rates, so inverted to lifetimes to share this axis.
     # Drawn as open markers with dark edges so they stay legible on top of the
@@ -427,19 +439,18 @@ def plot_energy_vs_lifetime(
 
         ax.scatter(e_mag, tau_mag,
                    marker="o", s=28, facecolors="none", edgecolors="darkred",
-                   linewidths=1.1, zorder=5, label="Magnon (literature)")
+                   linewidths=1.1, zorder=5, label="Magnon (literature)", alpha=0.3)
         ax.scatter(e_phon, tau_phon,
                    marker="s", s=22, facecolors="none", edgecolors="navy",
-                   linewidths=1.0, zorder=5, label="Phonon (literature)")
-
-        ax.legend(loc="best", fontsize=9, framealpha=0.9)
+                   linewidths=1.0, zorder=5, label="Phonon (literature)", alpha=0.3)
         print(f"Literature overlay: {len(e_mag)} magnon and {len(e_phon)} phonon points "
               f"(rates inverted to lifetimes).")
+
+    ax.legend(loc="best", fontsize=9, framealpha=0.9)
 
     ax.set_ylim(tau_min, tau_max)
     ax.set_ylabel(r"Lifetime $\tau$ (ps)", fontsize=12, fontweight="bold")
     ax.set_xlabel("Energy (meV)", fontsize=12, fontweight="bold")
-    ax.grid(True, which="both", linestyle="--", alpha=0.3)
     ax.set_yscale("log")
     ax.set_xscale("log")
     fig.tight_layout()
@@ -456,11 +467,11 @@ def plot_energy_vs_lifetime(
 def main():
     p = argparse.ArgumentParser(
         description="Energy vs. lifetime scatter for hybrid modes, coloured by magnon/phonon character.")
-    p.add_argument("--lifetimes", default="Outputs/bccFe_whole_BZ_12/hybrid_path_lifetimes.csv",
+    p.add_argument("--lifetimes", default="Outputs/bccFe_whole_BZ_40/hybrid_path_lifetimes.csv",
                    help="hybrid_path_lifetimes.csv from the run")
-    p.add_argument("--properties", default="Outputs/bccFe_whole_BZ_12/hybrid_path_properties.csv",
+    p.add_argument("--properties", default="Outputs/bccFe_whole_BZ_40/hybrid_path_properties.csv",
                    help="hybrid_path_properties.csv from the SAME run")
-    p.add_argument("--out", default="Outputs/bccFe_whole_BZ_12/energy_vs_lifetime.png",
+    p.add_argument("--out", default="Outputs/bccFe_whole_BZ_40/energy_vs_lifetime.png",
                    help="Output PNG path")
     p.add_argument("--cmap", default="coolwarm", help="Matplotlib colormap for the character axis")
     p.add_argument("--tau_min", type=float, default=None, help="Lower lifetime limit (ps)")
