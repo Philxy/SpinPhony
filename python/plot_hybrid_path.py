@@ -214,7 +214,7 @@ def plot_all_cri3_properties(
         cbar_label=r"Phonon Angular Momentum $L_z$ ($\hbar$)",
         cmap=cmap_contrast,
         is_diverging=True,
-        use_log=False,       # Set to True to enable symmetric logarithmic colormap
+        use_log=True,       # Set to True to enable symmetric logarithmic colormap
         vlim=(-1.0, 1.0),    # Explicit min and max for linear/log scaling
         save_plot=os.path.join(output_dir, "cri3_phonon_angular_momentum.png"),
     )
