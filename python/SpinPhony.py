@@ -95,8 +95,8 @@ class CrystalDataSoA:
             return_full_matrices=True
         )
 
-        self._compute_hybrid_group_velocities()
-        #self.grad_f_hyb = np.zeros((self.N, self.phon_branches + self.n_mag_branches, 3), dtype=np.float64)
+        #self._compute_hybrid_group_velocities()
+        self.grad_f_hyb = np.zeros((self.N, self.phon_branches + self.n_mag_branches, 3), dtype=np.float64)
 
 
     def print_summary(self):
@@ -2961,6 +2961,7 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                 w_p = w_hyb[p_idx, b_p]
                 dE = w_q - w_k - w_p
 
+                """
                 # Adaptive broadening: sigma tracks how much dE actually varies
                 # across one grid cell, so the delta resolution follows the local
                 # band steepness instead of being one constant across the band.
@@ -2973,6 +2974,9 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
 
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
                 sigma = sigma_raw if sigma_raw > min_sigma else min_sigma
+                """
+
+                sigma = min_sigma
                 cutoff = 2.0 * sigma
 
                 if (abs(dE) < cutoff
@@ -3040,6 +3044,8 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                 w_s = w_hyb[s_idx, b_s]
                 dE = w_s - w_q - w_k
 
+                """
+
                 # Same adaptive broadening; here the parent is s and the two
                 # children are the path mode and k, matching dE's sign pattern.
                 variance = 0.0
@@ -3050,6 +3056,10 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
 
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
                 sigma = sigma_raw if sigma_raw > min_sigma else min_sigma
+                """
+                
+                
+                sigma = min_sigma
                 cutoff = 2.0 * sigma
 
                 if (abs(dE) < cutoff

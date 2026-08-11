@@ -214,6 +214,46 @@ def plot_dense_interpolated_line(
 
 if __name__ == "__main__":
 
+
+    # CrI3 
+    
+    # non hybrid
+    df_dense, labels_dense = load_path_csv("Outputs/CrI3_Path/hybrid_path_properties.csv")
+    df_sparse, labels_sparse = load_path_csv("Outputs/CrI3_Path/hybrid_path_lifetimes.csv")
+
+    print("Dense labels: ", labels_dense)
+    print("Sparse labels:", labels_sparse)
+
+    plot_dense_with_scatter(
+        dense_csv="Outputs/CrI3_Path/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/CrI3_Path/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path/hybrid_bands_lifetime_scatter.png",
+    )
+    plot_dense_interpolated_line(
+        dense_csv="Outputs/CrI3_Path/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/CrI3_Path/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path/hybrid_bands_lifetime_interpolated.png",
+    )
+
+    #  hybrid
+    df_dense, labels_dense = load_path_csv("Outputs/CrI3_Path_Hybrid/hybrid_path_properties.csv")
+    df_sparse, labels_sparse = load_path_csv("Outputs/CrI3_Path_Hybrid/hybrid_path_lifetimes.csv")
+
+    print("Dense labels: ", labels_dense)
+    print("Sparse labels:", labels_sparse)
+
+    plot_dense_with_scatter(
+        dense_csv="Outputs/CrI3_Path_Hybrid/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/CrI3_Path_Hybrid/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_Hybrid/hybrid_bands_lifetime_scatter.png",
+    )
+    plot_dense_interpolated_line(
+        dense_csv="Outputs/CrI3_Path_Hybrid/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/CrI3_Path_Hybrid/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_Hybrid/hybrid_bands_lifetime_interpolated.png",
+    )
+
+
     # CrI3 
 
     # non hybrid
