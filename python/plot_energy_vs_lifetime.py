@@ -467,11 +467,11 @@ def plot_energy_vs_lifetime(
 def main():
     p = argparse.ArgumentParser(
         description="Energy vs. lifetime scatter for hybrid modes, coloured by magnon/phonon character.")
-    p.add_argument("--lifetimes", default="Outputs/bccFe_whole_BZ_40/hybrid_path_lifetimes.csv",
+    p.add_argument("--lifetimes", default="Outputs/bccFe_whole_BZ_20/hybrid_path_lifetimes.csv",
                    help="hybrid_path_lifetimes.csv from the run")
-    p.add_argument("--properties", default="Outputs/bccFe_whole_BZ_40/hybrid_path_properties.csv",
+    p.add_argument("--properties", default="Outputs/bccFe_whole_BZ_20/hybrid_path_properties.csv",
                    help="hybrid_path_properties.csv from the SAME run")
-    p.add_argument("--out", default="Outputs/bccFe_whole_BZ_40/energy_vs_lifetime.png",
+    p.add_argument("--out", default="Outputs/bccFe_whole_BZ_20/energy_vs_lifetime.png",
                    help="Output PNG path")
     p.add_argument("--cmap", default="coolwarm", help="Matplotlib colormap for the character axis")
     p.add_argument("--tau_min", type=float, default=None, help="Lower lifetime limit (ps)")

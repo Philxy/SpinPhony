@@ -214,7 +214,7 @@ def plot_all_cri3_properties(
         cbar_label=r"Phonon Angular Momentum $L_z$ ($\hbar$)",
         cmap=cmap_contrast,
         is_diverging=True,
-        use_log=True,       # Set to True to enable symmetric logarithmic colormap
+        use_log=False,       # Set to True to enable symmetric logarithmic colormap
         vlim=(-1.0, 1.0),    # Explicit min and max for linear/log scaling
         save_plot=os.path.join(output_dir, "cri3_phonon_angular_momentum.png"),
     )
@@ -246,6 +246,16 @@ def plot_all_cri3_properties(
 
 if __name__ == "__main__":
 
+
+    # Hybrid CrI3
+    hybrid_dense_csv = "Outputs/Hybrid_GK_dense//hybrid_path_properties.csv"
+    if os.path.exists(hybrid_dense_csv):
+        print("Plotting Hybrid CrI3 Properties...")
+        plot_all_cri3_properties(
+            dense_csv=hybrid_dense_csv,
+            output_dir="Outputs/Hybrid_GK_32_dense/properties",
+        )
+
     # Hybrid bccFe
     hybrid_dense_csv = "Outputs/bccFePath/bccFe_whole_BZ_20/hybrid_path_properties.csv"
 
@@ -257,14 +267,7 @@ if __name__ == "__main__":
         )
 
 
-    # Hybrid CrI3
-    hybrid_dense_csv = "Outputs/Hybrid_GK_dense//hybrid_path_properties.csv"
-    if os.path.exists(hybrid_dense_csv):
-        print("Plotting Hybrid CrI3 Properties...")
-        plot_all_cri3_properties(
-            dense_csv=hybrid_dense_csv,
-            output_dir="Outputs/Hybrid_GK_32_dense/properties",
-        )
+
 
     # Non-Hybrid CrI3
     nonhybrid_dense_csv = "Outputs/NonHybrid_GK_32_dense/hybrid_path_properties.csv"
