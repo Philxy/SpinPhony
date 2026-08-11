@@ -246,6 +246,17 @@ def plot_all_cri3_properties(
 
 if __name__ == "__main__":
 
+    # Hybrid bccFe
+    hybrid_dense_csv = "Outputs/bccFePath/bccFe_whole_BZ_20/hybrid_path_properties.csv"
+
+    if os.path.exists(hybrid_dense_csv):
+        print("Plotting Hybrid bccFe Properties...")
+        plot_all_cri3_properties(
+            dense_csv=hybrid_dense_csv,
+            output_dir="Outputs/bccFePath/bccFe_whole_BZ_20/properties",
+        )
+
+
     # Hybrid CrI3
     hybrid_dense_csv = "Outputs/Hybrid_GK_dense//hybrid_path_properties.csv"
     if os.path.exists(hybrid_dense_csv):
