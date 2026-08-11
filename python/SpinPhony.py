@@ -4037,15 +4037,15 @@ if __name__ == "__main__":
 
     path_dist, label_comment = crystal_data.get_path_distance_info()
 
-    # Phonon angular momentum of the hybrid modes, same construction and
-    # conventions as save_hybrid_path_properties: the phonon block of the
-    # Nambu L^z operator, rotated into the hybrid basis via T^dagger L T.
-    _L_z_tot = crystal_data.get_nambu_angular_momentum(axis=2)
+    # Phonon angular momentum of the hybrid modes. Identical construction to
+    # save_hybrid_path_properties: L^z is intrinsically CARTESIAN (Levi-Civita
+    # on x,y,z), so with the Hamiltonian in the bare-phonon-branch basis it must
+    # be rotated per q-point before contracting with the hybrid eigenvectors.
+    _L_cart = crystal_data.get_nambu_angular_momentum(axis=2)[:crystal_data.phon_branches,
+                                                             :crystal_data.phon_branches]
     _n_ph = crystal_data.phon_branches
     _blk = num_hyb_branches
-    _L_z_ph = np.zeros_like(_L_z_tot)
-    _L_z_ph[:_n_ph, :_n_ph] = _L_z_tot[:_n_ph, :_n_ph]
-    _L_z_ph[_blk:_blk + _n_ph, _blk:_blk + _n_ph] = _L_z_tot[_blk:_blk + _n_ph, _blk:_blk + _n_ph]
+    _dim_tot = 2 * _blk
 
     with open(f"{out_dir}/hybrid_path_lifetimes.csv", "w") as f:
         f.write(label_comment + "\n")
@@ -4053,7 +4053,20 @@ if __name__ == "__main__":
         for i in range(N_path):
             qx, qy, qz = crystal_data.path_q_frac[i]
             T = crystal_data.path_eig_hyb[i]
-            AM_phon_q = T.conj().T @ _L_z_ph @ T
+            T_dag = T.conj().T
+
+            # E_q[p, lambda] with p = 3*atom + mu
+            E_q = crystal_data.path_eig_phon[i].reshape(_n_ph, _n_ph).T
+            L_branch = E_q.conj().T @ _L_cart @ E_q
+
+            L_z_phon = np.zeros((_dim_tot, _dim_tot), dtype=np.complex128)
+            L_z_phon[:_n_ph, :_n_ph] = L_branch
+            # Hole block: O_hole = -O_particle^*. The Cartesian shortcut
+            # (hole == particle) does not survive the rotation.
+            L_z_phon[_blk:_blk + _n_ph, _blk:_blk + _n_ph] = -L_branch.conj()
+
+            AM_phon_q = T_dag @ L_z_phon @ T
+
             for b in range(num_hyb_branches):
                 energy = crystal_data.path_w_hyb[i, b]
                 gamma = gamma_hyb_path_cpu[i, b]
