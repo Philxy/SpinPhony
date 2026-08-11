@@ -717,6 +717,7 @@ class CrystalDataSoA:
                     H_BdG[off_mag_h + m, off_mag_h + n] = val_h #*  1.18 # artificial factor to match lit for bccFe
         
 
+            """
 
             # =====================================================================
             # 1.5 Precalculate SLC Tensors (FM Case) using the reference frequency
@@ -808,7 +809,6 @@ class CrystalDataSoA:
                 V_plus_all *= freq[:, None, :]
                 V_minus_all *= freq[:, None, :]
             
-            """
                 
 
         
@@ -1217,6 +1217,9 @@ class CrystalDataSoA:
         L_z_spin[num_phon:dim_block, num_phon:dim_block] = L_z_total[num_phon:dim_block, num_phon:dim_block]
         L_z_spin[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total] = L_z_total[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total]
         
+
+        L_cart = L_z_total[:num_phon, :num_phon]
+
         # 3. Create Commutation Metrics (J) to extract character weights
         J_phon = np.zeros((dim_total, dim_total), dtype=np.float64)
         J_spin = np.zeros((dim_total, dim_total), dtype=np.float64)
@@ -1238,6 +1241,22 @@ class CrystalDataSoA:
                 qx, qy, qz = self.path_q_frac[q_idx]
                 T = self.path_eig_hyb[q_idx]
                 T_dag = T.conj().T
+
+                # Rotate the Cartesian PAM onto the bare phonon eigenmodes, so
+                # its index matches the branch index carried by path_eig_hyb.
+                # E[p, lambda] with p = 3*atom + mu.
+                E_q = self.path_eig_phon[q_idx].reshape(num_phon, num_phon).T
+                L_branch = E_q.conj().T @ L_cart @ E_q
+
+                L_z_phon = np.zeros((dim_total, dim_total), dtype=np.complex128)
+                L_z_phon[:num_phon, :num_phon] = L_branch
+                # Hole block: O_hole = -O_particle^*. The Cartesian shortcut
+                # (hole == particle, valid because -i*hbar*eps is purely
+                # imaginary) does NOT survive the rotation - L_branch is
+                # Hermitian but generally complex.
+                L_z_phon[dim_block:dim_block+num_phon,
+                         dim_block:dim_block+num_phon] = -L_branch.conj()
+
                 
                 # Transform operators into diagonal hybrid basis
                 AM_phon_q = T_dag @ L_z_phon @ T
