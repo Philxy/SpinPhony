@@ -2880,7 +2880,7 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                               w_hyb, Qmatrix,
                               slc_axis, slc_rij, slc_rik, slc_J, slc_types,
                               eig_phon, w_phon, path_eig_phon, path_w_phon,
-                              grad_f_hyb,
+                              #grad_f_hyb,
                               atom_masses, mag_moments,
                               base_smearing, min_sigma, chan_indices, chan_weights, channel_count,
                               num_phon, num_mag):
@@ -4030,7 +4030,7 @@ if __name__ == "__main__":
         gpu_data["w_hyb"], gpu_data["Qmatrix"],
         gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
         gpu_data["eig_phon"], gpu_data["w_phon"], d_path_eig_phon, d_path_w_phon,
-        gpu_data["grad_f_hyb"],
+        #gpu_data["grad_f_hyb"],
         gpu_data["atom_masses"], gpu_data["mag_moments"],
         smearing, min_sigma, d_path_hyb_chan_indices, d_path_hyb_chan_weights, d_path_hyb_channel_count,
         crystal_data.phon_branches, crystal_data.n_mag_branches
