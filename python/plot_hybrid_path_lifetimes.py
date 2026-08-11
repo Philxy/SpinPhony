@@ -71,8 +71,8 @@ def plot_dense_with_scatter(
     lifetime_csv="Outputs/Hybrid_band32/hybrid_path_lifetimes.csv",
     tau_col="tau_ps",
     cmap="rainbow_r",
-    vmin=1.0,
-    vmax=1e5,
+    vmin=None,
+    vmax=None,
     margin=0.02,  # Relative margin added to left and right (0.02 = 2%)
     save_plot="Outputs/Hybrid/hybrid_bands_lifetime_scatter.png",
 ):
@@ -103,7 +103,7 @@ def plot_dense_with_scatter(
         s=10, zorder=2, linewidth=0.5,
     )
 
-    cbar = fig.colorbar(sc, ax=ax)
+    cbar = fig.colorbar(sc, ax=ax, location="top")
     cbar.set_label(r"Lifetime $\tau$ (ps)", fontsize=12, fontweight="bold")
 
     # Expand x-limits dynamically based on total path distance
@@ -193,7 +193,7 @@ def plot_dense_interpolated_line(
         ax.add_collection(lc)
 
     if lc is not None:
-        cbar = fig.colorbar(lc, ax=ax)
+        cbar = fig.colorbar(lc, ax=ax, location="top")
         cbar.set_label(r"Interpolated lifetime $\tau$ (ps)", fontsize=12, fontweight="bold")
 
     ax.set_xlim(df_disp["path_dist"].min(), df_disp["path_dist"].max())
@@ -217,22 +217,22 @@ if __name__ == "__main__":
 
     # CrI3 
     
-    # non hybrid
-    df_dense, labels_dense = load_path_csv("Outputs/CrI3_Path/hybrid_path_properties.csv")
-    df_sparse, labels_sparse = load_path_csv("Outputs/CrI3_Path/hybrid_path_lifetimes.csv")
+    # hybrid
+    df_dense, labels_dense = load_path_csv("Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv")
+    df_sparse, labels_sparse = load_path_csv("Outputs/CrI3_Path_Hyrbid_sparse/hybrid_path_lifetimes.csv")
 
     print("Dense labels: ", labels_dense)
     print("Sparse labels:", labels_sparse)
 
     plot_dense_with_scatter(
-        dense_csv="Outputs/CrI3_Path/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/CrI3_Path/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/CrI3_Path/hybrid_bands_lifetime_scatter.png",
+        dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/CrI3_Path_Hyrbid_sparse/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_Hyrbid_sparse/hybrid_bands_lifetime_scatter.png",
     )
     plot_dense_interpolated_line(
-        dense_csv="Outputs/CrI3_Path/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/CrI3_Path/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/CrI3_Path/hybrid_bands_lifetime_interpolated.png",
+        dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/CrI3_Path_Hyrbid_sparse/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_Hyrbid_sparse/hybrid_bands_lifetime_interpolated.png",
     )
 
     #  hybrid
