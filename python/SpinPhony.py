@@ -88,6 +88,7 @@ class CrystalDataSoA:
             #self.enforce_slc_asr()
 
         """
+        # Full matrices are necessary for hybrid group velocity calculations
         self.w_hyb, self.Qmatrix, self.H_BdG_pre_diagonalized, self.H_BdG_diagonalized = self._calculate_coupled_hamiltonian(
             q_cart_array=self.q_grid_cart,
             dyn_mat=self.dyn_mat_phon,
@@ -727,7 +728,7 @@ class CrystalDataSoA:
                     H_BdG[off_mag_h + m, off_mag_h + n] = val_h #*  1.18 # artificial factor to match lit for bccFe
         
 
-            #"""
+            """
 
             # =====================================================================
             # 1.5 Precalculate SLC Tensors (FM Case) using the reference frequency
@@ -767,7 +768,7 @@ class CrystalDataSoA:
                     V_plus_all[:, :, p] *= prefactor
                     V_minus_all[:, :, p] *= prefactor
 
-            #"""
+            """
 
             # =====================================================================
             # 1.5 Precalculate SLC Tensors (FM Case) using the real frequency
