@@ -765,6 +765,8 @@ class CrystalDataSoA:
             V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
             V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
 
+
+            """
             if hasattr(self, 'slc_axis') and is_FM:
                 for i in range(self.slc_axis.shape[0]):
                     type_i = self.slc_types[i, 0] - 1
@@ -808,7 +810,37 @@ class CrystalDataSoA:
                 freq = np.sqrt((hbar * hbar) / (S_val * w_safe))  # [q, lambda]
                 V_plus_all *= freq[:, None, :]
                 V_minus_all *= freq[:, None, :]
-            
+            """
+            if hasattr(self, 'slc_axis') and is_FM:
+                # Gather valid entries once (no per-entry q sweep).
+                rows, cols, cp, cm = [], [], [], []
+                for i in range(self.slc_axis.shape[0]):
+                    n_mag_i = atom_to_mag[self.slc_types[i, 0] - 1]
+                    if n_mag_i == -1 or atom_to_mag[self.slc_types[i, 1] - 1] == -1:
+                        continue
+                    p_idx = 3 * (self.slc_types[i, 2] - 1) + self.slc_axis[i]
+                    Jxz, Jyz = self.slc_J[i, 0, 2], self.slc_J[i, 1, 2]
+                    rows.append(i)
+                    cols.append(n_mag_i * num_phon + p_idx)
+                    cp.append(Jxz + 1j * Jyz)
+                    cm.append(Jxz - 1j * Jyz)
+
+                if rows:
+                    rows = np.asarray(rows)
+                    cols = np.asarray(cols)
+                    # One exp per UNIQUE r_ik instead of one per entry.
+                    rik_u, inv = np.unique(np.round(self.slc_rik[rows], 8),
+                                           axis=0, return_inverse=True)
+                    pf_u = np.exp(1j * (q_cart_array @ rik_u.T))   # (N_pts, n_unique)
+
+                    n_cols = num_mag * num_phon
+                    C_p = np.zeros((rik_u.shape[0], n_cols), dtype=np.complex128)
+                    C_m = np.zeros((rik_u.shape[0], n_cols), dtype=np.complex128)
+                    np.add.at(C_p, (inv, cols), np.asarray(cp))
+                    np.add.at(C_m, (inv, cols), np.asarray(cm))
+
+                    V_plus_all = (pf_u @ C_p).reshape(N_pts, num_mag, num_phon)
+                    V_minus_all = (pf_u @ C_m).reshape(N_pts, num_mag, num_phon)
                 
 
         
