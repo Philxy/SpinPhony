@@ -795,7 +795,7 @@ class CrystalDataSoA:
                 Vm = V_minus_all[q_idx]
 
                 # Enable or disable the following block to include SLC interactions
-                """
+                #"""
                 # 1. Normal Particle-Particle
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
@@ -811,7 +811,7 @@ class CrystalDataSoA:
                 # 4. Anomalous Hole-Particle (Magnon_h, Phonon_p)
                 H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
-                """
+                #"""
 
             # --- 3. Diagonalization ---
             if return_full_matrices:
@@ -3925,18 +3925,44 @@ if __name__ == "__main__":
 
     path_dist, label_comment = crystal_data.get_path_distance_info()
 
+    # --- Observables for the BARE modes, same conventions as
+    #     save_hybrid_path_properties (reuses get_nambu_angular_momentum so the
+    #     two files are directly comparable). For unhybridized modes the
+    #     subsystem weights are exact by construction: a bare magnon is 100%
+    #     magnon and carries no phonon AM, a bare phonon is 100% phonon and
+    #     carries no spin AM.
+    _n_ph = crystal_data.phon_branches
+    _n_mg = crystal_data.n_mag_branches
+    _dim_block = _n_ph + _n_mg
+
+    _L_z_total = crystal_data.get_nambu_angular_momentum(axis=2)
+
+    # Phonon orbital AM: particle block, Cartesian index p = 3*atom + mu.
+    _L_ph = _L_z_total[:_n_ph, :_n_ph]
+
+    # Magnon spin AM in the magnon-only Nambu space (2*n_mag), pulled out of
+    # the full matrix so the magnon BdG eigenvectors can be applied directly.
+    _S_mag = np.zeros((2 * _n_mg, 2 * _n_mg), dtype=np.complex128)
+    _S_mag[:_n_mg, :_n_mg] = _L_z_total[_n_ph:_dim_block, _n_ph:_dim_block]
+    _S_mag[_n_mg:, _n_mg:] = _L_z_total[_dim_block + _n_ph:, _dim_block + _n_ph:]
+
     with open(f"{out_dir}/path_lifetimes.csv", "w") as f:
         f.write(label_comment + "\n")
-        f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps,path_dist\n")
+        f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps,"
+                "phon_character,mag_character,phon_AM_z_hbar,spin_AM_z_hbar,path_dist\n")
 
         # Magnons
         for i in range(N_path):
             qx, qy, qz = crystal_data.path_q_frac[i]
+            U_mag = crystal_data.path_eig_mag[i]
+            S_q = U_mag.conj().T @ _S_mag @ U_mag
             for b in range(crystal_data.n_mag_branches):
                 energy = crystal_data.path_w_mag[i, b]
                 gamma = gamma_mag_path_cpu[i, b]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},magnon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},{path_dist[i]:.6f}\n")
+                spin_AM = S_q[b, b].real
+                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},magnon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
+                        f"{0.0:.6f},{1.0:.6f},{0.0:.6e},{spin_AM:.6e},{path_dist[i]:.6f}\n")
 
         # Phonons
         for i in range(N_path):
@@ -3945,8 +3971,13 @@ if __name__ == "__main__":
                 energy = crystal_data.path_w_phon[i, b]
                 gamma = gamma_phon_path_cpu[i, b]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},phonon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},{path_dist[i]:.6f}\n")
-                
+                # e is the mass-weighted polarisation vector, flattened to the
+                # same Cartesian index p = 3*atom + mu used by _L_ph.
+                e = crystal_data.path_eig_phon[i, b].reshape(-1)
+                phon_AM = np.vdot(e, _L_ph @ e).real
+                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},phonon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
+                        f"{1.0:.6f},{0.0:.6f},{phon_AM:.6e},{0.0:.6e},{path_dist[i]:.6f}\n")
+
     print(f"-> Saved true path lifetimes to {out_dir}/path_lifetimes.csv")
 
 

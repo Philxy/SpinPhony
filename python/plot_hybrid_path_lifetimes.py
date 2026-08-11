@@ -95,7 +95,7 @@ def plot_dense_with_scatter(
 
     for band in sorted(df_disp["band"].unique()):
         subset = df_disp[df_disp["band"] == band].sort_values("path_dist")
-        ax.plot(subset["path_dist"], subset["energy_meV"], color="lightgrey", lw=1.5, zorder=1)
+        ax.plot(subset["path_dist"], subset["energy_meV"], color="lightgray", lw=1.0, zorder=1, alpha=1)
 
     sc = ax.scatter(
         df_life["path_dist"], df_life["energy_meV"],
@@ -228,12 +228,42 @@ if __name__ == "__main__":
         dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
         lifetime_csv="Outputs/CrI3_Path_Hyrbid_sparse/hybrid_path_lifetimes.csv",
         save_plot="Outputs/CrI3_Path_Hyrbid_sparse/hybrid_bands_lifetime_scatter.png",
+        vmin=1E0,
+        vmax=1E7
     )
     plot_dense_interpolated_line(
         dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
         lifetime_csv="Outputs/CrI3_Path_Hyrbid_sparse/hybrid_path_lifetimes.csv",
         save_plot="Outputs/CrI3_Path_Hyrbid_sparse/hybrid_bands_lifetime_interpolated.png",
+        vmin=1E0,
+        vmax=1E7
     )
+
+
+    # CrI3 
+        
+    # non hybrid
+    df_dense, labels_dense = load_path_csv("Outputs/CrI3_Path_NonHyrbid_dense/hybrid_path_properties.csv")
+    df_sparse, labels_sparse = load_path_csv("Outputs/CrI3_Path_NonHyrbid_sparse/hybrid_path_lifetimes.csv")
+
+    print("Dense labels: ", labels_dense)
+    print("Sparse labels:", labels_sparse)
+
+    plot_dense_with_scatter(
+        dense_csv="Outputs/CrI3_Path_NonHyrbid_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/CrI3_Path_NonHyrbid_sparse/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_NonHyrbid_sparse/hybrid_bands_lifetime_scatter.png",
+        vmin=1E0,
+        vmax=1E7
+    )
+    plot_dense_interpolated_line(
+        dense_csv="Outputs/CrI3_Path_NonHyrbid_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/CrI3_Path_NonHyrbid_sparse/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_NonHyrbid_sparse/hybrid_bands_lifetime_interpolated.png",
+        vmin=1E0,
+        vmax=1E7
+    )
+
 
     #  hybrid
     df_dense, labels_dense = load_path_csv("Outputs/CrI3_Path_Hybrid/hybrid_path_properties.csv")

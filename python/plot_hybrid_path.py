@@ -87,7 +87,7 @@ def plot_dense_property(
     use_log=False,
     linthresh=1e-2,
     vlim=None,
-    linewidth=2.0,
+    linewidth=1.5,
     margin=0.0,
     save_plot=None,
 ):
@@ -163,7 +163,7 @@ def plot_dense_property(
         seg_vals = 0.5 * (c[:-1] + c[1:])
 
         points = np.array([x, y]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1) #linewidth=linewidth
 
         lc = LineCollection(segments, cmap=cmap, norm=norm)
         lc.set_array(seg_vals)
@@ -248,12 +248,12 @@ if __name__ == "__main__":
 
 
     # Hybrid CrI3
-    hybrid_dense_csv = "Outputs/Hybrid_GK_dense//hybrid_path_properties.csv"
+    hybrid_dense_csv = "Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv"
     if os.path.exists(hybrid_dense_csv):
         print("Plotting Hybrid CrI3 Properties...")
         plot_all_cri3_properties(
             dense_csv=hybrid_dense_csv,
-            output_dir="Outputs/Hybrid_GK_32_dense/properties",
+            output_dir="Outputs/CrI3_Path_Hyrbid_dense/",
         )
 
     # Hybrid bccFe
