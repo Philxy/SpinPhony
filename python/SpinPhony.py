@@ -758,8 +758,6 @@ class CrystalDataSoA:
 
 
             """
-
-
             # =====================================================================
             # 1.5 Precalculate SLC Tensors (FM Case) using the real frequency
             # =====================================================================
@@ -809,7 +807,7 @@ class CrystalDataSoA:
                 freq = np.sqrt((hbar * hbar) / (S_val * w_safe))  # [q, lambda]
                 V_plus_all *= freq[:, None, :]
                 V_minus_all *= freq[:, None, :]
-            """"
+            """
 
 
 
