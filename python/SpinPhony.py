@@ -795,7 +795,7 @@ class CrystalDataSoA:
                 Vm = V_minus_all[q_idx]
 
                 # Enable or disable the following block to include SLC interactions
-                #"""
+                """
                 # 1. Normal Particle-Particle
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_p:off_mag_p+num_mag] = Vp.conj().T
@@ -811,7 +811,7 @@ class CrystalDataSoA:
                 # 4. Anomalous Hole-Particle (Magnon_h, Phonon_p)
                 H_BdG[off_mag_h:off_mag_h+num_mag, off_ph_p:off_ph_p+num_phon] = Vm
                 H_BdG[off_ph_p:off_ph_p+num_phon, off_mag_h:off_mag_h+num_mag] = Vm.conj().T
-                #"""
+                """
 
             # --- 3. Diagonalization ---
             if return_full_matrices:
@@ -4037,16 +4037,29 @@ if __name__ == "__main__":
 
     path_dist, label_comment = crystal_data.get_path_distance_info()
 
+    # Phonon angular momentum of the hybrid modes, same construction and
+    # conventions as save_hybrid_path_properties: the phonon block of the
+    # Nambu L^z operator, rotated into the hybrid basis via T^dagger L T.
+    _L_z_tot = crystal_data.get_nambu_angular_momentum(axis=2)
+    _n_ph = crystal_data.phon_branches
+    _blk = num_hyb_branches
+    _L_z_ph = np.zeros_like(_L_z_tot)
+    _L_z_ph[:_n_ph, :_n_ph] = _L_z_tot[:_n_ph, :_n_ph]
+    _L_z_ph[_blk:_blk + _n_ph, _blk:_blk + _n_ph] = _L_z_tot[_blk:_blk + _n_ph, _blk:_blk + _n_ph]
+
     with open(f"{out_dir}/hybrid_path_lifetimes.csv", "w") as f:
         f.write(label_comment + "\n")
-        f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps,path_dist\n")
+        f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps,phon_AM_z_hbar,path_dist\n")
         for i in range(N_path):
             qx, qy, qz = crystal_data.path_q_frac[i]
+            T = crystal_data.path_eig_hyb[i]
+            AM_phon_q = T.conj().T @ _L_z_ph @ T
             for b in range(num_hyb_branches):
                 energy = crystal_data.path_w_hyb[i, b]
                 gamma = gamma_hyb_path_cpu[i, b]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e},{path_dist[i]:.6f}\n")
+                phon_AM = AM_phon_q[b, b].real
+                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e},{phon_AM:.6e},{path_dist[i]:.6f}\n")
 
     print(f" -> Hybrid Path Channels: found_channels / max_channels : {path_hyb_num_channels / max_path_hyb_channels * 100:.2f}%")
 
