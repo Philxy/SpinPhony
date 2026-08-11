@@ -606,6 +606,8 @@ class CrystalDataSoA:
         off_ph_h = num_phon + num_mag
         off_mag_h = 2 * num_phon + num_mag
 
+        PHONON_FLOOR_MEV = 1e-5
+
         I_phon = np.eye(num_phon, dtype=np.complex128)
 
         CONV_FACTOR = 15.633302 * 4.135667696
@@ -777,81 +779,68 @@ class CrystalDataSoA:
             V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
 
 
-            """
-            if hasattr(self, 'slc_axis') and is_FM:
-                for i in range(self.slc_axis.shape[0]):
-                    type_i = self.slc_types[i, 0] - 1
-                    type_j = self.slc_types[i, 1] - 1
-                    disp_atom_idx = self.slc_types[i, 2] - 1
+                    # =====================================================================
+        # 1.5 Precalculate SLC Tensors (FM Case) in the BARE PHONON BRANCH basis
+        #     Vectorised: one exp per UNIQUE r_ik + one BLAS matmul, instead of
+        #     a full sweep over all N_pts q-points per SLC entry.
+        # =====================================================================
+        V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
+        V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
 
-                    n_mag_i = atom_to_mag[type_i]
-                    n_mag_j = atom_to_mag[type_j]
+        if hasattr(self, 'slc_axis') and is_FM:
+            # --- gather valid entries once; fold the mass weighting in here,
+            #     since 1/sqrt(M_l) depends only on the Cartesian index p ----
+            rows, cols, cp, cm = [], [], [], []
+            for i in range(self.slc_axis.shape[0]):
+                n_mag_i = atom_to_mag[self.slc_types[i, 0] - 1]
+                if n_mag_i == -1 or atom_to_mag[self.slc_types[i, 1] - 1] == -1:
+                    continue
+                disp_atom = self.slc_types[i, 2] - 1
+                p_idx = 3 * disp_atom + self.slc_axis[i]
+                inv_sqrt_m = 1.0 / np.sqrt(self.atom_masses[disp_atom] * DALTON_TO_meV_PS2_PER_A2)
 
-                    if n_mag_i == -1 or n_mag_j == -1:
-                        continue
+                Jxz, Jyz = self.slc_J[i, 0, 2], self.slc_J[i, 1, 2]
+                rows.append(i)
+                cols.append(n_mag_i * num_phon + p_idx)
+                cp.append((Jxz + 1j * Jyz) * inv_sqrt_m)
+                cm.append((Jxz - 1j * Jyz) * inv_sqrt_m)
 
-                    mu = self.slc_axis[i]
-                    p_idx = 3 * disp_atom_idx + mu
+            if rows:
+                rows = np.asarray(rows)
+                cols = np.asarray(cols)
 
-                    Jxz = self.slc_J[i, 0, 2]  # X=0, Z=2
-                    Jyz = self.slc_J[i, 1, 2]  # Y=1, Z=2
+                # (a) one exp per UNIQUE displacement vector. Many entries share
+                #     an r_ik (they differ in r_ij / axis / types), so this is
+                #     where the cost collapses.
+                rik_u, inv = np.unique(np.round(self.slc_rik[rows], 8),
+                                       axis=0, return_inverse=True)
+                pf_u = np.exp(1j * (q_cart_array @ rik_u.T))        # (N_pts, n_uniq)
 
-                    phases_slc = np.dot(q_cart_array, self.slc_rik[i])
-                    phase_factor = np.exp(1j * phases_slc)
+                n_cols = num_mag * num_phon
+                C_p = np.zeros((rik_u.shape[0], n_cols), dtype=np.complex128)
+                C_m = np.zeros((rik_u.shape[0], n_cols), dtype=np.complex128)
+                np.add.at(C_p, (inv, cols), np.asarray(cp))
+                np.add.at(C_m, (inv, cols), np.asarray(cm))
 
-                    V_plus_all[:, n_mag_i, p_idx] += (Jxz + 1j * Jyz) * phase_factor
-                    V_minus_all[:, n_mag_i, p_idx] += (Jxz - 1j * Jyz) * phase_factor
+                # Cartesian, mass-weighted - the whole accumulation is one matmul
+                V_plus_all = (pf_u @ C_p).reshape(N_pts, num_mag, num_phon)
+                V_minus_all = (pf_u @ C_m).reshape(N_pts, num_mag, num_phon)
 
-                # (a) mass weighting, still per Cartesian coordinate p = 3*l + mu
-                for p in range(num_phon):
-                    atom_l = p // 3
-                    mass = self.atom_masses[atom_l] * DALTON_TO_meV_PS2_PER_A2
-                    V_plus_all[:, :, p] /= np.sqrt(mass)
-                    V_minus_all[:, :, p] /= np.sqrt(mass)
-
-                # (b) Cartesian -> branch: contract with the phonon polarisation
-                #     vectors. eig_phon[q, lambda, atom, mu] -> E[q, lambda, p].
+                # (b) Cartesian -> bare phonon branch basis.
+                #     eig_phon[q, lambda, atom, mu] -> E[q, lambda, p], p = 3*atom+mu.
+                #     Batched matmul (V @ E^T) rather than einsum: same result,
+                #     but it dispatches to BLAS.
                 E = eig_phon_source.reshape(N_pts, num_phon, num_phon)
-                V_plus_all = np.einsum('qnp,qlp->qnl', V_plus_all, E)
-                V_minus_all = np.einsum('qnp,qlp->qnl', V_minus_all, E)
+                V_plus_all = np.matmul(V_plus_all, np.swapaxes(E, 1, 2))
+                V_minus_all = np.matmul(V_minus_all, np.swapaxes(E, 1, 2))
 
-                # (c) frequency factor, now per BRANCH with the REAL frequency
-                #     (this is what replaces the old 1/sqrt(ref_omega)).
-                w_safe = np.maximum(w_phon_source, 1e-6)          # [q, lambda]
-                freq = np.sqrt((hbar * hbar) / (S_val * w_safe))  # [q, lambda]
+                # (c) per-BRANCH frequency factor with the REAL frequency.
+                #     This replaces the old 1/sqrt(ref_omega); ref_omega no
+                #     longer appears anywhere in this construction.
+                w_safe = np.maximum(w_phon_source, PHONON_FLOOR_MEV)
+                freq = np.sqrt((hbar * hbar) / (S_val * w_safe))    # (N_pts, num_phon)
                 V_plus_all *= freq[:, None, :]
                 V_minus_all *= freq[:, None, :]
-            if hasattr(self, 'slc_axis') and is_FM:
-                # Gather valid entries once (no per-entry q sweep).
-                rows, cols, cp, cm = [], [], [], []
-                for i in range(self.slc_axis.shape[0]):
-                    n_mag_i = atom_to_mag[self.slc_types[i, 0] - 1]
-                    if n_mag_i == -1 or atom_to_mag[self.slc_types[i, 1] - 1] == -1:
-                        continue
-                    p_idx = 3 * (self.slc_types[i, 2] - 1) + self.slc_axis[i]
-                    Jxz, Jyz = self.slc_J[i, 0, 2], self.slc_J[i, 1, 2]
-                    rows.append(i)
-                    cols.append(n_mag_i * num_phon + p_idx)
-                    cp.append(Jxz + 1j * Jyz)
-                    cm.append(Jxz - 1j * Jyz)
-
-                if rows:
-                    rows = np.asarray(rows)
-                    cols = np.asarray(cols)
-                    # One exp per UNIQUE r_ik instead of one per entry.
-                    rik_u, inv = np.unique(np.round(self.slc_rik[rows], 8),
-                                           axis=0, return_inverse=True)
-                    pf_u = np.exp(1j * (q_cart_array @ rik_u.T))   # (N_pts, n_unique)
-
-                    n_cols = num_mag * num_phon
-                    C_p = np.zeros((rik_u.shape[0], n_cols), dtype=np.complex128)
-                    C_m = np.zeros((rik_u.shape[0], n_cols), dtype=np.complex128)
-                    np.add.at(C_p, (inv, cols), np.asarray(cp))
-                    np.add.at(C_m, (inv, cols), np.asarray(cm))
-
-                    V_plus_all = (pf_u @ C_p).reshape(N_pts, num_mag, num_phon)
-                    V_minus_all = (pf_u @ C_m).reshape(N_pts, num_mag, num_phon)
-            """
             
 
         
