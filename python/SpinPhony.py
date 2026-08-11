@@ -4003,28 +4003,6 @@ if __name__ == "__main__":
 
     gamma_hyb_path_cpu = d_gamma_hyb_path.copy_to_host().reshape((N_path, num_hyb_branches))
 
-
-    """
-    # --- Per-channel diagnostics -------------------------------------------
-    # Decomposes 1/tau for selected modes by process type, partner bands and
-    # |q| shell. The channel buffers are still live here, and gamma_hyb_path_cpu
-    # gives the GPU's own answer to cross-check the host reconstruction against.
-    from diagnose_channels import breakdown, pick_modes
-    _b = num_hyb_branches - 1          # magnon is the last hybrid branch
-    for _pi in pick_modes(crystal_data, _b, n=2):
-        if _pi < N_path and _b < num_hyb_branches:
-            _tot = breakdown(
-                crystal_data,
-                d_path_hyb_chan_indices, d_path_hyb_chan_weights,
-                path_hyb_num_channels, n_hyb_cpu, N_points,
-                path_idx=_pi, band=_b,
-            )
-            if _tot:
-                print(f"            GPU 1/tau = {gamma_hyb_path_cpu[_pi, _b]:.6e} 1/ps "
-                      f"(host/GPU = {_tot / gamma_hyb_path_cpu[_pi, _b]:.6f})")
-
-    """
-
     path_dist, label_comment = crystal_data.get_path_distance_info()
 
     with open(f"{out_dir}/hybrid_path_lifetimes.csv", "w") as f:
