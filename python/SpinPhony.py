@@ -595,18 +595,22 @@ class CrystalDataSoA:
 
         w_hyb = np.zeros((N_pts, num_phon + num_mag), dtype=np.float64)
         eig_hyb = np.zeros((N_pts, dim, dim), dtype=np.complex128)
-        
+
         # Prepare optional storage arrays
         if return_full_matrices:
             H_pre = np.zeros((N_pts, dim, dim), dtype=np.complex128)
             H_diag = np.zeros((N_pts, dim, dim), dtype=np.complex128)
-        
+
         off_ph_p = 0
         off_mag_p = num_phon
         off_ph_h = num_phon + num_mag
         off_mag_h = 2 * num_phon + num_mag
 
-        PHONON_FLOOR_MEV = 1e-5
+        # Floor on the phonon energy entering 1/sqrt(omega). With the acoustic
+        # sum rule enforced, D^pm ~ q cancels the divergence and this never
+        # binds. WITHOUT it, a value this small makes the coupling blow up near
+        # Gamma and destroys positive-definiteness - keep it ~0.5 meV then.
+        PHONON_FLOOR_MEV = 0.5
 
         I_phon = np.eye(num_phon, dtype=np.complex128)
 
@@ -626,7 +630,7 @@ class CrystalDataSoA:
 
         moments = self.mag_moments[self.mag_indices]
         S_eff = np.abs(moments) / 2.0
-        S_val = S_eff[0] if len(S_eff) > 0 else 1.0 
+        S_val = S_eff[0] if len(S_eff) > 0 else 1.0
         print(f"Using S_val: {S_val}")
         anisotropy_term = S_val * 2.0 * K_anisotropy
 
@@ -649,9 +653,9 @@ class CrystalDataSoA:
 
         sum_J0_row = np.sum(J_0, axis=1)
 
-        J_k_all = np.zeros((N_pts, num_mag, num_mag), dtype=np.complex128) 
-        J_m_k_all = np.zeros((N_pts, num_mag, num_mag), dtype=np.complex128) 
-        
+        J_k_all = np.zeros((N_pts, num_mag, num_mag), dtype=np.complex128)
+        J_m_k_all = np.zeros((N_pts, num_mag, num_mag), dtype=np.complex128)
+
         if valid_bonds_mag:
             mag_i_arr = np.array([b[0] for b in valid_bonds_mag])
             mag_j_arr = np.array([b[1] for b in valid_bonds_mag])
@@ -659,7 +663,7 @@ class CrystalDataSoA:
             J_val_arr = np.array([b[5] for b in valid_bonds_mag])
 
             phases_mag = np.dot(q_cart_array, r_cart_arr.T)
-            
+
             exp_phases_k = np.exp(1j * phases_mag) * J_val_arr
             exp_phases_m_k = np.exp(-1j * phases_mag) * J_val_arr
 
@@ -668,128 +672,19 @@ class CrystalDataSoA:
                 J_k_all[:, mi, mj] += exp_phases_k[:, b_idx]
                 J_m_k_all[:, mi, mj] += exp_phases_m_k[:, b_idx]
 
-
-        # ==========================================
-        # Bare magnon and phonon HAMILTONIAN ASSEMBLY
-        # ==========================================
-        for q_idx in range(N_pts):
-            H_BdG = np.zeros((dim, dim), dtype=np.complex128)
-            
-            """
-            # --- Phonon Blocks from the Dynamical Matrix ---
-            D_complex = dyn_mat[q_idx]
-            D_meV2 = D_complex * (CONV_FACTOR ** 2)
-
-            evals_D, evecs_D = np.linalg.eigh(D_meV2)
-            if np.any(evals_D < 1e-5):
-                evals_clamped = np.maximum(evals_D, 1e-5)
-                D_meV2 = evecs_D @ np.diag(evals_clamped) @ evecs_D.conj().T
-
-            A_phon = 0.5 * (D_meV2 / ref_omega + ref_omega * I_phon)
-            B_phon = 0.5 * (D_meV2 / ref_omega - ref_omega * I_phon)
-
-            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
-            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
-            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
-            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon
-            """
-
-            
-            # --- Phonon Block from Eigenvalues ---
-            A_phon = np.diag(w_phon_source[q_idx])
-            
-            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
-            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
-
-            # --- Magnon Blocks ---
-            J_k = J_k_all[q_idx] 
-            J_m_k = J_m_k_all[q_idx] 
-
-            Omega_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
-            Omega_m_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
-
-            for i in range(num_mag):
-                for j in range(num_mag):
-                    if i == j:
-                        Omega_k[i, i] = S_val * (J_k[i, i] - sum_J0_row[i]) 
-                        Omega_m_k[i, i] = S_val * (J_m_k[i, i] - sum_J0_row[i])
-                    else:
-                        Omega_k[i, j] = S_val * J_k[i, j]
-                        Omega_m_k[i, j] = S_val * J_m_k[i, j]
-
-            for m in range(num_mag):
-                for n in range(num_mag):
-                    val_n = -Omega_k[m, n]
-                    if m == n:
-                        val_n += anisotropy_term
-                    H_BdG[off_mag_p + m, off_mag_p + n] = val_n #*  1.18 # artificial factor to match lit for bccFe
-
-                    val_h = -Omega_m_k[n, m]
-                    if m == n:
-                        val_h += anisotropy_term
-                    H_BdG[off_mag_h + m, off_mag_h + n] = val_h #*  1.18 # artificial factor to match lit for bccFe
-        
-
-            """
-
-            # =====================================================================
-            # 1.5 Precalculate SLC Tensors (FM Case) using the reference frequency
-            # =====================================================================
-            V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
-            V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
-
-            if hasattr(self, 'slc_axis') and is_FM:
-                for i in range(self.slc_axis.shape[0]):
-                    type_i = self.slc_types[i, 0] - 1
-                    type_j = self.slc_types[i, 1] - 1
-                    disp_atom_idx = self.slc_types[i, 2] - 1
-                    
-                    n_mag_i = atom_to_mag[type_i]
-                    n_mag_j = atom_to_mag[type_j]
-
-                    if n_mag_i == -1 or n_mag_j == -1:
-                        continue
-
-                    mu = self.slc_axis[i]
-                    p_idx = 3 * disp_atom_idx + mu
-
-                    Jxz = self.slc_J[i, 0, 2]  # X=0, Z=2
-                    Jyz = self.slc_J[i, 1, 2]  # Y=1, Z=2
-
-                    phases_slc = np.dot(q_cart_array, self.slc_rik[i])
-                    phase_factor = np.exp(1j * phases_slc)
-
-                    V_plus_all[:, n_mag_i, p_idx] += (Jxz + 1j * Jyz) * phase_factor
-                    V_minus_all[:, n_mag_i, p_idx] += (Jxz - 1j * Jyz) * phase_factor
-
-                for p in range(num_phon):
-                    atom_l = p // 3
-                    mass = self.atom_masses[atom_l]
-                    prefactor = np.sqrt((hbar * hbar) / (S_val * mass * DALTON_TO_meV_PS2_PER_A2 * ref_omega))
-                    
-                    V_plus_all[:, :, p] *= prefactor
-                    V_minus_all[:, :, p] *= prefactor
-
-            """
-
-            # =====================================================================
-            # 1.5 Precalculate SLC Tensors (FM Case) using the real frequency
-            # =====================================================================
-            V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
-            V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
-
-
-                    # =====================================================================
+        # =====================================================================
         # 1.5 Precalculate SLC Tensors (FM Case) in the BARE PHONON BRANCH basis
         #     Vectorised: one exp per UNIQUE r_ik + one BLAS matmul, instead of
         #     a full sweep over all N_pts q-points per SLC entry.
+        #     MUST stay outside the q-loop - it is computed for all q at once.
         # =====================================================================
         V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
         V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
 
         if hasattr(self, 'slc_axis') and is_FM:
-            # --- gather valid entries once; fold the mass weighting in here,
-            #     since 1/sqrt(M_l) depends only on the Cartesian index p ----
+            # Gather valid entries once; fold the mass weighting in here, since
+            # 1/sqrt(M_l) depends only on the Cartesian index p = 3*l + mu and
+            # must be applied BEFORE the rotation mixes p.
             rows, cols, cp, cm = [], [], [], []
             for i in range(self.slc_axis.shape[0]):
                 n_mag_i = atom_to_mag[self.slc_types[i, 0] - 1]
@@ -809,9 +704,7 @@ class CrystalDataSoA:
                 rows = np.asarray(rows)
                 cols = np.asarray(cols)
 
-                # (a) one exp per UNIQUE displacement vector. Many entries share
-                #     an r_ik (they differ in r_ij / axis / types), so this is
-                #     where the cost collapses.
+                # (a) one exp per UNIQUE displacement vector
                 rik_u, inv = np.unique(np.round(self.slc_rik[rows], 8),
                                        axis=0, return_inverse=True)
                 pf_u = np.exp(1j * (q_cart_array @ rik_u.T))        # (N_pts, n_uniq)
@@ -822,28 +715,84 @@ class CrystalDataSoA:
                 np.add.at(C_p, (inv, cols), np.asarray(cp))
                 np.add.at(C_m, (inv, cols), np.asarray(cm))
 
-                # Cartesian, mass-weighted - the whole accumulation is one matmul
+                # Cartesian, mass-weighted - whole accumulation is one matmul
                 V_plus_all = (pf_u @ C_p).reshape(N_pts, num_mag, num_phon)
                 V_minus_all = (pf_u @ C_m).reshape(N_pts, num_mag, num_phon)
 
                 # (b) Cartesian -> bare phonon branch basis.
-                #     eig_phon[q, lambda, atom, mu] -> E[q, lambda, p], p = 3*atom+mu.
-                #     Batched matmul (V @ E^T) rather than einsum: same result,
-                #     but it dispatches to BLAS.
+                #     eig_phon[q, lambda, atom, mu] -> E[q, lambda, p].
                 E = eig_phon_source.reshape(N_pts, num_phon, num_phon)
                 V_plus_all = np.matmul(V_plus_all, np.swapaxes(E, 1, 2))
                 V_minus_all = np.matmul(V_minus_all, np.swapaxes(E, 1, 2))
 
                 # (c) per-BRANCH frequency factor with the REAL frequency.
-                #     This replaces the old 1/sqrt(ref_omega); ref_omega no
-                #     longer appears anywhere in this construction.
+                #     ref_omega no longer appears in this construction.
                 w_safe = np.maximum(w_phon_source, PHONON_FLOOR_MEV)
                 freq = np.sqrt((hbar * hbar) / (S_val * w_safe))    # (N_pts, num_phon)
                 V_plus_all *= freq[:, None, :]
                 V_minus_all *= freq[:, None, :]
-            
 
-        
+        # ==========================================
+        # 2. HAMILTONIAN ASSEMBLY
+        # ==========================================
+        for q_idx in range(N_pts):
+            H_BdG = np.zeros((dim, dim), dtype=np.complex128)
+
+            """
+            # --- Phonon Blocks from the Dynamical Matrix (Cartesian/ref_omega) ---
+            # NOTE: incompatible with the branch-basis SLC block above. Only use
+            # this together with the Cartesian/ref_omega SLC construction.
+            D_complex = dyn_mat[q_idx]
+            D_meV2 = D_complex * (CONV_FACTOR ** 2)
+
+            evals_D, evecs_D = np.linalg.eigh(D_meV2)
+            if np.any(evals_D < 1e-5):
+                evals_clamped = np.maximum(evals_D, 1e-5)
+                D_meV2 = evecs_D @ np.diag(evals_clamped) @ evecs_D.conj().T
+
+            A_phon = 0.5 * (D_meV2 / ref_omega + ref_omega * I_phon)
+            B_phon = 0.5 * (D_meV2 / ref_omega - ref_omega * I_phon)
+
+            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
+            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_h:off_ph_h+num_phon] = B_phon
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_p:off_ph_p+num_phon] = B_phon
+            """
+
+            # --- Phonon Block from Eigenvalues (branch basis, B_phon = 0) ---
+            A_phon = np.diag(w_phon_source[q_idx])
+
+            H_BdG[off_ph_p:off_ph_p+num_phon, off_ph_p:off_ph_p+num_phon] = A_phon
+            H_BdG[off_ph_h:off_ph_h+num_phon, off_ph_h:off_ph_h+num_phon] = A_phon
+
+            # --- Magnon Blocks ---
+            J_k = J_k_all[q_idx]
+            J_m_k = J_m_k_all[q_idx]
+
+            Omega_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
+            Omega_m_k = np.zeros((num_mag, num_mag), dtype=np.complex128)
+
+            for i in range(num_mag):
+                for j in range(num_mag):
+                    if i == j:
+                        Omega_k[i, i] = S_val * (J_k[i, i] - sum_J0_row[i])
+                        Omega_m_k[i, i] = S_val * (J_m_k[i, i] - sum_J0_row[i])
+                    else:
+                        Omega_k[i, j] = S_val * J_k[i, j]
+                        Omega_m_k[i, j] = S_val * J_m_k[i, j]
+
+            for m in range(num_mag):
+                for n in range(num_mag):
+                    val_n = -Omega_k[m, n]
+                    if m == n:
+                        val_n += anisotropy_term
+                    H_BdG[off_mag_p + m, off_mag_p + n] = val_n
+
+                    val_h = -Omega_m_k[n, m]
+                    if m == n:
+                        val_h += anisotropy_term
+                    H_BdG[off_mag_h + m, off_mag_h + n] = val_h
+
             # --- SLC Interaction Blocks ---
             if hasattr(self, 'slc_axis') and is_FM:
                 Vp = V_plus_all[q_idx]
@@ -883,8 +832,6 @@ class CrystalDataSoA:
                 eig_hyb[q_idx] = para_unitary
 
                 if return_full_matrices:
-                    # Construct the diagonalized energy matrix representation
-                    # (Physical modes on the particle and hole blocks)
                     for idx in range(num_phon + num_mag):
                         H_diag[q_idx, idx, idx] = energies[idx]
                         H_diag[q_idx, (num_phon + num_mag) + idx, (num_phon + num_mag) + idx] = energies[idx]
@@ -892,10 +839,10 @@ class CrystalDataSoA:
             except RuntimeError as e:
                 print(f"Warning at q_idx {q_idx}: {e}")
                 w_hyb[q_idx] = np.zeros(num_phon + num_mag)
-                
+
         if return_full_matrices:
             return w_hyb, eig_hyb, H_pre, H_diag
-        
+
         return w_hyb, eig_hyb
     
     """
