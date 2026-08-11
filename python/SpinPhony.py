@@ -717,6 +717,7 @@ class CrystalDataSoA:
                     H_BdG[off_mag_h + m, off_mag_h + n] = val_h #*  1.18 # artificial factor to match lit for bccFe
         
 
+            """
 
             # =====================================================================
             # 1.5 Precalculate SLC Tensors (FM Case) using the reference frequency
@@ -756,8 +757,8 @@ class CrystalDataSoA:
                     V_plus_all[:, :, p] *= prefactor
                     V_minus_all[:, :, p] *= prefactor
 
-
             """
+
             # =====================================================================
             # 1.5 Precalculate SLC Tensors (FM Case) using the real frequency
             # =====================================================================
@@ -807,7 +808,6 @@ class CrystalDataSoA:
                 freq = np.sqrt((hbar * hbar) / (S_val * w_safe))  # [q, lambda]
                 V_plus_all *= freq[:, None, :]
                 V_minus_all *= freq[:, None, :]
-            """
 
         
             # --- SLC Interaction Blocks ---
