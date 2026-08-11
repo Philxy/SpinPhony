@@ -4003,6 +4003,8 @@ if __name__ == "__main__":
 
     gamma_hyb_path_cpu = d_gamma_hyb_path.copy_to_host().reshape((N_path, num_hyb_branches))
 
+
+    """
     # --- Per-channel diagnostics -------------------------------------------
     # Decomposes 1/tau for selected modes by process type, partner bands and
     # |q| shell. The channel buffers are still live here, and gamma_hyb_path_cpu
@@ -4020,6 +4022,8 @@ if __name__ == "__main__":
             if _tot:
                 print(f"            GPU 1/tau = {gamma_hyb_path_cpu[_pi, _b]:.6e} 1/ps "
                       f"(host/GPU = {_tot / gamma_hyb_path_cpu[_pi, _b]:.6f})")
+
+    """
 
     path_dist, label_comment = crystal_data.get_path_distance_info()
 
