@@ -1554,22 +1554,47 @@ class CrystalDataSoA:
         np.fill_diagonal(J_spin[num_phon:dim_block, num_phon:dim_block], 1.0)
         np.fill_diagonal(J_spin[dim_block+num_phon:dim_total, dim_block+num_phon:dim_total], -1.0)
         
-        # Allocate output arrays mapped to (N_points, physical_branches)
-        phon_chars = np.zeros((self.N, dim_block), dtype=np.float64)
-        mag_chars = np.zeros((self.N, dim_block), dtype=np.float64)
-        phon_ams = np.zeros((self.N, dim_block), dtype=np.float64)
-        spin_ams = np.zeros((self.N, dim_block), dtype=np.float64)
-        
-        for q_idx in range(self.N):
-            T = self.Qmatrix[q_idx]
-            T_dag = T.conj().T
-            
-            # Diagonal components for the physical (particle) block
-            phon_chars[q_idx, :] = np.diag(T_dag @ J_phon @ T).real[:dim_block]
-            mag_chars[q_idx, :]  = np.diag(T_dag @ J_spin @ T).real[:dim_block]
-            phon_ams[q_idx, :]   = np.diag(T_dag @ L_z_phon @ T).real[:dim_block]
-            spin_ams[q_idx, :]   = np.diag(T_dag @ L_z_spin @ T).real[:dim_block]
-            
+        # --- Batched, diagonal-only evaluation -------------------------------
+        # Only diag(T^dag O T) is needed, so contract straight to it via
+        # einsum instead of forming the full dim x dim product per q-point.
+        # T is (N, dim_total, dim_total); keep the first dim_block columns.
+        # Slice to the physical columns FIRST (a view), then conjugate, so the
+        # temporary is (N, dim_total, dim_block) rather than the full matrix.
+        Tp = self.Qmatrix[:, :, :dim_block]                # view
+        Tc = Tp.conj()
+
+        def _diag_expect(O):
+            return np.einsum('qib,ij,qjb->qb', Tc, O, Tp, optimize=True).real
+
+        phon_chars = _diag_expect(J_phon)
+        mag_chars = _diag_expect(J_spin)
+        spin_ams = _diag_expect(L_z_spin)
+
+        # --- Phonon angular momentum needs the per-q basis rotation ----------
+        # L^z is intrinsically CARTESIAN (Levi-Civita on x,y,z). With the BdG
+        # Hamiltonian assembled in the bare-phonon-branch basis, Qmatrix's
+        # phonon rows are branch indices, so L must be rotated onto that basis
+        # before contracting - exactly as save_hybrid_path_properties does.
+        # Without this the per-branch PAM comes out scrambled across branches.
+        L_cart = L_z_total[:num_phon, :num_phon]
+        E = self.eig_phon.reshape(self.N, num_phon, num_phon)          # [q, lambda, p]
+        Eq = np.swapaxes(E, 1, 2)                                      # [q, p, lambda]
+        L_branch = np.matmul(np.swapaxes(Eq, 1, 2).conj(),
+                             np.matmul(L_cart[None, :, :], Eq))        # (N, n_ph, n_ph)
+
+        # L_z_phon is block-diagonal (phonon particle block = L_branch, phonon
+        # hole block = -L_branch^*, everything else zero), so contract the two
+        # blocks directly instead of materialising the (N, dim, dim) operator -
+        # that array would be ~1.4 GB for an 8-atom cell on a 32^3 mesh.
+        Tc_p, Tp_p = Tc[:, :num_phon, :], Tp[:, :num_phon, :]
+        Tc_h = Tc[:, dim_block:dim_block + num_phon, :]
+        Tp_h = Tp[:, dim_block:dim_block + num_phon, :]
+
+        phon_ams = (
+            np.einsum('qib,qij,qjb->qb', Tc_p, L_branch, Tp_p, optimize=True)
+            - np.einsum('qib,qij,qjb->qb', Tc_h, L_branch.conj(), Tp_h, optimize=True)
+        ).real
+
         return phon_chars, mag_chars, phon_ams, spin_ams
 
 
@@ -3636,6 +3661,11 @@ if __name__ == "__main__":
     parser.add_argument("--tphon", type=float, help="Override initial Phonon temperature (K)")
     parser.add_argument("--steps", type=int, help="Override total integration steps")
     parser.add_argument("--full_bz", action="store_true",help="Evaluate hybrid lifetimes over the whole Brillouin zone.")
+    parser.add_argument("--analyse_modes", type=str, default=None,
+                        help="Per-channel scattering analysis for the given hybrid modes, "
+                             "as a comma-separated list of path_idx:band (e.g. \"0:5,0:6\"). "
+                             "Prints the dominant channels, where their partners sit in the "
+                             "BZ, the partners' character / PAM / spin AM, and the J_z balance.")
     parser.add_argument("--no_slc", action="store_true",
                         help="Disable the spin-lattice coupling blocks in the BdG Hamiltonian. "
                              "The 'hybrid' modes then reduce to bare magnons and bare phonons "
@@ -4048,6 +4078,39 @@ if __name__ == "__main__":
     cuda.synchronize()
 
     gamma_hyb_path_cpu = d_gamma_hyb_path.copy_to_host().reshape((N_path, num_hyb_branches))
+
+    # ---------------- Per-channel scattering analysis --------------------
+    # Which modes does a given hybrid mode scatter into, where in the BZ do
+    # they sit, are they hybrid, and is J_z conserved? Runs off the same
+    # channel buffers the lifetime kernel consumed, so nothing is recomputed
+    # on the GPU. Controlled by --analyse_modes "path_idx:band,...".
+    if args.analyse_modes:
+        from diagnose_channels import channel_table, path_observables
+        print("\n -> Extracting grid/path mode observables for channel analysis...")
+        _grid_props = crystal_data.extract_full_grid_hybrid_properties()
+        _path_props = path_observables(crystal_data)
+
+        for _spec in args.analyse_modes.split(","):
+            _spec = _spec.strip()
+            if not _spec:
+                continue
+            try:
+                _pi, _bb = (int(x) for x in _spec.split(":"))
+            except ValueError:
+                print(f"    skipping malformed --analyse_modes entry '{_spec}' "
+                      "(expected path_idx:band)")
+                continue
+            if _pi >= N_path or _bb >= num_hyb_branches:
+                print(f"    skipping out-of-range entry '{_spec}' "
+                      f"(N_path={N_path}, branches={num_hyb_branches})")
+                continue
+            channel_table(
+                crystal_data,
+                d_path_hyb_chan_indices, d_path_hyb_chan_weights,
+                path_hyb_num_channels, n_hyb_cpu, N_points,
+                path_idx=_pi, band=_bb,
+                grid_props=_grid_props, path_props=_path_props,
+            )
 
     path_dist, label_comment = crystal_data.get_path_distance_info()
 
