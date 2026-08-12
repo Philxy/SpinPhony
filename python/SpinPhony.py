@@ -4075,10 +4075,26 @@ if __name__ == "__main__":
     np.fill_diagonal(_J_spin[_n_ph:_blk, _n_ph:_blk], 1.0)
     np.fill_diagonal(_J_spin[_blk + _n_ph:_dim_tot, _blk + _n_ph:_dim_tot], -1.0)
 
+    # Spin angular momentum operator (magnon block of L^z), same as
+    # save_hybrid_path_properties. Unlike the phonon PAM this is diagonal in
+    # the magnon subspace and basis-independent w.r.t. the phonon rotation, so
+    # it is built once here rather than per q-point.
+    _L_z_spin = np.zeros((_dim_tot, _dim_tot), dtype=np.complex128)
+    _L_z_spin[_n_ph:_blk, _n_ph:_blk] = _L_z_tot[_n_ph:_blk, _n_ph:_blk]
+    _L_z_spin[_blk + _n_ph:_dim_tot, _blk + _n_ph:_dim_tot] = \
+        _L_z_tot[_blk + _n_ph:_dim_tot, _blk + _n_ph:_dim_tot]
+
+    # Equilibrium Bose-Einstein occupation of the PATH modes at T_mag_init.
+    # NOTE: n_hyb_cpu (built above from crystal_data.w_hyb) is the GRID
+    # occupation used as the scattering partners' bath population inside the
+    # kernel - it is indexed by grid q-point, not path index, so it cannot be
+    # reused here. This is a separate array over path_w_hyb.
+    n_hyb_occ = init_bose_einstein(crystal_data.path_w_hyb, T_mag_init)
+
     with open(f"{out_dir}/hybrid_path_lifetimes.csv", "w") as f:
         f.write(label_comment + "\n")
         f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps,"
-                "phon_character,mag_character,phon_AM_z_hbar,path_dist\n")
+                "phon_character,mag_character,phon_AM_z_hbar,spin_AM_z_hbar,n_occ,path_dist\n")
         for i in range(N_path):
             qx, qy, qz = crystal_data.path_q_frac[i]
             T = crystal_data.path_eig_hyb[i]
@@ -4095,6 +4111,7 @@ if __name__ == "__main__":
             L_z_phon[_blk:_blk + _n_ph, _blk:_blk + _n_ph] = -L_branch.conj()
 
             AM_phon_q = T_dag @ L_z_phon @ T
+            AM_spin_q = T_dag @ _L_z_spin @ T
             char_phon_q = T_dag @ _J_phon @ T
             char_spin_q = T_dag @ _J_spin @ T
 
@@ -4105,8 +4122,11 @@ if __name__ == "__main__":
                 phon_char = char_phon_q[b, b].real
                 mag_char = char_spin_q[b, b].real
                 phon_AM = AM_phon_q[b, b].real
+                spin_AM = AM_spin_q[b, b].real
+                n_occ = n_hyb_occ[i, b]
                 f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
-                        f"{phon_char:.6f},{mag_char:.6f},{phon_AM:.6e},{path_dist[i]:.6f}\n")
+                        f"{phon_char:.6f},{mag_char:.6f},{phon_AM:.6e},{spin_AM:.6e},{n_occ:.6e},"
+                        f"{path_dist[i]:.6f}\n")
 
     print(f" -> Hybrid Path Channels: found_channels / max_channels : {path_hyb_num_channels / max_path_hyb_channels * 100:.2f}%")
 
