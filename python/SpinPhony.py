@@ -4047,9 +4047,24 @@ if __name__ == "__main__":
     _blk = num_hyb_branches
     _dim_tot = 2 * _blk
 
+    # Subsystem weights from the para-unitarity metric J = diag(1_N, -1_N),
+    # split into its phonon and magnon projections (same as
+    # save_hybrid_path_properties). These are basis-independent - an identity
+    # block is invariant under a unitary rotation inside its own subspace - so
+    # unlike L^z they need no per-q rotation and are built once here.
+    _J_phon = np.zeros((_dim_tot, _dim_tot), dtype=np.float64)
+    _J_spin = np.zeros((_dim_tot, _dim_tot), dtype=np.float64)
+
+    np.fill_diagonal(_J_phon[:_n_ph, :_n_ph], 1.0)
+    np.fill_diagonal(_J_phon[_blk:_blk + _n_ph, _blk:_blk + _n_ph], -1.0)
+
+    np.fill_diagonal(_J_spin[_n_ph:_blk, _n_ph:_blk], 1.0)
+    np.fill_diagonal(_J_spin[_blk + _n_ph:_dim_tot, _blk + _n_ph:_dim_tot], -1.0)
+
     with open(f"{out_dir}/hybrid_path_lifetimes.csv", "w") as f:
         f.write(label_comment + "\n")
-        f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps,phon_AM_z_hbar,path_dist\n")
+        f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps,"
+                "phon_character,mag_character,phon_AM_z_hbar,path_dist\n")
         for i in range(N_path):
             qx, qy, qz = crystal_data.path_q_frac[i]
             T = crystal_data.path_eig_hyb[i]
@@ -4066,13 +4081,18 @@ if __name__ == "__main__":
             L_z_phon[_blk:_blk + _n_ph, _blk:_blk + _n_ph] = -L_branch.conj()
 
             AM_phon_q = T_dag @ L_z_phon @ T
+            char_phon_q = T_dag @ _J_phon @ T
+            char_spin_q = T_dag @ _J_spin @ T
 
             for b in range(num_hyb_branches):
                 energy = crystal_data.path_w_hyb[i, b]
                 gamma = gamma_hyb_path_cpu[i, b]
                 tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
+                phon_char = char_phon_q[b, b].real
+                mag_char = char_spin_q[b, b].real
                 phon_AM = AM_phon_q[b, b].real
-                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e},{phon_AM:.6e},{path_dist[i]:.6f}\n")
+                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
+                        f"{phon_char:.6f},{mag_char:.6f},{phon_AM:.6e},{path_dist[i]:.6f}\n")
 
     print(f" -> Hybrid Path Channels: found_channels / max_channels : {path_hyb_num_channels / max_path_hyb_channels * 100:.2f}%")
 
