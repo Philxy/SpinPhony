@@ -14,7 +14,13 @@ except ImportError:
 
 
 class CrystalDataSoA:
-    def __init__(self, hdf5_filename, exchange_filename, slc_files=None, lattice_constant=1.0, anisotropy=0.01):
+    def __init__(self, hdf5_filename, exchange_filename, slc_files=None, lattice_constant=1.0, anisotropy=0.01,
+                 include_slc=True):
+        # Master switch for the spin-lattice coupling blocks in the BdG
+        # Hamiltonian. False leaves the magnon and phonon sectors uncoupled, so
+        # the "hybrid" modes reduce to bare magnons and bare phonons. Read by
+        # _calculate_coupled_hamiltonian for both the grid and path calls.
+        self.include_slc = include_slc
         # 1. Parse Jij Data
         self.jij_interactions = np.loadtxt(exchange_filename, delimiter=',', skiprows=1)
 
@@ -677,7 +683,7 @@ class CrystalDataSoA:
         V_plus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
         V_minus_all = np.zeros((N_pts, num_mag, num_phon), dtype=np.complex128)
 
-        if hasattr(self, 'slc_axis') and is_FM:
+        if hasattr(self, 'slc_axis') and is_FM and self.include_slc:
             # Gather valid entries once; fold the mass weighting in here, since
             # 1/sqrt(M_l) depends only on the Cartesian index p = 3*l + mu and
             # must be applied BEFORE the rotation mixes p.
@@ -790,11 +796,11 @@ class CrystalDataSoA:
                     H_BdG[off_mag_h + m, off_mag_h + n] = val_h
 
             # --- SLC Interaction Blocks ---
-            if hasattr(self, 'slc_axis') and is_FM:
+            # Toggled by self.include_slc (CLI: --no_slc disables it).
+            if hasattr(self, 'slc_axis') and is_FM and self.include_slc:
                 Vp = V_plus_all[q_idx]
                 Vm = V_minus_all[q_idx]
 
-                # Enable or disable the following block to include SLC interactions
                 #"""
                 # 1. Normal Particle-Particle
                 H_BdG[off_mag_p:off_mag_p+num_mag, off_ph_p:off_ph_p+num_phon] = Vp
@@ -3630,6 +3636,10 @@ if __name__ == "__main__":
     parser.add_argument("--tphon", type=float, help="Override initial Phonon temperature (K)")
     parser.add_argument("--steps", type=int, help="Override total integration steps")
     parser.add_argument("--full_bz", action="store_true",help="Evaluate hybrid lifetimes over the whole Brillouin zone.")
+    parser.add_argument("--no_slc", action="store_true",
+                        help="Disable the spin-lattice coupling blocks in the BdG Hamiltonian. "
+                             "The 'hybrid' modes then reduce to bare magnons and bare phonons "
+                             "(the scattering vertex is unaffected). SLC is ON by default.")
     
     args = parser.parse_args()
 
@@ -3675,12 +3685,16 @@ if __name__ == "__main__":
     print(f" Steps     : {steps:,}")
     print(f"==================================================")
 
+    print(f" SLC       : {'ON' if not args.no_slc else 'OFF (--no_slc)'}")
+    print(f"==================================================")
+
     crystal_data = CrystalDataSoA(
-        mesh, 
+        mesh,
         Jijs,
         slc_files=slc_files,
         lattice_constant=lattice_constant,
         anisotropy=anisotropy,
+        include_slc=not args.no_slc,
     )
     
     crystal_data.print_summary()
