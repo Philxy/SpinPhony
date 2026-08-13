@@ -4118,8 +4118,8 @@ if __name__ == "__main__":
     # save_hybrid_path_properties: L^z is intrinsically CARTESIAN (Levi-Civita
     # on x,y,z), so with the Hamiltonian in the bare-phonon-branch basis it must
     # be rotated per q-point before contracting with the hybrid eigenvectors.
-    _L_cart = crystal_data.get_nambu_angular_momentum(axis=2)[:crystal_data.phon_branches,
-                                                             :crystal_data.phon_branches]
+    _L_z_tot = crystal_data.get_nambu_angular_momentum(axis=2)
+    _L_cart = _L_z_tot[:crystal_data.phon_branches, :crystal_data.phon_branches]
     _n_ph = crystal_data.phon_branches
     _blk = num_hyb_branches
     _dim_tot = 2 * _blk
