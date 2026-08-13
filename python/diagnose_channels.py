@@ -219,6 +219,15 @@ def channel_table(crystal_data, d_chan_indices, d_chan_weights, num_channels,
             print(f"      dJz in ({lo:+.1f},{hi:+.1f}]  {rate[m].sum():+.4e}  "
                   f"({rate[m].sum() / total * 100:6.2f}%)  {int(m.sum()):,} ch")
 
+    # --- effective admixture: extensive sum of the per-channel magnon-      -
+    # character product on the two partner legs. The cubic vertex needs      -
+    # BOTH partner legs to carry magnon admixture (see the T1/T4/T7          -
+    # analysis); a mode's total rate is set by how much of THIS quantity     -
+    # is available across the whole BZ, not by the mode's own character.     -
+    M_eff = np.sum(g_mgc[k_i, b_k] * g_mgc[o_i, b_o])
+    print(f"   effective admixture  M_eff = sum_c magch_k * magch_o = {M_eff:.6e}"
+          f"   (M_eff / 1/tau = {M_eff / total if total > 0 else np.nan:.4e})")
+
     return total
 
 

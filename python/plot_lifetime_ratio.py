@@ -136,8 +136,10 @@ def plot(df, out_png=None, warn_dE=1.0, cmap="viridis"):
         ax.scatter(df.loc[~good, xcol], df.loc[~good, "ratio"],
                    facecolors="none", edgecolors="crimson", s=18, linewidths=0.6)
 
+
         ax.axhline(1.0, color="k", ls="--", lw=0.8, alpha=0.6)
         ax.set_yscale("log")
+        ax.set_xscale("log")
         ax.set_xlabel(xlabel, fontsize=11)
         ax.set_ylabel(r"$\tau_{\rm SLC}\,/\,\tau_{\rm bare}$", fontsize=11)
         ax.grid(True, which="both", ls="--", alpha=0.3)
