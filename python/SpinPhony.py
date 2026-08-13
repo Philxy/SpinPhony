@@ -2870,7 +2870,7 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
     N_path = path_q_frac.shape[0]
     N_grid = grid_q_cart.shape[0]
 
-    MIN_SCATTERING_ENERGY_MEV = 1.0
+    MIN_SCATTERING_ENERGY_MEV = 0.5
 
     if path_idx >= N_path or k_idx >= N_grid:
         return
