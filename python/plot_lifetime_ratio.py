@@ -1,47 +1,10 @@
-"""
-Effect of spin-lattice coupling on mode lifetimes.
-
-Compares two hybrid_path_lifetimes.csv files from the SAME material and path,
-one run with SLC enabled and one with --no_slc, and plots the lifetime ratio
-
-    R = tau_SLC / tau_bare
-
-against the magnon character and against the phonon angular momentum (both
-taken from the SLC-enabled run, since those are the quantities that only exist
-once the modes hybridise).
-
-R < 1 means hybridisation shortened the lifetime.
-
-MODE MATCHING
--------------
-Branches are ordered by energy, so the branch index is NOT a stable label: when
-SLC pushes levels around an avoided crossing, band n in one file can be band
-n+1 in the other. Two strategies:
-
-  --match energy  (default)  per q-point, solve the optimal assignment that
-                             minimises the total |E_SLC - E_bare|. Gives a
-                             guaranteed bijection and is right wherever the
-                             shifts are smaller than the level spacing.
-  --match index              naive pairing on the branch index. Faster to
-                             reason about, wrong near crossings.
-
-Neither can be right *at* an avoided crossing: there the hybrid modes are
-genuine 50/50 mixtures and no one-to-one map to bare modes exists. Points whose
-match cost |E_SLC - E_bare| exceeds --warn_dE are flagged and drawn hollow, so
-you can see whether the interesting region is also the untrustworthy one.
-
-Usage:
-    python plot_slc_lifetime_ratio.py \
-        --slc  Outputs/CrI3/hybrid_path_lifetimes.csv \
-        --bare Outputs/CrI3_bare/hybrid_path_lifetimes.csv \
-        --out  Outputs/CrI3/slc_lifetime_ratio.png
-"""
 import os
 import argparse
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from scipy.optimize import linear_sum_assignment
 
 
@@ -103,6 +66,219 @@ def match_modes(df_slc, df_bare, mode="energy"):
     return out
 
 
+def plot_mag_vs_tau_pam(df, E_min=22.0, out_png=None, cmap="coolwarm"):
+    """Plots Magnon character vs tau_SLC colored by PAM (normalized from -1 to +1 hbar)."""
+    mask_energy = df["E_slc"] > E_min if E_min > 0 else np.ones(len(df), dtype=bool)
+    df_sub = df[mask_energy]
+
+    fig, ax = plt.subplots(figsize=(6.5, 5))
+    title = rf"Modes with $E > {E_min}$ meV" if E_min > 0 else "All Modes"
+
+    if df_sub.empty:
+        ax.text(0.5, 0.5, f"No modes found with E > {E_min} meV.",
+                ha="center", va="center", transform=ax.transAxes)
+        plt.show()
+        return fig, ax
+
+    if df_sub["mag_character"].isna().all() or df_sub["phon_AM_z_hbar"].isna().all():
+        ax.text(0.5, 0.5, "Required columns ('mag_character' or 'phon_AM_z_hbar') missing.",
+                ha="center", va="center", transform=ax.transAxes)
+        plt.show()
+        return fig, ax
+
+    valid = (
+        np.isfinite(df_sub["tau_slc"]) & (df_sub["tau_slc"] > 0) &
+        np.isfinite(df_sub["mag_character"]) & (df_sub["mag_character"] > 0) &
+        np.isfinite(df_sub["phon_AM_z_hbar"])
+    )
+    invalid = ~valid
+
+    if invalid.any():
+        print(f"Note: {invalid.sum():,} modes omitted from Mag vs Tau (PAM colored) plot due to non-finite values.")
+
+    if valid.any():
+        sc = ax.scatter(
+            df_sub.loc[valid, "mag_character"],
+            df_sub.loc[valid, "tau_slc"],
+            c=df_sub.loc[valid, "phon_AM_z_hbar"],
+            cmap=cmap,
+            norm=mcolors.Normalize(vmin=-1.0, vmax=1.0),
+            s=15,
+            linewidths=0
+        )
+        cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+        cbar.set_label(r"Phonon angular momentum $\ell_z$ ($\hbar$)", fontsize=10)
+
+    ax.set_xlabel("Magnon character", fontsize=11)
+    ax.set_ylabel(r"$\tau_{\rm SLC}$ (ps)", fontsize=11)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_title(title, fontsize=12)
+    ax.grid(True, which="both", ls="--", alpha=0.3)
+
+    if out_png:
+        os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
+        fig.savefig(out_png, dpi=300, bbox_inches="tight")
+        print(f"Mag vs Tau (PAM colored) plot saved to '{out_png}'")
+
+    plt.show()
+    return fig, ax
+
+
+def plot_effective_prefactor(df, out_png=None, cmap="viridis"):
+    """Plots the effective prefactor R = (1/tau_slc) / mag_character against PAM."""
+    fig, ax = plt.subplots(figsize=(6.5, 5))
+
+    if df["phon_AM_z_hbar"].isna().all() or df["mag_character"].isna().all():
+        ax.text(0.5, 0.5, "Required columns ('phon_AM_z_hbar', 'mag_character') missing.",
+                ha="center", va="center", transform=ax.transAxes)
+        plt.show()
+        return fig, ax
+
+    valid = (
+        np.isfinite(df["tau_slc"]) & (df["tau_slc"] > 0) &
+        np.isfinite(df["mag_character"]) & (df["mag_character"] > 0)
+    )
+    
+    if not valid.any():
+        ax.text(0.5, 0.5, "No valid data to compute R.",
+                ha="center", va="center", transform=ax.transAxes)
+        plt.show()
+        return fig, ax
+
+    df_valid = df[valid].copy()
+    df_valid["R_eff"] = 1.0 / (df_valid["tau_slc"] * df_valid["mag_character"])
+
+    sc = ax.scatter(df_valid["phon_AM_z_hbar"], df_valid["R_eff"],
+                    c=df_valid["E_slc"], cmap=cmap, s=15, linewidths=0)
+    
+    cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+    cbar.set_label("Energy (meV)", fontsize=10)
+
+    ax.set_xlabel(r"Phonon angular momentum $\ell_z$ ($\hbar$)", fontsize=11)
+    ax.set_ylabel(r"$R = (1/\tau_{\rm SLC}) \,/\, w_{\rm mag}$ (ps$^{-1}$)", fontsize=11)
+    ax.set_yscale("log")
+    ax.grid(True, which="both", ls="--", alpha=0.3)
+
+    if out_png:
+        os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
+        fig.savefig(out_png, dpi=300, bbox_inches="tight")
+        print(f"Effective prefactor plot saved to '{out_png}'")
+
+    plt.show()
+    return fig, ax
+
+
+def plot_tau_high_energy(df, E_min=22.0, out_png=None, cmap="viridis"):
+    """Plots Magnon character and Phonon AM (+ and -) vs tau_SLC for modes above a given energy threshold."""
+    mask_energy = df["E_slc"] > E_min if E_min > 0 else np.ones(len(df), dtype=bool)
+    df_sub = df[mask_energy]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+    fig.suptitle(rf"Modes with $E > {E_min}$ meV" if E_min > 0 else "All Modes", fontsize=12, y=1.02)
+
+    if df_sub.empty:
+        for ax in axes:
+            ax.text(0.5, 0.5, f"No modes found with E > {E_min} meV.",
+                    ha="center", va="center", transform=ax.transAxes)
+        plt.show()
+        return fig, axes
+
+    valid = np.isfinite(df_sub["tau_slc"]) & (df_sub["tau_slc"] > 0)
+    invalid = ~valid
+
+    if invalid.any():
+        print(f"Note: {invalid.sum():,} modes with E > {E_min} meV have infinite/undefined tau_slc "
+              "and are omitted from the high-energy Tau plot.")
+
+    sc = None
+
+    plot_configs = [
+        (axes[0], valid, "mag_character", "Magnon character", False),
+        (axes[1], valid & (df_sub["phon_AM_z_hbar"] > 0), "phon_AM_z_hbar", r"Positive PAM $\ell_z$ ($\hbar$)", False),
+        (axes[2], valid & (df_sub["phon_AM_z_hbar"] < 0), "phon_AM_z_hbar", r"Negative PAM $|\ell_z|$ ($\hbar$)", True)
+    ]
+
+    for ax, mask, xcol, xlabel, use_abs in plot_configs:
+        if df_sub[xcol].isna().all():
+            ax.text(0.5, 0.5, f"'{xcol}' not in the SLC file.",
+                    ha="center", va="center", transform=ax.transAxes)
+            ax.set_xlabel(xlabel)
+            continue
+
+        if mask.any():
+            x_data = df_sub.loc[mask, xcol]
+            if use_abs:
+                x_data = x_data.abs()
+                
+            sc_curr = ax.scatter(x_data, 
+                                 df_sub.loc[mask, "tau_slc"],
+                                 c=df_sub.loc[mask, "E_slc"], cmap=cmap,
+                                 s=15, linewidths=0)
+            if sc_curr is not None:
+                sc = sc_curr
+
+        ax.set_xlabel(xlabel, fontsize=11)
+        ax.set_ylabel(r"$\tau_{\rm SLC}$ (ps)", fontsize=11)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.grid(True, which="both", ls="--", alpha=0.3)
+
+    if sc is not None:
+        cbar = fig.colorbar(sc, ax=axes, pad=0.02)
+        cbar.set_label("Energy (meV)", fontsize=10)
+
+    if out_png:
+        os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
+        fig.savefig(out_png, dpi=300, bbox_inches="tight")
+        print(f"High-energy Tau plot saved to '{out_png}'")
+
+    plt.show()
+    return fig, axes
+
+
+def plot_mag_vs_energy(df, out_png=None, cmap="viridis"):
+    """Plots Energy vs Magnon character colored by SLC lifetime (tau_slc)."""
+    fig, ax = plt.subplots(figsize=(6.5, 5))
+
+    if df["mag_character"].isna().all():
+        ax.text(0.5, 0.5, "'mag_character' not in the SLC file.",
+                ha="center", va="center", transform=ax.transAxes)
+        plt.show()
+        return fig, ax
+
+    valid = np.isfinite(df["tau_slc"]) & (df["tau_slc"] > 0)
+    invalid = ~valid
+    
+    if invalid.any():
+        ax.scatter(df.loc[invalid, "mag_character"], df.loc[invalid, "E_slc"],
+                   color="lightgrey", marker="x", s=20, lw=1, alpha=0.8,
+                   label=r"$\tau_{\rm SLC} = \infty$")
+
+    if valid.any():
+        sc = ax.scatter(df.loc[valid, "mag_character"], df.loc[valid, "E_slc"],
+                        c=df.loc[valid, "tau_slc"], cmap=cmap,
+                        norm=mcolors.LogNorm(), s=15, linewidths=0)
+        cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+        cbar.set_label(r"$\tau_{\rm SLC}$ (ps)", fontsize=10)
+
+    ax.set_xlabel("Magnon character", fontsize=11)
+    ax.set_ylabel("Energy (meV)", fontsize=11)
+    ax.set_xscale("log")
+    ax.grid(True, which="both", ls="--", alpha=0.3)
+    
+    if invalid.any():
+        ax.legend(loc="best")
+
+    if out_png:
+        os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
+        fig.savefig(out_png, dpi=300, bbox_inches="tight")
+        print(f"Energy vs Magnon plot saved to '{out_png}'")
+
+    plt.show()
+    return fig, ax
+
+
 def plot(df, out_png=None, warn_dE=1.0, cmap="viridis"):
     """Two panels: lifetime ratio against magnon character and against PAM."""
     ok = np.isfinite(df["ratio"]) & (df["ratio"] > 0)
@@ -112,7 +288,7 @@ def plot(df, out_png=None, warn_dE=1.0, cmap="viridis"):
         raise ValueError("Nothing to plot - every ratio was non-finite "
                          "(tau = inf means a mode found no scattering channel).")
     if n_drop:
-        print(f"Note: dropped {n_drop:,} modes with non-finite or non-positive ratio.")
+        print(f"Note: dropped {n_drop:,} modes with non-finite or non-positive ratio from the main plot.")
 
     good = df["dE"] <= warn_dE
     print(f"Match cost |dE|: median {df['dE'].median():.4f}, max {df['dE'].max():.4f} meV")
@@ -136,7 +312,6 @@ def plot(df, out_png=None, warn_dE=1.0, cmap="viridis"):
         ax.scatter(df.loc[~good, xcol], df.loc[~good, "ratio"],
                    facecolors="none", edgecolors="crimson", s=18, linewidths=0.6)
 
-
         ax.axhline(1.0, color="k", ls="--", lw=0.8, alpha=0.6)
         ax.set_yscale("log")
         ax.set_xscale("log")
@@ -150,7 +325,7 @@ def plot(df, out_png=None, warn_dE=1.0, cmap="viridis"):
     if out_png:
         os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
         fig.savefig(out_png, dpi=300, bbox_inches="tight")
-        print(f"Plot saved to '{out_png}'")
+        print(f"Main plot saved to '{out_png}'")
 
     plt.show()
     return fig, axes
@@ -160,7 +335,12 @@ def main():
     p = argparse.ArgumentParser(description="Lifetime ratio with/without SLC vs magnon character and PAM.")
     p.add_argument("--slc", required=True, help="hybrid_path_lifetimes.csv from the SLC-enabled run")
     p.add_argument("--bare", required=True, help="hybrid_path_lifetimes.csv from the --no_slc run")
-    p.add_argument("--out", default=None, help="Output PNG")
+    p.add_argument("--out", default=None, help="Output PNG for main plot")
+    p.add_argument("--out_energy", default=None, help="Output PNG for Energy vs Magnon character plot")
+    p.add_argument("--out_tau", default=None, help="Output PNG for high-energy Magnon/PAM vs Tau plot")
+    p.add_argument("--out_mag_tau_pam", default=None, help="Output PNG for Mag character vs Tau colored by PAM")
+    p.add_argument("--out_R", default=None, help="Output PNG for Effective Prefactor vs PAM plot")
+    p.add_argument("--E_min", type=float, default=22.0, help="Energy threshold for the Tau plots (meV)")
     p.add_argument("--match", choices=["energy", "index"], default="energy",
                    help="Mode pairing strategy (default: energy)")
     p.add_argument("--warn_dE", type=float, default=1.0,
@@ -176,6 +356,19 @@ def main():
         df.to_csv(args.csv, index=False)
         print(f"Matched table written to '{args.csv}'")
 
+    # 1. Energy vs Magnon character
+    plot_mag_vs_energy(df, out_png=args.out_energy)
+    
+    # 2. Magnon/PAM character vs Tau (for high energies)
+    plot_tau_high_energy(df, E_min=args.E_min, out_png=args.out_tau)
+
+    # 3. New Plot: Magnon character vs Tau (colored by PAM in [-1, 1] hbar)
+    plot_mag_vs_tau_pam(df, E_min=args.E_min, out_png=args.out_mag_tau_pam)
+
+    # 4. Effective Prefactor R vs PAM
+    plot_effective_prefactor(df, out_png=args.out_R)
+
+    # 5. Original Plot: Ratio vs Magnon character and PAM
     plot(df, out_png=args.out, warn_dE=args.warn_dE)
 
 

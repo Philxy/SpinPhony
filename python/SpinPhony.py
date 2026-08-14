@@ -3870,6 +3870,34 @@ if __name__ == "__main__":
 
     phon_chars, mag_chars, phon_ams, spin_ams = crystal_data.extract_full_grid_hybrid_properties()
 
+    # ------------------------------------------------------------------
+    # Magnon-phonon coupling constant G_mp, from the two-temperature
+    # linearization of the RTA dynamics (see theory notes): each mode is
+    # driven toward a character-interpolated local temperature
+    # T*_{kmu} = w_mag*T_m + w_ph*T_p, giving
+    #   dE_m/dt = -sum_kmu w_mag^2 * eps * phi * gamma * (T_m - T_p)
+    # where phi = d n^BE/dT|_T0 = eps/(kB*T0^2) * n0*(n0+1). This reuses
+    # ONLY the already-computed gamma_hyb_cpu / mag_chars / n_hyb_cpu --
+    # no new GPU kernel, run once immediately after the full-BZ lifetime
+    # scan above. T0 is taken to be T_mag_init (the equilibrium the rates
+    # were computed at), consistent with the tau_remag derivation.
+    # ------------------------------------------------------------------
+    kB = 0.08617333262  # meV/K
+    eps = crystal_data.w_hyb
+    with np.errstate(divide="ignore", invalid="ignore"):
+        phi = eps / (kB * T_mag_init**2) * n_hyb_cpu * (n_hyb_cpu + 1.0)
+    phi[~np.isfinite(phi)] = 0.0
+
+    G_mp = np.sum(mag_chars**2 * eps * phi * gamma_hyb_cpu)          # meV / (K * ps)
+    C_m = np.sum(mag_chars**2 * eps * phi)                          # meV / K
+    C_p = np.sum(phon_chars**2 * eps * phi)                         # meV / K
+    tau_mp = np.inf if G_mp <= 0 else 1.0 / (G_mp * (1.0 / C_m + 1.0 / C_p))
+
+    print(f"\n -> G_mp    = {G_mp:.6e} meV/(K*ps)")
+    print(f" -> C_m     = {C_m:.6e} meV/K")
+    print(f" -> C_p     = {C_p:.6e} meV/K")
+    print(f" -> tau_mp  = {tau_mp:.4f} ps   (1/tau = G_mp*(1/C_m+1/C_p), at T0={T_mag_init} K)")
+
     os.makedirs("Outputs", exist_ok=True)
     out_file = f"{out_dir}/hybrid_equilibrium_lifetimes.csv"
     
