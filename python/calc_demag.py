@@ -60,5 +60,5 @@ def calculate_tau_mag(filepath, T_K=20.0):
 
 if __name__ == "__main__":
     # Point to your exact file path
-    target_file = 'Outputs/CrI3_Path_Hyrbid_Full_sig_0.2/hybrid_path_lifetimes.csv'
-    calculate_tau_mag(target_file, T_K=40.0)
+    target_file = 'Outputs/CrI3_Path_Hyrbid_Full_sig_0.2_15K/hybrid_path_lifetimes.csv'
+    calculate_tau_mag(target_file, T_K=15.0)

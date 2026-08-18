@@ -1,5 +1,5 @@
 """
-Calculate macroscopic demagnetization timescale at T = 20 K from microscopic hybrid mode lifetimes.
+Calculate macroscopic demagnetization timescale at T  from microscopic hybrid mode lifetimes.
 
 Usage:
     python calc_demag_20K.py Outputs/CrI3_Path_Hyrbid_Full/hybrid_path_lifetimes.csv
@@ -10,7 +10,7 @@ import pandas as pd
 
 # Boltzmann constant in meV/K
 K_B = 0.086173
-T_KELVIN = 20.0
+T_KELVIN = 15.0
 
 def load_path_csv(path):
     """Loads a SpinPhony path CSV, skipping the '# path_labels:' comment line."""

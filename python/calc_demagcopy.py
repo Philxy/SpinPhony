@@ -181,7 +181,7 @@ M_rec_continuous = recovery_only(t_rec_continuous, *popt_rec)
 
 fig, ax = plt.subplots(figsize=(8 / 2.52, 6 / 2.52))
 ax.scatter(total_x, total_y, label="Experiment", color="black", s=10)
-ax.plot(t_continuous, M_continuous, color="red", linewidth=1.5, alpha=0.5, label="Type-II fit")
+ax.plot(t_continuous, M_continuous, color="red", linewidth=1.5, alpha=.9, label="Type-II fit")
 ax.plot(t_rec_continuous, M_rec_continuous, color="green", linewidth=2.0, label="Recovery-only fit")
 ax.axvline(T_CUTOFF, color="gray", linestyle="--", linewidth=0.8)
 
