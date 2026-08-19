@@ -318,7 +318,6 @@ def main():
     ax2.set_xlabel("time (ps)")
     ax2.set_ylabel(r"$M(t)/M(T_\mathrm{eq})$")
     ax2.legend(fontsize=9)
-    ax2.grid(True, ls="--", alpha=0.3)
 
     fig.tight_layout()
     out_png = args.out_png or f"{args.data_dir}/2TM_trajectory.png"

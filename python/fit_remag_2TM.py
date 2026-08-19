@@ -293,6 +293,8 @@ def main():
     ax.axvline(args.t_cutoff, color="gray", ls="--", lw=0.8)
     ax.set_xlabel("Delay (ps)")
     ax.set_ylabel("TRPR (a.u.)")
+    ax.set_xlim(-20,1000)
+    ax.set_ylim(-1.5,0.2)
     ax.legend(fontsize=9)
     ax.grid(True, ls="--", alpha=0.3)
     fig.tight_layout()
