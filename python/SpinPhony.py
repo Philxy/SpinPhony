@@ -4247,14 +4247,35 @@ if __name__ == "__main__":
 
     print(f"-> Saved hybrid path lifetimes to {out_dir}/hybrid_path_lifetimes.csv")
 
-    # ========================== Gmp(T_m, T_p) Grid ==========================
-    # Sweeps G_mp = sum_{k,mu} (w_mag_k,mu)^2 * eps_k,mu * gamma_k,mu[T_m,T_p] * phi_k,mu(T_p)
-    # over a 2D (T_m, T_p) grid, reusing the hybrid path/BZ channels already
-    # scanned above (d_path_hyb_chan_indices_active / _weights_active) - no
-    # new vertex evaluation, just a cheap re-weighting of stored channels per
-    # grid point via the unchanged phase_lifetime_hybrid_path kernel. Only
-    # physically meaningful as a true BZ-integrated G_mp when --full_bz is
-    # also set, since the sum runs over whatever "path" currently is.
+    # ==================== Magnon-Phonon Exchange Grid ====================
+    # Sweeps the magnon<->phonon energy exchange over a 2D (T_m, T_p) grid,
+    # reusing the hybrid path/BZ channels already scanned above
+    # (d_path_hyb_chan_indices_active / _weights_active) - no new vertex
+    # evaluation, just a cheap re-weighting of stored channels per grid point
+    # via the unchanged phase_lifetime_hybrid_path kernel. Only physically
+    # meaningful as a true BZ integral when --full_bz is also set, since the
+    # sum runs over whatever "path" currently is.
+    #
+    # TWO quantities are written per grid point:
+    #
+    #   Q_flux = sum (w_mag)^2 eps gamma[T_m,T_p] * [n(eps;T_m) - n(eps;T_p)]
+    #   G_mp   = sum (w_mag)^2 eps gamma[T_m,T_p] * phi(eps;T_p)
+    #
+    # Q_flux is the EXACT energy flux (dE_m/dt = -Q_flux) and is the quantity
+    # to use in the 2TM. G_mp is its linear-response coefficient, obtained by
+    # replacing the exact occupation difference with its first-order Taylor
+    # expansion about T_0 = T_p, i.e. n(T_m)-n(T_p) ~ phi(T_p)*(T_m-T_p).
+    #
+    # That expansion is only valid for |T_m-T_p| << eps/k_B. Outside it the
+    # choice of expansion point (T_p rather than T_m) - irrelevant at linear
+    # order - becomes a large systematic error, because phi inherits n_BE's
+    # exponential suppression: for eps >> k_B T_p, phi(T_p) is exponentially
+    # small while the true occupation difference is O(1). This shows up as a
+    # strong asymmetry of G_mp under T_m <-> T_p, and makes G_mp underestimate
+    # the flux by orders of magnitude for high-energy modes when T_m >> T_p.
+    # Q_flux has neither problem: it is exactly antisymmetric under the swap
+    # and vanishes identically on the diagonal. G_mp is retained only for
+    # comparison / backwards compatibility.
     if args.Gmp_grid:
         from diagnose_channels import path_observables
 
@@ -4277,6 +4298,7 @@ if __name__ == "__main__":
 
         T_values = np.arange(args.Gmp_T_min, args.Gmp_T_max + 1e-9, args.Gmp_T_step)
         Gmp_results = []
+        _weight = (_path_mag_char ** 2) * _path_energy
 
         for T_m in T_values:
             for T_p in T_values:
@@ -4295,17 +4317,36 @@ if __name__ == "__main__":
                 cuda.synchronize()
 
                 gamma_TmTp_cpu = d_gamma_TmTp.copy_to_host().reshape((N_path, num_hyb_branches))
-                phi_Tp = _phi(_path_energy, T_p)
-                G_mp = np.sum((_path_mag_char ** 2) * _path_energy * gamma_TmTp_cpu * phi_Tp)
 
-                Gmp_results.append((T_m, T_p, G_mp))
+                # Exact occupation difference - no expansion, no reference point.
+                dn_exact = (init_bose_einstein(_path_energy, T_m)
+                            - init_bose_einstein(_path_energy, T_p))
+                Q_flux = np.sum(_weight * gamma_TmTp_cpu * dn_exact)
+
+                # Linear-response coefficient, kept for comparison only.
+                G_mp = np.sum(_weight * gamma_TmTp_cpu * _phi(_path_energy, T_p))
+
+                Gmp_results.append((T_m, T_p, Q_flux, G_mp))
 
         with open(f"{out_dir}/Gmp_temperature_grid.csv", "w") as f:
-            f.write("T_m_K,T_p_K,G_mp\n")
-            for T_m, T_p, G_mp in Gmp_results:
-                f.write(f"{T_m:.4f},{T_p:.4f},{G_mp:.8e}\n")
+            f.write("T_m_K,T_p_K,Q_flux,G_mp\n")
+            for T_m, T_p, Q_flux, G_mp in Gmp_results:
+                f.write(f"{T_m:.4f},{T_p:.4f},{Q_flux:.8e},{G_mp:.8e}\n")
 
-        print(f"-> Saved Gmp(T_m,T_p) grid to {out_dir}/Gmp_temperature_grid.csv")
+        # Diagnostic: how far the linearization is from the exact flux at the
+        # most-displaced corner of the sweep. A large ratio means the 2TM must
+        # use Q_flux, not G_mp.
+        _T_lo, _T_hi = T_values[0], T_values[-1]
+        _corner = [r for r in Gmp_results if r[0] == _T_hi and r[1] == _T_lo]
+        if _corner:
+            _, _, _Q, _G = _corner[0]
+            _Q_lin = _G * (_T_hi - _T_lo)
+            if abs(_Q_lin) > 0:
+                print(f" -> Linearization check at (T_m,T_p)=({_T_hi:g},{_T_lo:g}) K: "
+                      f"exact Q = {_Q:.4e}, linear G_mp*dT = {_Q_lin:.4e}  "
+                      f"(ratio {_Q / _Q_lin:.3g})")
+
+        print(f"-> Saved Q_flux/G_mp(T_m,T_p) grid to {out_dir}/Gmp_temperature_grid.csv")
 
     # 3. Execute Phase 1
     print("\nStarting Phase 1: Scanning Phase Space and computing FT Vertices...")

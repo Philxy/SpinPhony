@@ -102,7 +102,8 @@ def main():
     # Log scale is usually best for visualizing smearing convergence
     plt.xscale('log') 
     plt.yscale('log') # Uncomment if lifetimes span multiple orders of magnitude
-    
+
+    plt.ylim(20, 50)
 
     plt.legend(fontsize=11,title=r"$\mathbf{q}$-mesh", frameon=True)
     plt.tight_layout()
