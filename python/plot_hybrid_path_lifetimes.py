@@ -317,7 +317,7 @@ def plot_dense_mag_with_inv_tau_scatter(
     cmap="rainbow",
     vmin_mag=1e-4,
     vmax_mag=1.0,
-    vmin_inv_tau=1e-5,
+    vmin_inv_tau=None,
     vmax_inv_tau=None,
     linewidth=1.2,
     s=30,
@@ -341,6 +341,9 @@ def plot_dense_mag_with_inv_tau_scatter(
 
     if vmax_inv_tau is None:
         vmax_inv_tau = df_life_valid["inv_tau"].max()
+
+    if vmin_inv_tau is None:
+        vmin_inv_tau = df_life_valid["inv_tau"].min()
 
     # Shared normalized coordinate space [0, 1]
     norm_shared = mcolors.Normalize(vmin=0.0, vmax=1.0)
@@ -448,61 +451,66 @@ if __name__ == "__main__":
     # --- CrI3 (Hybrid) ---
     plot_dense_mag_with_inv_tau_scatter(
         dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/CrI3_Path_Hyrbid_Anal_sig_0.5/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/CrI3_Path_Hyrbid_Anal_sig_0.5/hybrid_bands_mag_inv_tau.png",
+        lifetime_csv="Outputs/CrI3_Path_Hyrbid_sig_0.01_15K/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_Hyrbid_sig_0.01_15K/hybrid_bands_mag_inv_tau.png",
         vmin_mag=1e-4,
         vmax_mag=1.0,
-        vmin_inv_tau=1e-5,
+        vmin_inv_tau=1E-6,
         vmax_inv_tau=None,
-    )
-    plot_dense_mag_character(
-        dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
-        save_plot="Outputs/CrI3_Path_Hyrbid_Anal_sig_0.5/hybrid_bands_mag_character.png",
-        vmin=1e-4,
-        vmax=1.0,
-    )
-    plot_dense_with_scatter(
-        dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/CrI3_Path_Hyrbid_Anal_sig_0.5/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/CrI3_Path_Hyrbid_Anal_sig_0.5/hybrid_bands_lifetime_scatter.png",
-        vmin=1e0,
-        vmax=1e5,
-    )
-    plot_dense_interpolated_line(
-        dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/CrI3_Path_Hyrbid_Anal_sig_0.5/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/CrI3_Path_Hyrbid_Anal_sig_0.5/hybrid_bands_lifetime_interpolated.png",
-        vmin=1e0,
-        vmax=1e5,
     )
 
     # Non Hybrid
     plot_dense_mag_with_inv_tau_scatter(
         dense_csv="Outputs/CrI3_Path_NonHyrbid_dense/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/CrI3_Path_NonHyrbid_Anal_sig_0.5/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/CrI3_Path_NonHyrbid_Anal_sig_0.5/hybrid_bands_mag_inv_tau.png",
+        lifetime_csv="Outputs/CrI3_Path_NonHyrbid_sig_0.01_15K/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_NonHyrbid_sig_0.01_15K/hybrid_bands_mag_inv_tau.png",
         vmin_mag=1e-4,
         vmax_mag=1.0,
-        vmin_inv_tau=1e-5,
+        vmin_inv_tau=1E-6,
         vmax_inv_tau=None,
     )
+
+    plot_dense_mag_character(
+        dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
+        save_plot="Outputs/CrI3_Path_Hyrbid_sig_0.01_15K/hybrid_bands_mag_character.png",
+        vmin=1e-4,
+        vmax=1.0,
+    )
+    plot_dense_with_scatter(
+        dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/CrI3_Path_Hyrbid_sig_0.01_15K/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_Hyrbid_sig_0.01_15K/hybrid_bands_lifetime_scatter.png",
+        vmin=1e0,
+        vmax=1e5,
+    )
+    plot_dense_interpolated_line(
+        dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
+        lifetime_csv="Outputs/CrI3_Path_Hyrbid_sig_0.01_15K/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_Hyrbid_sig_0.01_15K/hybrid_bands_lifetime_interpolated.png",
+        vmin=1e0,
+        vmax=1e5,
+    )
+
+
+    # Non hybrid
+
     plot_dense_mag_character(
         dense_csv="Outputs/CrI3_Path_NonHyrbid_dense/hybrid_path_properties.csv",
-        save_plot="Outputs/CrI3_Path_NonHyrbid_Anal_sig_0.5/hybrid_bands_mag_character.png",
+        save_plot="Outputs/CrI3_Path_NonHyrbid_sig_0.01_15K/hybrid_bands_mag_character.png",
         vmin=1e-4,
         vmax=1.0,
     )
     plot_dense_with_scatter(
         dense_csv="Outputs/CrI3_Path_NonHyrbid_dense/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/CrI3_Path_NonHyrbid_Anal_sig_0.5/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/CrI3_Path_NonHyrbid_Anal_sig_0.5/hybrid_bands_lifetime_scatter.png",
+        lifetime_csv="Outputs/CrI3_Path_NonHyrbid_sig_0.01_15K/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_NonHyrbid_sig_0.01_15K/hybrid_bands_lifetime_scatter.png",
         vmin=1e0,
         vmax=1e5,
     )
     plot_dense_interpolated_line(
         dense_csv="Outputs/CrI3_Path_NonHyrbid_dense/hybrid_path_properties.csv",
-        lifetime_csv="Outputs/CrI3_Path_NonHyrbid_Anal_sig_0.5/hybrid_path_lifetimes.csv",
-        save_plot="Outputs/CrI3_Path_NonHyrbid_Anal_sig_0.5/hybrid_bands_lifetime_interpolated.png",
+        lifetime_csv="Outputs/CrI3_Path_NonHyrbid_sig_0.01_15K/hybrid_path_lifetimes.csv",
+        save_plot="Outputs/CrI3_Path_NonHyrbid_sig_0.01_15K/hybrid_bands_lifetime_interpolated.png",
         vmin=1e0,
         vmax=1e5,
     )

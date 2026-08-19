@@ -50,15 +50,23 @@ def load_path_csv(path):
     return df, labels
 
 
-def set_path_ticks(ax, labels):
+def set_path_ticks(ax, labels, theme="light"):
     """Applies high-symmetry point tick labels + vertical gridlines to ax."""
     if not labels:
         return
     tick_locs = [pos for _, pos in labels]
-    tick_labels = [name for name, _ in labels]
+    
+    # Replace 'G' with LaTeX \Gamma
+    tick_labels = [r"$\Gamma$" if name == "G" else name for name, _ in labels]
+    
     ax.set_xticks(tick_locs)
-    ax.set_xticklabels(tick_labels, fontsize=13)
-    ax.grid(True, axis="x", linestyle="--", color="gray", alpha=0.5)
+    
+    # Tick labels are always on the white outer margin, so they stay black
+    ax.set_xticklabels(tick_labels, fontsize=13, color="black")
+    
+    # The grid is inside the axes; use a lighter gray for visibility on black axes
+    grid_color = "#AAAAAA" if theme == "dark" else "gray"
+    ax.grid(True, axis="x", linestyle="--", color=grid_color, alpha=0.5)
 
 
 def _detect_column(df, candidate_names):
@@ -87,9 +95,10 @@ def plot_dense_property(
     use_log=False,
     linthresh=1e-2,
     vlim=None,
-    linewidth=1.5,
+    linewidth=1.0,
     margin=0.0,
     save_plot=None,
+    theme="light",
 ):
     """
     Plots the dense band structure colored by a specific property using LineCollection.
@@ -123,19 +132,14 @@ def plot_dense_property(
     # Determine Normalization (Logarithmic vs Linear)
     if use_log:
         if is_diverging:
-            # Symmetric Log Scale for diverging properties with zero/negative values (e.g. PAM)
             norm = mcolors.SymLogNorm(
                 linthresh=linthresh, vmin=vmin, vmax=vmax, base=10
             )
         else:
-            # Standard Log Scale for strictly positive properties
-            pos_vals = vals[vals > 0]
-            min_pos = pos_vals.min() if len(pos_vals) > 0 else 1e-4
-            vmin_log = max(vmin, min_pos) if vmin > 0 else min_pos
-            vmax_log = max(vmax, vmin_log * 10)
-            norm = mcolors.LogNorm(vmin=vmin_log, vmax=vmax_log)
+            # --- MODIFIED: Use the user vmin directly if > 0, allowing clip=True in LogNorm ---
+            vmin_log = vmin if vmin > 0 else 1e-4
+            norm = mcolors.LogNorm(vmin=vmin_log, vmax=vmax, clip=True)
     else:
-        # Linear Normalization
         if is_diverging and vmin < 0.0 < vmax:
             norm = mcolors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
         else:
@@ -144,7 +148,11 @@ def plot_dense_property(
             norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
     # Setup Plot
-    fig, ax = plt.subplots(figsize=(16 / 2.52, 16 / 2.52))
+    fig, ax = plt.subplots(figsize=(8 / 2.52, 12 / 2.52))
+
+    # Apply Dark Theme Overrides ONLY to the inside of the plot (the axes)
+    if theme == "dark":
+        ax.set_facecolor('black')
 
     band_col = _detect_column(df_disp, ["band", "branch"]) or "band"
     path_col = _detect_column(df_disp, ["path_dist", "q_path", "q_idx"]) or "path_dist"
@@ -161,18 +169,25 @@ def plot_dense_property(
 
         # Segment midpoint coloring
         seg_vals = 0.5 * (c[:-1] + c[1:])
+        
+        # --- MODIFIED: Clip values so anything below the log limit (like 0) is pinned to the minimum.
+        # This guarantees Matplotlib won't "mask" and hide segments with a value of 0. ---
+        if use_log and not is_diverging:
+            seg_vals = np.clip(seg_vals, norm.vmin, None)
 
         points = np.array([x, y]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1) #linewidth=linewidth
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
 
-        lc = LineCollection(segments, cmap=cmap, norm=norm)
+        # Added capstyle="round" and joinstyle="round" to remove white gaps
+        lc = LineCollection(segments, cmap=cmap, norm=norm, capstyle="round", joinstyle="round")
         lc.set_array(seg_vals)
         lc.set_linewidth(linewidth)
         ax.add_collection(lc)
 
     if lc is not None:
-        cbar = fig.colorbar(lc, ax=ax)
-        cbar.set_label(cbar_label, fontsize=12, fontweight="bold")
+        cbar = fig.colorbar(lc, ax=ax, location="top", pad=0.01)
+        # Label remains black because it's in the white outer margin
+        cbar.set_label(cbar_label, fontsize=12, fontweight="bold", labelpad=15, color="black")
 
     # Set axis limits
     x_min, x_max = df_disp[path_col].min(), df_disp[path_col].max()
@@ -180,17 +195,19 @@ def plot_dense_property(
     ax.set_xlim(x_min - x_dist * margin, x_max + x_dist * margin)
 
     ax.set_ylim(df_disp["energy_meV"].min(), df_disp["energy_meV"].max() * 1.05)
-    ax.set_ylabel("Energy (meV)", fontsize=12, fontweight="bold")
-    set_path_ticks(ax, labels)
+    ax.set_ylabel(r"Energy $\varepsilon_{\boldsymbol{k}\mu}$ (meV)", fontsize=12, fontweight="bold")
+    set_path_ticks(ax, labels, theme=theme)
 
     fig.tight_layout()
-    plt.show()
+    #plt.show()
 
     if save_plot:
         os.makedirs(os.path.dirname(save_plot), exist_ok=True)
-        fig.savefig(save_plot, dpi=300)
+        # Don't pass a facecolor to savefig, letting the outer figure background stay standard
+        fig.savefig(save_plot, dpi=400)
         print(f"Plot saved to '{save_plot}'")
 
+    plt.close(fig) 
     return fig, ax
 
 
@@ -200,52 +217,59 @@ def plot_all_cri3_properties(
 ):
     cmap_contrast = get_contrast_coolwarm()
 
-    """
-    Plots the three key dense properties for CrI3 matching exact header columns:
-    - phon_AM_z_hbar
-    - mag_character
-    - spin_AM_z_hbar
-    """
+    # Define our two plotting configurations
+    themes = [
+        # Standard Version
+        {"name": "light", "cmap_div": cmap_contrast, "cmap_seq": "copper", "cmap_spin": "copper"},
+        # Version with Black Axes and Standard RdBu_r colormap
+        {"name": "dark", "cmap_div": "bwr", "cmap_seq": "RdBu_r", "cmap_spin": "copper"}
+    ]
 
-    # 1. Phonon Angular Momentum (Linear scaling with min/max vlim bounds; set use_log=True if logarithmic scaling is desired)
-    plot_dense_property(
-        dense_csv=dense_csv,
-        prop_column_candidates=["phon_AM_z_hbar", "phonon_Lz", "Lz_ph", "L_z"],
-        cbar_label=r"Phonon Angular Momentum $L_z$ ($\hbar$)",
-        cmap=cmap_contrast,
-        is_diverging=True,
-        use_log=True,       # Set to True to enable symmetric logarithmic colormap
-        vlim=(-1.0, 1.0),    # Explicit min and max for linear/log scaling
-        save_plot=os.path.join(output_dir, "cri3_phonon_angular_momentum.png"),
-    )
+    for t in themes:
+        theme = t["name"]
+        suffix = f"_{theme}.png"
 
-    # 2. Magnon / Phonon Character
-    plot_dense_property(
-        dense_csv=dense_csv,
-        prop_column_candidates=["mag_character", "magnon_character", "character"],
-        cbar_label=r"Magnon Character",
-        cmap="coolwarm",
-        is_diverging=False,
-        use_log=False,
-        vlim=(0.0, 1.0),
-        save_plot=os.path.join(output_dir, "cri3_magnon_character.png"),
-    )
+        # 1. Phonon Angular Momentum
+        plot_dense_property(
+            dense_csv=dense_csv,
+            prop_column_candidates=["phon_AM_z_hbar", "phonon_Lz", "Lz_ph", "L_z"],
+            cbar_label=r"Phonon angular momentum $L^z_{\boldsymbol{k}\mu}$ ($\hbar$)",
+            cmap=t["cmap_div"],
+            is_diverging=True,
+            use_log=True,
+            vlim=(-1.0, 1.0),
+            save_plot=os.path.join(output_dir, f"cri3_phonon_angular_momentum{suffix}"),
+            theme=theme
+        )
 
-    # 3. Spin Angular Momentum
-    plot_dense_property(
-        dense_csv=dense_csv,
-        prop_column_candidates=["spin_AM_z_hbar", "spin_Sz", "Sz_spin", "S_z"],
-        cbar_label=r"Spin Angular Momentum $S_z$ ($\hbar$)",
-        cmap="copper",
-        is_diverging=False,
-        use_log=False,
-        vlim=(-1.0, 0.0),
-        save_plot=os.path.join(output_dir, "cri3_spin_angular_momentum.png"),
-    )
+        # 2. Magnon / Phonon Character
+        plot_dense_property(
+            dense_csv=dense_csv,
+            prop_column_candidates=["mag_character", "magnon_character", "character"],
+            cbar_label=r"Magnon character $w_{\boldsymbol{k}\mu}^{\text{mag}}$",
+            cmap=t["cmap_seq"],
+            is_diverging=False,
+            use_log=True,         
+            vlim=(1e-4, 1.0),     # Any values < 1e-3 will be clipped to 1e-3 and plotted continuously
+            save_plot=os.path.join(output_dir, f"cri3_magnon_character{suffix}"),
+            theme=theme
+        )
+
+        # 3. Spin Angular Momentum
+        plot_dense_property(
+            dense_csv=dense_csv,
+            prop_column_candidates=["spin_AM_z_hbar", "spin_Sz", "Sz_spin", "S_z"],
+            cbar_label=r"Spin Angular Momentum $S_z$ ($\hbar$)",
+            cmap=t["cmap_spin"],
+            is_diverging=False,
+            use_log=False,
+            vlim=(-1.0, 0.0),
+            save_plot=os.path.join(output_dir, f"cri3_spin_angular_momentum{suffix}"),
+            theme=theme
+        )
 
 
 if __name__ == "__main__":
-
 
     # Hybrid CrI3
     hybrid_dense_csv = "Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv"
@@ -258,16 +282,12 @@ if __name__ == "__main__":
 
     # Hybrid bccFe
     hybrid_dense_csv = "Outputs/bccFePath/bccFe_whole_BZ_20/hybrid_path_properties.csv"
-
     if os.path.exists(hybrid_dense_csv):
         print("Plotting Hybrid bccFe Properties...")
         plot_all_cri3_properties(
             dense_csv=hybrid_dense_csv,
             output_dir="Outputs/bccFePath/bccFe_whole_BZ_20/properties",
         )
-
-
-
 
     # Non-Hybrid CrI3
     nonhybrid_dense_csv = "Outputs/NonHybrid_GK_32_dense/hybrid_path_properties.csv"

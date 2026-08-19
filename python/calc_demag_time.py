@@ -33,7 +33,7 @@ def calc_dn_dT(energy_meV, T):
 
 def main():
     p = argparse.ArgumentParser(description="Calculate tau_demag at 20K.")
-    p.add_argument("csv_file", nargs='?', default="Outputs/CrI3_Path_Hyrbid_Full/hybrid_path_lifetimes.csv", 
+    p.add_argument("csv_file", nargs='?', default="CrI3_Path_Full_Hyrbid_sig_0.01_15K/hybrid_path_lifetimes.csv", 
                    help="Path to hybrid_path_lifetimes.csv")
     args = p.parse_args()
 

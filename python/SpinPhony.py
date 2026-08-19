@@ -3105,8 +3105,8 @@ def phase_lifetime_hybrid_path(chan_indices, chan_weights, num_channels, n_hyb_g
     grid-evaluated occupations for the grid-bound partner modes. Accumulates BOTH
     RTA terms onto the path mode:
 
-      c_type 0 (splitting,   path -> k + p): pi/hbar   * |Gamma~|^2 * (1 + n_k + n_p)
-      c_type 1 (coalescence, path + k -> s): 2*pi/hbar * |Gamma~|^2 * (n_k - n_s)
+      c_type 0 (splitting,   path -> k + p): 4 * pi/hbar   * |Gamma~|^2 * (1 + n_k + n_p)
+      c_type 1 (coalescence, path + k -> s): 8 * pi/hbar * |Gamma~|^2 * (n_k - n_s)
 
     Only the path mode's own rate is written - the grid partners' lifetimes are
     already accounted for by the grid hybrid pass.
@@ -3646,6 +3646,18 @@ def init_bose_einstein(w_distribution, temperature_K):
     return occ
 
 
+def init_bose_einstein_two_temp(w_distribution, mag_character, T_m, T_p):
+    """
+    Quasi-equilibrium occupation n*_k = w_mag_k * n_BE(eps_k; T_m)
+    + (1 - w_mag_k) * n_BE(eps_k; T_p), reusing init_bose_einstein for each
+    term. Reduces exactly to init_bose_einstein(w_distribution, T_m) when
+    T_m == T_p, since the character weights then cancel out of the mix.
+    """
+    n_at_Tm = init_bose_einstein(w_distribution, T_m)
+    n_at_Tp = init_bose_einstein(w_distribution, T_p)
+    return mag_character * n_at_Tm + (1.0 - mag_character) * n_at_Tp
+
+
 if __name__ == "__main__":
 
     # --- CLI Argument Parsing ---
@@ -3670,7 +3682,19 @@ if __name__ == "__main__":
                         help="Disable the spin-lattice coupling blocks in the BdG Hamiltonian. "
                              "The 'hybrid' modes then reduce to bare magnons and bare phonons "
                              "(the scattering vertex is unaffected). SLC is ON by default.")
-    
+    parser.add_argument("--Gmp_grid", action="store_true",
+                        help="After the hybrid path/BZ channel scan, additionally sweep G_mp "
+                             "over a 2D grid of (T_m, T_p) by cheaply re-weighting the already-"
+                             "scanned channels (no new vertex evaluation). Only physically "
+                             "meaningful together with --full_bz, since G_mp is a BZ-integrated "
+                             "quantity. Writes Gmp_temperature_grid.csv.")
+    parser.add_argument("--Gmp_T_min", type=float, default=5.0,
+                        help="Lower bound (K) of the T_m/T_p sweep for --Gmp_grid.")
+    parser.add_argument("--Gmp_T_max", type=float, default=100.0,
+                        help="Upper bound (K) of the T_m/T_p sweep for --Gmp_grid.")
+    parser.add_argument("--Gmp_T_step", type=float, default=5.0,
+                        help="Step size (K) of the T_m/T_p sweep for --Gmp_grid.")
+
     args = parser.parse_args()
 
     # --- Load Configuration ---
@@ -4223,7 +4247,65 @@ if __name__ == "__main__":
 
     print(f"-> Saved hybrid path lifetimes to {out_dir}/hybrid_path_lifetimes.csv")
 
-    
+    # ========================== Gmp(T_m, T_p) Grid ==========================
+    # Sweeps G_mp = sum_{k,mu} (w_mag_k,mu)^2 * eps_k,mu * gamma_k,mu[T_m,T_p] * phi_k,mu(T_p)
+    # over a 2D (T_m, T_p) grid, reusing the hybrid path/BZ channels already
+    # scanned above (d_path_hyb_chan_indices_active / _weights_active) - no
+    # new vertex evaluation, just a cheap re-weighting of stored channels per
+    # grid point via the unchanged phase_lifetime_hybrid_path kernel. Only
+    # physically meaningful as a true BZ-integrated G_mp when --full_bz is
+    # also set, since the sum runs over whatever "path" currently is.
+    if args.Gmp_grid:
+        from diagnose_channels import path_observables
+
+        print("\nStarting Gmp(T_m, T_p) grid calculation...")
+        print(f" -> Sweeping T_m, T_p in [{args.Gmp_T_min}, {args.Gmp_T_max}] K, "
+              f"step {args.Gmp_T_step} K")
+        if not args.full_bz:
+            print(" -> WARNING: --full_bz is not set. G_mp is a BZ-integrated quantity; "
+                  "this sweep will only sum over the explicit path, not the whole BZ.")
+
+        _grid_mag_char = crystal_data.extract_full_grid_hybrid_properties()[1]
+        _, _path_mag_char, _, _ = path_observables(crystal_data)
+        _path_energy = crystal_data.path_w_hyb  # (N_path, num_hyb_branches), meV
+
+        kB_Gmp = 0.08617333262  # meV/K
+
+        def _phi(energy, T):
+            n0 = init_bose_einstein(energy, T)
+            return energy / (kB_Gmp * T * T) * n0 * (n0 + 1.0)
+
+        T_values = np.arange(args.Gmp_T_min, args.Gmp_T_max + 1e-9, args.Gmp_T_step)
+        Gmp_results = []
+
+        for T_m in T_values:
+            for T_p in T_values:
+                n_hyb_grid_TmTp = init_bose_einstein_two_temp(crystal_data.w_hyb, _grid_mag_char, T_m, T_p)
+                d_n_hyb_TmTp = cuda.to_device(n_hyb_grid_TmTp)
+                d_gamma_TmTp = cuda.to_device(np.zeros(N_path * num_hyb_branches, dtype=np.float64))
+
+                phase_lifetime_hybrid_path[blocks_eval_path_hyb, threads_per_block](
+                    d_path_hyb_chan_indices_active,
+                    d_path_hyb_chan_weights_active,
+                    d_path_hyb_channel_count,
+                    d_n_hyb_TmTp,
+                    d_gamma_TmTp,
+                    N_points
+                )
+                cuda.synchronize()
+
+                gamma_TmTp_cpu = d_gamma_TmTp.copy_to_host().reshape((N_path, num_hyb_branches))
+                phi_Tp = _phi(_path_energy, T_p)
+                G_mp = np.sum((_path_mag_char ** 2) * _path_energy * gamma_TmTp_cpu * phi_Tp)
+
+                Gmp_results.append((T_m, T_p, G_mp))
+
+        with open(f"{out_dir}/Gmp_temperature_grid.csv", "w") as f:
+            f.write("T_m_K,T_p_K,G_mp\n")
+            for T_m, T_p, G_mp in Gmp_results:
+                f.write(f"{T_m:.4f},{T_p:.4f},{G_mp:.8e}\n")
+
+        print(f"-> Saved Gmp(T_m,T_p) grid to {out_dir}/Gmp_temperature_grid.csv")
 
     # 3. Execute Phase 1
     print("\nStarting Phase 1: Scanning Phase Space and computing FT Vertices...")
