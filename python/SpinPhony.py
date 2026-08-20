@@ -4287,7 +4287,7 @@ if __name__ == "__main__":
                   "this sweep will only sum over the explicit path, not the whole BZ.")
 
         _grid_mag_char = crystal_data.extract_full_grid_hybrid_properties()[1]
-        _, _path_mag_char, _, _ = path_observables(crystal_data)
+        _path_ph_char, _path_mag_char, _, _ = path_observables(crystal_data)
         _path_energy = crystal_data.path_w_hyb  # (N_path, num_hyb_branches), meV
 
         kB_Gmp = 0.08617333262  # meV/K
@@ -4298,7 +4298,7 @@ if __name__ == "__main__":
 
         T_values = np.arange(args.Gmp_T_min, args.Gmp_T_max + 1e-9, args.Gmp_T_step)
         Gmp_results = []
-        _weight = (_path_mag_char ** 2) * _path_energy
+        _weight = ((1-_path_mag_char) ** 2) * _path_energy
 
         for T_m in T_values:
             for T_p in T_values:

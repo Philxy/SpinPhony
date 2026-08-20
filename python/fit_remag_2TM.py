@@ -1,23 +1,29 @@
 """
-Fit the ab initio nonlinear 2TM model to the recovery portion of the
-digitized CrI3 TRPR curve (Padmanabhan et al., Nat. Commun. 13, 4473, 2022),
-treating the initial magnon temperature T_m0 as the one free physical
-parameter, with a linear amplitude A absorbing the arbitrary Kerr-rotation
-calibration:
+Fit the ab initio nonlinear 2TM model to the REMAGNETIZATION portion of the
+digitized CrI3 TRPR curve (Padmanabhan et al., Nat. Commun. 13, 4473, 2022).
 
-    TRPR_model(t) = A * [ M(t; T_m0, Tp0=Teq) / M(Teq) - 1 ]
+The model is initialised at t0 (= --t_cutoff, default 150 ps) and integrated
+forward from there; nothing before t0 is simulated. This is deliberate: CrI3
+shows two distinct demagnetization stages (a sub-ps Elliott-Yafet spin-flip
+stage and a subsequent tens-of-ps electron-phonon equilibration stage), both
+electronically driven and outside what a magnon-phonon-only model contains.
+The state at t0 is therefore taken as an initial condition to be fitted, not
+as something the model must reproduce.
 
-M(t) comes from actually solving the 2TM ODE (reusing solve_2TM.py's
-machinery), not a phenomenological exponential -- the shape is fixed by the
-ab initio Gmp(T_m,T_p), C_m(T), C_p(T), and character-weighted M(T); only
-the initial condition and the linear calibration are fit.
+    TRPR_model(t) = A * [ M(t) / M(Teq) - 1 ],    t >= t0
 
-Following the same reasoning already validated in calc_demagcopy.py: the
-offset y0 is fixed to 0 (physically, DeltaM/M0 -> 0 once the sample fully
-recovers; letting it float was found to be degenerate with tau there), and
-only t > t_cutoff (default 150 ps) is fit, since the fast sub-ps/tens-of-ps
-initial demagnetization is electronically (Elliott-Yafet) driven, outside
-what a magnon-phonon-only model can describe.
+with M(t) obtained by solving the 2TM ODE (reusing solve_2TM.py's machinery),
+not a phenomenological exponential -- the shape is fixed by the ab initio
+Q_flux(T_m,T_p), C_m(T), C_p(T) and character-weighted M(T). Free parameters:
+T_m(t0), optionally T_p(t0) (see --fit_Tp), and a linear amplitude A absorbing
+the arbitrary Kerr-rotation calibration. The offset y0 is fixed to 0, following
+the same reasoning validated in calc_demagcopy.py (letting it float was found
+to be degenerate with tau).
+
+KNOWN LIMITATION: this is a closed two-subsystem model with no external bath,
+so it relaxes to a common T_f > Teq and cannot return to M(Teq). The
+experimental ns-scale recovery to baseline requires a third channel (substrate
+/ cryostat) that is not implemented here.
 
 Usage:
     python fit_remag_2TM.py Outputs/CrI3_Full_NonHyrbid_sig_2.0_15K \\
@@ -163,17 +169,39 @@ def load_experimental_data(t_cutoff):
     return t_all, y_all, t_all[mask], y_all[mask]
 
 
-def make_trpr_model(rhs, M_func, T_p0):
+def make_trpr_model(rhs, M_func, t0, Tp_fixed=None):
     """
-    TRPR_model(t; T_m0, A) = A * [M(t;T_m0,Tp0)/M(Teq) - 1], y0 fixed to 0.
-    t must be pre-sorted (curve_fit's xdata is passed through unchanged, so
-    the caller -- load_experimental_data -- already sorts it).
+    TRPR_model(t) = A * [M(t)/M(Teq) - 1], y0 fixed to 0, with the 2TM
+    integrated FORWARD FROM t0 -- not from t=0.
+
+    Starting at t0 (= the fit cutoff) is deliberate: the sub-ps Elliott-Yafet
+    demagnetization and the subsequent tens-of-ps electron-phonon stage are
+    outside what a magnon-phonon-only model can describe, so the state at t0
+    is taken as the initial condition rather than something this model has to
+    reproduce. It also removes a severe conditioning problem: integrating from
+    t=0 spent ~80% of the magnon temperature excursion before the first fitted
+    data point, so T_m(0) was extrapolated backwards through a window no data
+    constrains, which pushed the fit hard against its upper bound.
+
+    If Tp_fixed is not None the model has 2 parameters (T_m(t0), A); otherwise
+    the lattice temperature at t0 is fitted too, giving 3 (T_m(t0), T_p(t0), A).
+    Note T_p(t0) is generally NOT the bath temperature: the lattice has already
+    absorbed energy from the fast stages by t0.
+
+    t_array must be pre-sorted and all entries >= t0 (guaranteed by
+    load_experimental_data, which masks on t > t_cutoff = t0).
     """
-    def trpr_model(t_array, T_m0, A):
-        sol = solve_ivp(rhs, (0.0, t_array[-1]), [T_m0, T_p0], t_eval=t_array,
+    def _T_m_of_t(t_array, Tm_t0, Tp_t0):
+        sol = solve_ivp(rhs, (t0, t_array[-1]), [Tm_t0, Tp_t0], t_eval=t_array,
                         method="Radau", rtol=1e-8, atol=1e-10)
-        M_ratio = M_func(sol.y[0])
-        return A * (M_ratio - 1.0)
+        return sol.y[0]
+
+    if Tp_fixed is not None:
+        def trpr_model(t_array, Tm_t0, A):
+            return A * (M_func(_T_m_of_t(t_array, Tm_t0, Tp_fixed)) - 1.0)
+    else:
+        def trpr_model(t_array, Tm_t0, Tp_t0, A):
+            return A * (M_func(_T_m_of_t(t_array, Tm_t0, Tp_t0)) - 1.0)
 
     return trpr_model
 
@@ -183,13 +211,22 @@ def main():
         description="Fit the ab initio nonlinear 2TM model to the CrI3 TRPR recovery curve."
     )
     p.add_argument("data_dir", help="Directory with Gmp_temperature_grid.csv and hybrid_path_lifetimes.csv")
-    p.add_argument("--Teq", type=float, default=15.0, help="Bath/equilibrium temperature (K); T_p0 is fixed to this.")
+    p.add_argument("--Teq", type=float, default=15.0,
+                   help="Bath/equilibrium temperature (K), used as the reference for M(T)/M(Teq) "
+                        "and as the default T_p(t0) when --fit_Tp is not set.")
     p.add_argument("--t_cutoff", type=float, default=150.0,
-                   help="Only fit t > t_cutoff (ps) -- excludes the electronically-driven fast demag stages.")
-    p.add_argument("--Tm0_guess", type=float, default=30.0, help="Initial guess for T_m0 (K)")
+                   help="t0: the model is initialised here and only t > t0 is fitted. Excludes the "
+                        "two electronically-driven demagnetization stages entirely.")
+    p.add_argument("--Tm0_guess", type=float, default=30.0, help="Initial guess for T_m(t0) (K)")
     p.add_argument("--Tm0_max", type=float, default=50.0,
-                   help="Upper bound on T_m0 (K) -- keep comfortably below Tc so linear spin-wave "
+                   help="Upper bound on T_m(t0) (K) -- keep comfortably below Tc so linear spin-wave "
                         "theory (the un-renormalized dispersion this model is built on) stays valid.")
+    p.add_argument("--fit_Tp", action="store_true",
+                   help="Also fit the lattice temperature at t0. By default T_p(t0) is fixed to "
+                        "--Tp_t0 (or --Teq). Physically T_p(t0) > Teq, since the lattice has "
+                        "already absorbed energy from the fast stages by t0.")
+    p.add_argument("--Tp_t0", type=float, default=None,
+                   help="Fixed lattice temperature at t0 (K). Default: --Teq. Ignored with --fit_Tp.")
     p.add_argument("--A_guess", type=float, default=1.0, help="Initial guess for the amplitude A")
     p.add_argument("--A_max", type=float, default=10.0, help="Upper bound on the amplitude A")
     p.add_argument("--t_plot_max", type=float, default=2000.0, help="Extend the plotted model prediction to this t (ps)")
@@ -221,33 +258,54 @@ def main():
     M_func = build_magnetization_func(energy, w_mag, args.Teq)
 
     rhs = make_rhs(flux_func, T_range, C_m_func, C_p_func)
-    trpr_model = make_trpr_model(rhs, M_func, args.Teq)
 
-    print(f"\nLoading digitized TRPR data, fitting t > {args.t_cutoff} ps ...")
-    t_all, y_all, t_fit, y_fit = load_experimental_data(args.t_cutoff)
+    t0 = args.t_cutoff
+    Tp_t0_fixed = None if args.fit_Tp else (args.Tp_t0 if args.Tp_t0 is not None else args.Teq)
+    trpr_model = make_trpr_model(rhs, M_func, t0, Tp_fixed=Tp_t0_fixed)
+
+    print(f"\nLoading digitized TRPR data, fitting t > {t0} ps ...")
+    t_all, y_all, t_fit, y_fit = load_experimental_data(t0)
     print(f"  {len(t_fit)} of {len(t_all)} digitized points used in the fit "
          f"(t = {t_fit[0]:.1f} to {t_fit[-1]:.1f} ps)")
+    print(f"  model initialised AT t0 = {t0} ps (the pre-t0 demagnetization stages are "
+          "not simulated at all)")
 
-    p0 = [args.Tm0_guess, args.A_guess]
-    bounds = ([args.Teq, 0.0], [args.Tm0_max, args.A_max])
+    if Tp_t0_fixed is not None:
+        p0 = [args.Tm0_guess, args.A_guess]
+        bounds = ([args.Teq, 0.0], [args.Tm0_max, args.A_max])
+        print(f"  T_p(t0) fixed to {Tp_t0_fixed:g} K; fitting T_m(t0), A")
+    else:
+        p0 = [args.Tm0_guess, args.Teq, args.A_guess]
+        bounds = ([args.Teq, args.Teq, 0.0], [args.Tm0_max, args.Tm0_max, args.A_max])
+        print("  fitting T_m(t0), T_p(t0), A")
 
-    print(f"\nFitting TRPR(t) = A * [M(t;T_m0)/M(Teq) - 1]  (y0 fixed to 0) ...")
+    print(f"\nFitting TRPR(t) = A * [M(t)/M(Teq) - 1]  (y0 fixed to 0) ...")
     popt, pcov = curve_fit(trpr_model, t_fit, y_fit, p0=p0, bounds=bounds, maxfev=2000)
     perr = np.sqrt(np.diag(pcov))
-    T_m0_fit, A_fit = popt
-    T_m0_err, A_err = perr
+
+    if Tp_t0_fixed is not None:
+        T_m0_fit, A_fit = popt
+        T_m0_err, A_err = perr
+        T_p0_fit, T_p0_err = Tp_t0_fixed, 0.0
+    else:
+        T_m0_fit, T_p0_fit, A_fit = popt
+        T_m0_err, T_p0_err, A_err = perr
 
     print(f"\nFit result:")
-    print(f"  T_m0 = {T_m0_fit:.3f} +/- {T_m0_err:.3f} K")
-    print(f"  A    = {A_fit:.4f} +/- {A_err:.4f}")
+    print(f"  T_m(t0) = {T_m0_fit:.3f} +/- {T_m0_err:.3f} K")
+    if Tp_t0_fixed is None:
+        print(f"  T_p(t0) = {T_p0_fit:.3f} +/- {T_p0_err:.3f} K")
+    else:
+        print(f"  T_p(t0) = {T_p0_fit:.3f} K (fixed)")
+    print(f"  A       = {A_fit:.4f} +/- {A_err:.4f}")
 
     if T_m0_fit > args.Tm0_max - 0.05:
-        print(f"  WARNING: T_m0 is pinned at the upper bound (--Tm0_max={args.Tm0_max}) -- "
-             "this is the same failure signature seen in earlier fit attempts. Try raising "
-             "--Tm0_max (checking it stays well below Tc and within the --Gmp_grid range), "
-             "or reconsider whether the recovery window/model assumptions are right.")
+        print(f"  WARNING: T_m(t0) is pinned at the upper bound (--Tm0_max={args.Tm0_max}). "
+             "Raise it (keeping well below Tc and within the --Gmp_grid range), or reconsider "
+             "the model assumptions -- note the closed 2TM cannot recover to M(Teq) at all, "
+             "since it relaxes to T_f > Teq with no external bath.")
 
-    T_f_fit = solve_final_temperature(T_m0_fit, args.Teq, E_m_func, E_p_func)
+    T_f_fit = solve_final_temperature(T_m0_fit, T_p0_fit, E_m_func, E_p_func)
     print(f"  Implied final common temperature: T_f = {T_f_fit:.3f} K")
 
     # Residual check against the independent absorbed-energy estimate from
@@ -258,23 +316,23 @@ def main():
     # extract an effective single-exponential tau_remag directly comparable
     # to the literature value (Padmanabhan et al.: 1277(33) ps), and for
     # plotting the full predicted recovery beyond the digitized data range.
-    t_model = np.linspace(1e-3, args.t_plot_max, 800)
-    sol_full = solve_ivp(rhs, (0.0, args.t_plot_max), [T_m0_fit, args.Teq], t_eval=t_model,
+    t_model = np.linspace(t0, args.t_plot_max, 800)
+    sol_full = solve_ivp(rhs, (t0, args.t_plot_max), [T_m0_fit, T_p0_fit], t_eval=t_model,
                          method="Radau", rtol=1e-8, atol=1e-10)
     T_m_model = sol_full.y[0]
     T_p_model = sol_full.y[1]
     y_model = A_fit * (M_func(T_m_model) - 1.0)
 
-    def single_exp(t, tau):
-        return y_model_at_cutoff * np.exp(-(t - args.t_cutoff) / tau)
+    y_model_at_t0 = y_model[0]
 
-    mask_tail = t_model >= args.t_cutoff
-    y_model_at_cutoff = y_model[mask_tail][0]
+    def single_exp(t, tau):
+        return y_model_at_t0 * np.exp(-(t - t0) / tau)
+
     try:
-        tau_popt, tau_pcov = curve_fit(single_exp, t_model[mask_tail], y_model[mask_tail], p0=[500.0])
+        tau_popt, tau_pcov = curve_fit(single_exp, t_model, y_model, p0=[500.0])
         tau_eff = tau_popt[0]
         print(f"  Effective single-exponential tau_remag (fit to the model's own recovery, "
-             f"t>{args.t_cutoff} ps) = {tau_eff:.1f} ps")
+             f"t>{t0} ps) = {tau_eff:.1f} ps")
         print(f"  (compare to Padmanabhan et al.'s fitted tau_remag = 1277(33) ps)")
     except RuntimeError:
         tau_eff = np.nan
@@ -285,12 +343,13 @@ def main():
     print(f"\n-> Saved fitted model trajectory to {out_csv}")
 
     fig, ax = plt.subplots(figsize=(7, 5.5))
-    ax.scatter(t_all[t_all <= args.t_cutoff], y_all[t_all <= args.t_cutoff],
-              s=12, color="lightgray", label="digitized data (excluded from fit)")
-    ax.scatter(t_fit, y_fit, s=14, color="black", label=f"digitized data (fit, t>{args.t_cutoff:g} ps)")
+    ax.scatter(t_all[t_all <= t0], y_all[t_all <= t0],
+              s=12, color="lightgray", label="digitized data (not modelled)")
+    ax.scatter(t_fit, y_fit, s=14, color="black", label=f"digitized data (fit, t>{t0:g} ps)")
+    # Model curve starts at t0 - there is deliberately no prediction before it.
     ax.plot(t_model, y_model, color="tab:red", lw=1.8,
-           label=rf"2TM fit: $T_m^0={T_m0_fit:.1f}\pm{T_m0_err:.1f}$ K, $A={A_fit:.2f}$")
-    ax.axvline(args.t_cutoff, color="gray", ls="--", lw=0.8)
+           label=rf"2TM from $t_0$: $T_m(t_0)={T_m0_fit:.1f}\pm{T_m0_err:.1f}$ K, $A={A_fit:.2f}$")
+    ax.axvline(t0, color="gray", ls="--", lw=0.8)
     ax.set_xlabel("Delay (ps)")
     ax.set_ylabel("TRPR (a.u.)")
     ax.set_xlim(-20,1000)
