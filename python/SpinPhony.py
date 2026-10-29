@@ -2849,6 +2849,43 @@ def phase_lifetime_hybrid(chan_indices, chan_weights, num_channels, n_hyb, gamma
 
 
 @cuda.jit
+def phase_lifetime(chan_indices, chan_weights, num_channels, n_mag, n_phon, gamma_mag, gamma_phon, N_points):
+    """
+    SMRTA rates on the full grid from the unified channels of phase_1_scan:
+        M(q, n) <-> M(k, m) + Ph(p, lam)
+    Every channel contributes to all three participants:
+      magnon q  (parent, splitting):            (1 + n_k + n_p)
+      magnon k  (child, absorbs phonon p -> q): (n_p - n_q)
+      phonon p  (child, absorbed with k -> q):  (n_k - n_q)
+    """
+    idx = cuda.grid(1)
+    if idx >= num_channels[0] or idx >= chan_weights.shape[0]:
+        return
+
+    q_idx = chan_indices[1, idx]
+    k_idx = chan_indices[2, idx]
+    p_idx = chan_indices[3, idx]
+    n     = chan_indices[4, idx]
+    m     = chan_indices[5, idx]
+    lam   = chan_indices[6, idx]
+    V_sq  = chan_weights[idx]
+
+    hbar = 0.6582119569  # meV * ps
+    pref = (2.0 * math.pi / hbar) / N_points
+
+    n_q = n_mag[q_idx, n]
+    n_k = n_mag[k_idx, m]
+    n_p = n_phon[p_idx, lam]
+
+    nmb = n_mag.shape[1]
+    npb = n_phon.shape[1]
+
+    cuda.atomic.add(gamma_mag,  q_idx * nmb + n,   pref * V_sq * (1.0 + n_k + n_p))
+    cuda.atomic.add(gamma_mag,  k_idx * nmb + m,   pref * V_sq * (n_p - n_q))
+    cuda.atomic.add(gamma_phon, p_idx * npb + lam, pref * V_sq * (n_k - n_q))
+
+
+@cuda.jit
 def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                               path_q_frac, path_q_cart, path_w_hyb, path_eig_hyb,
                               w_hyb, Qmatrix,
@@ -4425,6 +4462,7 @@ if __name__ == "__main__":
 
     # Launch Kernel
     print("\nCalculating equilibrium scattering rates and lifetimes...")
+    """
     phase_lifetime[blocks_eval, threads_per_block](
         d_chan_indices_active,
         d_chan_weights_active,
@@ -4435,6 +4473,7 @@ if __name__ == "__main__":
         d_gamma_phon, 
         N_points
     )
+    """
     cuda.synchronize()
 
     # Pull back and reshape

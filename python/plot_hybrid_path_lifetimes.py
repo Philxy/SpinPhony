@@ -116,7 +116,7 @@ def plot_dense_with_scatter(
 
     norm = mcolors.LogNorm(vmin=vmin, vmax=vmax)
 
-    fig, ax = plt.subplots(figsize=(16 / 2.52, 16 / 2.52))
+    fig, ax = plt.subplots(figsize=(10 / 2.52, 16 / 2.52))
 
     for band in sorted(df_disp["band"].unique()):
         subset = df_disp[df_disp["band"] == band].sort_values("path_dist")
@@ -320,7 +320,7 @@ def plot_dense_mag_with_inv_tau_scatter(
     vmin_inv_tau=None,
     vmax_inv_tau=None,
     linewidth=1.2,
-    s=30,
+    s=20,
     margin=0.02,
     save_plot="Outputs/Hybrid/hybrid_bands_mag_and_inv_tau.png",
 ):
@@ -348,7 +348,7 @@ def plot_dense_mag_with_inv_tau_scatter(
     # Shared normalized coordinate space [0, 1]
     norm_shared = mcolors.Normalize(vmin=0.0, vmax=1.0)
 
-    fig, ax = plt.subplots(figsize=(16 / 2.52, 16 / 2.52))
+    fig, ax = plt.subplots(figsize=(8 / 2.52, 16 / 2.52))
 
     # 1. Plot Dense Bands colored by Normalized Magnon Character
     for band in sorted(df_disp["band"].unique()):
@@ -453,7 +453,7 @@ if __name__ == "__main__":
         dense_csv="Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv",
         lifetime_csv="Outputs/CrI3_Path_Hyrbid_sig_0.01_15K/hybrid_path_lifetimes.csv",
         save_plot="Outputs/CrI3_Path_Hyrbid_sig_0.01_15K/hybrid_bands_mag_inv_tau.png",
-        vmin_mag=1e-4,
+        vmin_mag=1e-5,
         vmax_mag=1.0,
         vmin_inv_tau=1E-6,
         vmax_inv_tau=None,
