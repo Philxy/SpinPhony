@@ -93,7 +93,7 @@ class CrystalDataSoA:
             self._parse_slc_tensors(slc_files[0], slc_files[1], slc_files[2], lattice_constant)
             #self.enforce_slc_asr()
 
-        """
+        #"""
         # Full matrices are necessary for hybrid group velocity calculations
         self.w_hyb, self.Qmatrix, self.H_BdG_pre_diagonalized, self.H_BdG_diagonalized = self._calculate_coupled_hamiltonian(
             q_cart_array=self.q_grid_cart,
@@ -102,7 +102,7 @@ class CrystalDataSoA:
             lattice_constant=lattice_constant,
             return_full_matrices=True
         )
-        """
+        #"""
 
         self.w_hyb, self.Qmatrix = self._calculate_coupled_hamiltonian(
             q_cart_array=self.q_grid_cart,
