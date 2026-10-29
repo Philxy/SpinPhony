@@ -112,7 +112,7 @@ class CrystalDataSoA:
             return_full_matrices=False
         )
 
-        #self._compute_hybrid_group_velocities()
+        self._compute_hybrid_group_velocities()
         self.grad_f_hyb = np.zeros((self.N, self.phon_branches + self.n_mag_branches, 3), dtype=np.float64)
 
 
@@ -3019,7 +3019,7 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                 sigma = sigma_raw if sigma_raw > min_sigma else min_sigma
                 """
 
-                sigma = min_sigma
+                sigma =  # adaptive broadening #min_sigma
                 cutoff = 2.0 * sigma
 
                 if (abs(dE) < cutoff
