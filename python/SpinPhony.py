@@ -3087,7 +3087,7 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
                 w_s = w_hyb[s_idx, b_s]
                 dE = w_s - w_q - w_k
 
-                """
+                #"""
 
                 # Same adaptive broadening; here the parent is s and the two
                 # children are the path mode and k, matching dE's sign pattern.
@@ -3099,10 +3099,10 @@ def phase_1_scan_hybrid_path(mesh, q_grid, grid_q_frac, grid_q_cart, grid_map,
 
                 sigma_raw = base_smearing * math.sqrt(variance / 12.0)
                 sigma = sigma_raw if sigma_raw > min_sigma else min_sigma
-                """
+                #"""
                 
                 
-                sigma = min_sigma
+                #sigma = min_sigma
                 cutoff = 2.0 * sigma
 
                 if (abs(dE) < cutoff
