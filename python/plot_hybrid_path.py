@@ -271,6 +271,16 @@ def plot_all_cri3_properties(
 
 if __name__ == "__main__":
 
+
+    # Hybrid fccNi
+    hybrid_dense_csv = "Outputs/fccNi_reprodizierbar/hybrid_path_properties.csv"
+    if os.path.exists(hybrid_dense_csv):
+        print("Plotting Hybrid fccNi Properties...")
+        plot_all_cri3_properties(
+            dense_csv=hybrid_dense_csv,
+            output_dir="Outputs/fccNi_reprodizierbar/",
+        )
+
     # Hybrid CrI3
     hybrid_dense_csv = "Outputs/CrI3_Path_Hyrbid_dense/hybrid_path_properties.csv"
     if os.path.exists(hybrid_dense_csv):
