@@ -3565,6 +3565,272 @@ def compute_and_write_observables(step, current_time, n_mag, n_phon, w_mag, w_ph
     file_handle.flush() # Flush buffer to ensure data is saved during long runs
 
 
+# ==========================================
+# Dynamics diagnostics (flux, thermal fits, entropy, spectra)
+# ==========================================
+KB_MEV = 0.08617333262          # meV/K
+PHONON_COUPLING_CUTOFF = 1.0    # meV; calc_vertex_V returns 0 below this, such phonons never scatter
+MAGNON_MIN_ENERGY = 1e-3        # meV; excludes the Gamma-point magnon
+
+
+@cuda.jit
+def phase_2_flux_diagnostic(chan_indices, chan_weights, num_channels, n_mag, n_phon, w_mag, w_phon,
+                            N_points, inv_bin_width, n_bins, acc, flux_branch, flux_spec):
+    """
+    Instantaneous energy bookkeeping of the unified channels M(q) <-> M(k) + Ph(p), evaluated with
+    exactly the rate of phase_2_time_step (run only at output steps, so the hot loop stays free of
+    contended atomics). Sums over channels (divide by N_points for per-cell values):
+        acc[0] = dE_mag/dt   = sum r (w_q - w_k)
+        acc[1] = dE_phon/dt  = - sum r w_p
+        acc[2] = dN_phon/dt  = - sum r
+    so acc[0] + acc[1] = sum r dE is the energy-conservation violation of the broadened delta.
+    flux_branch[lam] and flux_spec[bin(w_p)] hold the magnon -> phonon energy flux -sum r (w_q - w_k)
+    resolved by phonon branch and by phonon energy.
+    """
+    idx = cuda.grid(1)
+    if idx >= num_channels[0] or idx >= chan_weights.shape[0]:
+        return
+
+    q_idx = chan_indices[1, idx]
+    k_idx = chan_indices[2, idx]
+    p_idx = chan_indices[3, idx]
+    n = chan_indices[4, idx]
+    m = chan_indices[5, idx]
+    lam = chan_indices[6, idx]
+    V_sq = chan_weights[idx]
+
+    hbar = 0.6582119569  # meV * ps
+    fgr_prefactor = (2.0 * math.pi / hbar) / N_points
+
+    nk_mag = n_mag[k_idx, m]
+    nq_mag = n_mag[q_idx, n]
+    np_phon = n_phon[p_idx, lam]
+    r = fgr_prefactor * V_sq * ((nq_mag + 1.0) * nk_mag * np_phon - nq_mag * (nk_mag + 1.0) * (np_phon + 1.0))
+
+    wq = w_mag[q_idx, n]
+    wk = w_mag[k_idx, m]
+    wp = w_phon[p_idx, lam]
+    f_m = r * (wq - wk)
+
+    cuda.atomic.add(acc, 0, f_m)
+    cuda.atomic.add(acc, 1, -r * wp)
+    cuda.atomic.add(acc, 2, -r)
+    cuda.atomic.add(flux_branch, lam, -f_m)
+    b = int(wp * inv_bin_width)
+    if b < 0:
+        b = 0
+    if b >= n_bins:
+        b = n_bins - 1
+    cuda.atomic.add(flux_spec, b, -f_m)
+
+
+def bose_mu(w, T, mu=0.0):
+    """n = 1 / (exp((w - mu)/kT) - 1); zero where w <= mu or T <= 0."""
+    if T <= 0.0:
+        return np.zeros_like(w, dtype=np.float64)
+    x = (w - mu) / (KB_MEV * T)
+    out = np.zeros_like(w, dtype=np.float64)
+    ok = x > 0.0
+    out[ok] = 1.0 / np.expm1(np.minimum(x[ok], 700.0))
+    return out
+
+
+def bose_entropy(n):
+    """S = sum[(n+1) ln(n+1) - n ln n]  (in units of k_B)."""
+    n = np.asarray(n, dtype=np.float64)
+    pos = n > 0.0
+    return float(np.sum((n[pos] + 1.0) * np.log1p(n[pos]) - n[pos] * np.log(n[pos])))
+
+
+def _bisect(f, lo, hi, iters=60):
+    """Root of an increasing f on [lo, hi]; nan if there is no sign change."""
+    flo, fhi = f(lo), f(hi)
+    if not (np.isfinite(flo) and np.isfinite(fhi)) or flo > 0.0 or fhi < 0.0:
+        return float("nan")
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        fm = f(mid)
+        if not np.isfinite(fm):
+            return float("nan")
+        if fm < 0.0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def fit_thermal(w, n, free_mu):
+    """
+    Thermal distribution carrying the same energy (and, for free_mu, the same particle number)
+    as the populations n on the modes w. Returns (T [K], mu [meV]) (nan, nan on failure).
+      free_mu=False: n_BE(w; T, mu=0)            - phonons (number not conserved)
+      free_mu=True : n_BE(w; T, mu), mu < w_min  - magnons (number conserved -> mu != 0)
+    """
+    w = np.asarray(w, dtype=np.float64)
+    n = np.asarray(n, dtype=np.float64)
+    N0 = float(np.sum(n))
+    E0 = float(np.sum(w * n))
+    if N0 <= 0.0 or E0 <= 0.0 or w.size == 0:
+        return float("nan"), float("nan")
+
+    lnT_lo, lnT_hi = np.log(0.05), np.log(1.0e5)
+
+    if not free_mu:
+        lnT = _bisect(lambda x: float(np.sum(w * bose_mu(w, np.exp(x)))) - E0, lnT_lo, lnT_hi)
+        return (float(np.exp(lnT)), 0.0) if np.isfinite(lnT) else (float("nan"), float("nan"))
+
+    wmin = float(w.min())
+
+    def mu_of_T(T):
+        mu_hi = wmin - 1e-9 * KB_MEV * T      # ground-state occupation ~ 1e9: always above N0
+        lo = wmin - 20.0 * KB_MEV * T
+        for _ in range(60):
+            if float(np.sum(bose_mu(w, T, lo))) < N0:
+                break
+            lo -= 20.0 * KB_MEV * T
+        return _bisect(lambda mu: float(np.sum(bose_mu(w, T, mu))) - N0, lo, mu_hi)
+
+    def energy_gap(x):
+        T = np.exp(x)
+        mu = mu_of_T(T)
+        return float("nan") if not np.isfinite(mu) else float(np.sum(w * bose_mu(w, T, mu))) - E0
+
+    lnT = _bisect(energy_gap, lnT_lo, lnT_hi, iters=45)
+    if not np.isfinite(lnT):
+        return float("nan"), float("nan")
+    T = float(np.exp(lnT))
+    return T, float(mu_of_T(T))
+
+
+def mode_temperature_average(n, w, w_min):
+    """Legacy T_eff: energy-weighted mean of w / (kB ln(1 + 1/n)); assumes mu = 0, so NOT a temperature
+    once the distribution carries a chemical potential."""
+    ok = (n > 1e-10) & (w > w_min)
+    if not np.any(ok):
+        return 0.0
+    mt = w[ok] / (KB_MEV * np.log1p(1.0 / n[ok]))
+    return float(np.average(mt, weights=n[ok] * w[ok]))
+
+
+class DynamicsDiagnostics:
+    """
+    Writes, from the populations and the flux kernel output at every observation step:
+
+    observables_dynamics.txt  (tab separated; first 9 columns as before, then)
+        S_mag, S_phon, S_tot          entropies [k_B], over the interacting modes
+        T_mag_fit_K, mu_mag_meV       thermal (T, mu) with the magnons' N and E
+        T_phon_fit_K                  thermal T (mu = 0) with the phonons' E
+        dS_mag, dS_phon               S[thermal fit] - S[actual] >= 0: entropy still to be gained to thermalise
+        eta_mag, eta_phon             sum w|n - n_fit| / sum w n: energy-weighted non-thermal fraction
+        P_mp_cell                     magnon -> phonon energy flux [meV/ps per cell] = -dE_mag/dt
+        dEtot_rate_cell               d(E_mag + E_phon)/dt [meV/ps per cell]; must vanish (broadening error)
+        dNphon_rate_cell              dN_phon/dt per cell [1/ps]
+        G_eff_cell                    P_mp / (T_mag_fit - T_phon_fit)  [meV/(K ps) per cell]
+    spectral_dynamics.csv   (every spec_every-th observation)
+        step,time_ps,subsystem,E_meV,n_mean,n_fit_mean,T_mode_K,n_modes   binned in energy
+    flux_dynamics.csv
+        step,time_ps,kind,index,E_meV,P_meV_per_ps_cell   kind = branch | energy (phonon-resolved flux)
+    All energies are sums over the BZ mesh except the *_cell columns (divided by N_points).
+    """
+
+    def __init__(self, out_dir, w_mag, w_phon, N_points, n_bins=60, spec_every=10, exclude_idx=None):
+        self.w_mag = np.asarray(w_mag, dtype=np.float64)
+        self.w_phon = np.asarray(w_phon, dtype=np.float64)
+        self.N = int(N_points)
+        self.n_bins = int(n_bins)
+        self.spec_every = max(1, int(spec_every))
+        self.count = 0
+
+        self.mask_mag = self.w_mag > MAGNON_MIN_ENERGY
+        self.mask_phon = self.w_phon > PHONON_COUPLING_CUTOFF
+        if exclude_idx is not None:          # Gamma: occupations are pinned to zero, not part of the bath
+            self.mask_mag[exclude_idx, :] = False
+            self.mask_phon[exclude_idx, :] = False
+        w_max = float(max(self.w_mag.max(), self.w_phon.max()))
+        self.edges = np.linspace(0.0, w_max * (1.0 + 1e-9), self.n_bins + 1)
+        self.inv_bin_width = self.n_bins / self.edges[-1]
+        self.bin_mag = np.minimum((self.w_mag * self.inv_bin_width).astype(np.int64), self.n_bins - 1)
+        self.bin_phon = np.minimum((self.w_phon * self.inv_bin_width).astype(np.int64), self.n_bins - 1)
+        self.branch_E = [float(self.w_phon[:, b][self.mask_phon[:, b]].mean()) if self.mask_phon[:, b].any() else 0.0
+                         for b in range(self.w_phon.shape[1])]
+
+        self.obs = open(f"{out_dir}/observables_dynamics.txt", "w")
+        self.obs.write("Step\tTime_ps\tE_tot_meV\tE_mag_meV\tE_phon_meV\tN_mag\tN_phon\tT_eff_mag_K\tT_eff_phon_K\t"
+                       "S_mag\tS_phon\tS_tot\tT_mag_fit_K\tmu_mag_meV\tT_phon_fit_K\tdS_mag\tdS_phon\t"
+                       "eta_mag\teta_phon\tP_mp_cell\tdEtot_rate_cell\tdNphon_rate_cell\tG_eff_cell\n")
+        self.spec = open(f"{out_dir}/spectral_dynamics.csv", "w")
+        self.spec.write("step,time_ps,subsystem,E_meV,n_mean,n_fit_mean,T_mode_K,n_modes\n")
+        self.flux = open(f"{out_dir}/flux_dynamics.csv", "w")
+        self.flux.write("step,time_ps,kind,index,E_meV,P_meV_per_ps_cell\n")
+
+    def _binned(self, subsystem, step, t, w, n, n_fit, bins, mask):
+        cnt = np.bincount(bins[mask], minlength=self.n_bins)
+        sw = np.bincount(bins[mask], weights=w[mask], minlength=self.n_bins)
+        sn = np.bincount(bins[mask], weights=n[mask], minlength=self.n_bins)
+        sf = np.bincount(bins[mask], weights=n_fit[mask], minlength=self.n_bins)
+        for b in np.nonzero(cnt)[0]:
+            Ebar, nbar, fbar = sw[b] / cnt[b], sn[b] / cnt[b], sf[b] / cnt[b]
+            T_mode = Ebar / (KB_MEV * np.log1p(1.0 / nbar)) if nbar > 1e-14 else 0.0
+            self.spec.write(f"{step},{t:.8e},{subsystem},{Ebar:.6f},{nbar:.8e},{fbar:.8e},{T_mode:.4f},{cnt[b]}\n")
+
+    def record(self, step, t, n_mag, n_phon, flux_acc, flux_branch, flux_spec):
+        n_mag = np.asarray(n_mag, dtype=np.float64)
+        n_phon = np.asarray(n_phon, dtype=np.float64)
+        N = self.N
+
+        # Legacy block: unchanged definitions (sums over all modes)
+        N_mag, N_phon = float(n_mag.sum()), float(n_phon.sum())
+        E_mag = float((n_mag * self.w_mag).sum())
+        E_phon = float((n_phon * self.w_phon).sum())
+        T_eff_mag = mode_temperature_average(n_mag, self.w_mag, 1e-5)
+        T_eff_phon = mode_temperature_average(n_phon, self.w_phon, 1e-5)
+
+        # Interacting modes only (phonons below the vertex cutoff never scatter)
+        wm, nm = self.w_mag[self.mask_mag], n_mag[self.mask_mag]
+        wp, npn = self.w_phon[self.mask_phon], n_phon[self.mask_phon]
+        T_m, mu_m = fit_thermal(wm, nm, free_mu=True)
+        T_p, _ = fit_thermal(wp, npn, free_mu=False)
+        nfit_m = bose_mu(self.w_mag, T_m, mu_m) if np.isfinite(T_m) else np.zeros_like(self.w_mag)
+        nfit_p = bose_mu(self.w_phon, T_p, 0.0) if np.isfinite(T_p) else np.zeros_like(self.w_phon)
+        nfit_m[~self.mask_mag] = 0.0
+        nfit_p[~self.mask_phon] = 0.0
+
+        S_m, S_p = bose_entropy(nm), bose_entropy(npn)
+        dS_m = bose_entropy(nfit_m[self.mask_mag]) - S_m if np.isfinite(T_m) else float("nan")
+        dS_p = bose_entropy(nfit_p[self.mask_phon]) - S_p if np.isfinite(T_p) else float("nan")
+        eta_m = float(np.sum(wm * np.abs(nm - nfit_m[self.mask_mag])) / max(np.sum(wm * nm), 1e-300))
+        eta_p = float(np.sum(wp * np.abs(npn - nfit_p[self.mask_phon])) / max(np.sum(wp * npn), 1e-300))
+
+        acc = np.asarray(flux_acc, dtype=np.float64)
+        P_mp = -acc[0] / N
+        dE_rate = (acc[0] + acc[1]) / N
+        dN_rate = acc[2] / N
+        dT = T_m - T_p
+        G_eff = P_mp / dT if np.isfinite(dT) and abs(dT) > 1e-9 else float("nan")
+
+        self.obs.write(f"{step}\t{t:.8e}\t{E_mag + E_phon:.8e}\t{E_mag:.8e}\t{E_phon:.8e}\t{N_mag:.8e}\t{N_phon:.8e}\t"
+                       f"{T_eff_mag:.4f}\t{T_eff_phon:.4f}\t{S_m:.8e}\t{S_p:.8e}\t{S_m + S_p:.8e}\t"
+                       f"{T_m:.4f}\t{mu_m:.6f}\t{T_p:.4f}\t{dS_m:.6e}\t{dS_p:.6e}\t{eta_m:.6e}\t{eta_p:.6e}\t"
+                       f"{P_mp:.8e}\t{dE_rate:.8e}\t{dN_rate:.8e}\t{G_eff:.8e}\n")
+        self.obs.flush()
+
+        if self.count % self.spec_every == 0:
+            self._binned("magnon", step, t, self.w_mag, n_mag, nfit_m, self.bin_mag, self.mask_mag)
+            self._binned("phonon", step, t, self.w_phon, n_phon, nfit_p, self.bin_phon, self.mask_phon)
+            for b, val in enumerate(np.asarray(flux_branch, dtype=np.float64) / N):
+                self.flux.write(f"{step},{t:.8e},branch,{b},{self.branch_E[b]:.6f},{val:.8e}\n")
+            centers = 0.5 * (self.edges[:-1] + self.edges[1:])
+            for b, val in enumerate(np.asarray(flux_spec, dtype=np.float64) / N):
+                self.flux.write(f"{step},{t:.8e},energy,{b},{centers[b]:.6f},{val:.8e}\n")
+            self.spec.flush()
+            self.flux.flush()
+        self.count += 1
+
+    def close(self):
+        for f in (self.obs, self.spec, self.flux):
+            f.close()
+
+
 @cuda.jit
 def apply_euler_and_reset(n_mag, n_phon, dn_mag, dn_phon, dt):
     idx = cuda.grid(1)
@@ -3656,6 +3922,10 @@ if __name__ == "__main__":
                         help="Upper bound (K) of the T_m/T_p sweep for --Gmp_grid.")
     parser.add_argument("--Gmp_T_step", type=float, default=5.0,
                         help="Step size (K) of the T_m/T_p sweep for --Gmp_grid.")
+    parser.add_argument("--obs_every", type=int, default=1000,
+                        help="Write the dynamics observables every this many time steps.")
+    parser.add_argument("--spec_every", type=int, default=10,
+                        help="Write the binned spectra / spectral flux every this many observations.")
     parser.add_argument("--dynamics_only", action="store_true",
                         help="Skip all path / hybrid-path lifetime work and the G_mp grid; run only "
                              "the bare magnon-phonon channel scan and the time integration.")
@@ -4231,8 +4501,23 @@ if __name__ == "__main__":
     max_elements = max(N_points * crystal_data.n_mag_branches, N_points * crystal_data.phon_branches)
     blocks_euler = math.ceil(max_elements / threads_per_block)
     
-    obs_file = open(f"{out_dir}/observables_dynamics.txt", "w")
-    obs_file.write("Step\tTime_ps\tE_tot_meV\tE_mag_meV\tE_phon_meV\tN_mag\tN_phon\tT_eff_mag_K\tT_eff_phon_K\n")
+    diag = DynamicsDiagnostics(out_dir, crystal_data.w_mag, crystal_data.w_phon, N_points,
+                               spec_every=args.spec_every, exclude_idx=gamma_idx)
+    n_phon_branches = crystal_data.phon_branches
+
+    def run_diagnostics(step, t):
+        """Copy populations, run the flux kernel on the current state, append all diagnostics."""
+        d_acc = cuda.to_device(np.zeros(3, dtype=np.float64))
+        d_flux_branch = cuda.to_device(np.zeros(n_phon_branches, dtype=np.float64))
+        d_flux_spec = cuda.to_device(np.zeros(diag.n_bins, dtype=np.float64))
+        phase_2_flux_diagnostic[blocks_eval, threads_per_block](
+            d_chan_indices_active, d_chan_weights_active, d_channel_count,
+            d_n_mag, d_n_phon, gpu_data["w_mag"], gpu_data["w_phon"],
+            N_points, diag.inv_bin_width, diag.n_bins, d_acc, d_flux_branch, d_flux_spec
+        )
+        cuda.synchronize()
+        diag.record(step, t, d_n_mag.copy_to_host(), d_n_phon.copy_to_host(),
+                    d_acc.copy_to_host(), d_flux_branch.copy_to_host(), d_flux_spec.copy_to_host())
     
     print(f"\nStarting Phase 2: Time Integration ({steps} steps)...")
 
@@ -4255,25 +4540,8 @@ if __name__ == "__main__":
         cuda.synchronize()
 
             
-        # CPU Interaction & Correctly Placed Debug Block
-        if step % 1000 == 0:
-            n_mag_cpu = d_n_mag.copy_to_host()
-            n_phon_cpu = d_n_phon.copy_to_host()
-            compute_and_write_observables(
-                step=step,
-                current_time=current_time,
-                n_mag=n_mag_cpu,      # Reuse the pulled array to save PCIe bandwidth
-                n_phon=n_phon_cpu,
-                w_mag=crystal_data.w_mag,   
-                w_phon=crystal_data.w_phon,
-                file_handle=obs_file
-            )
-            
-            # DEBUG: Check Detailed Balance mathematically
-            #net_rate = np.sum(dn_mag_cpu)
-            #print(f"Step {step} | safe_dt: {safe_dt:.2e} ps | Net mag rate sum(dn): {net_rate:.6e}")
-            #if abs(net_rate) > 1e-8:
-            #    print(" -> WARNING: Detailed balance is broken in the collision physics!")
+        if step % args.obs_every == 0:
+            run_diagnostics(step, current_time)
 
         # 4. Apply the safe_dt globally using the pure Euler kernel
         apply_euler_and_reset[blocks_euler, threads_per_block](
@@ -4282,7 +4550,10 @@ if __name__ == "__main__":
         
         current_time += dt
 
-    obs_file.close()
+    run_diagnostics(steps, current_time)       # final state
+    diag.close()
+    np.savez(f"{out_dir}/final_populations.npz", n_mag=d_n_mag.copy_to_host(), n_phon=d_n_phon.copy_to_host(),
+             w_mag=crystal_data.w_mag, w_phon=crystal_data.w_phon, time_ps=current_time)
     print("Simulation Complete.")
 
 
