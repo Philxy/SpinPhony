@@ -2608,11 +2608,10 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     V_sq = V.real**2 + V.imag**2
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
-                    #if c_idx < chan_indices.shape[1]:
-
-                    chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
-                    chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
-                    chan_weights[c_idx] = V_sq_Gmp * delta_weight
+                    if c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq_Gmp * delta_weight
                 
                 """
                 # Process 1
@@ -3657,6 +3656,9 @@ if __name__ == "__main__":
                         help="Upper bound (K) of the T_m/T_p sweep for --Gmp_grid.")
     parser.add_argument("--Gmp_T_step", type=float, default=5.0,
                         help="Step size (K) of the T_m/T_p sweep for --Gmp_grid.")
+    parser.add_argument("--dynamics_only", action="store_true",
+                        help="Skip all path / hybrid-path lifetime work and the G_mp grid; run only "
+                             "the bare magnon-phonon channel scan and the time integration.")
 
     args = parser.parse_args()
 
@@ -3721,38 +3723,39 @@ if __name__ == "__main__":
 
     gamma_idx = int(crystal_data.grid_map[0, 0, 0])
 
-    if args.full_bz:
-        crystal_data.use_full_bz_as_path()
-    else:
-        # Load the high-symmetry path from the HDF5 band file
-        crystal_data.load_and_evaluate_path_hdf5(band, K_anisotropy=anisotropy, lattice_constant=lattice_constant)
-        crystal_data.save_path_dispersions(f"{out_dir}/path_dispersions.csv")
-        crystal_data.plot_path_dispersions(f"{out_dir}/exact_path_dispersions.png")
+    if not args.dynamics_only:
+        if args.full_bz:
+            crystal_data.use_full_bz_as_path()
+        else:
+            # Load the high-symmetry path from the HDF5 band file
+            crystal_data.load_and_evaluate_path_hdf5(band, K_anisotropy=anisotropy, lattice_constant=lattice_constant)
+            crystal_data.save_path_dispersions(f"{out_dir}/path_dispersions.csv")
+            crystal_data.plot_path_dispersions(f"{out_dir}/exact_path_dispersions.png")
 
-        print("\nEvaluating magnon-polaron hybridization along the high-symmetry path...")
-        crystal_data.path_w_hyb, crystal_data.path_eig_hyb = crystal_data._calculate_coupled_hamiltonian(
-            q_cart_array=crystal_data.path_q_cart,
-            dyn_mat=crystal_data.path_dyn_mat,
-            K_anisotropy=anisotropy,
-            lattice_constant=lattice_constant
-        )
+            print("\nEvaluating magnon-polaron hybridization along the high-symmetry path...")
+            crystal_data.path_w_hyb, crystal_data.path_eig_hyb = crystal_data._calculate_coupled_hamiltonian(
+                q_cart_array=crystal_data.path_q_cart,
+                dyn_mat=crystal_data.path_dyn_mat,
+                K_anisotropy=anisotropy,
+                lattice_constant=lattice_constant
+            )
 
-        crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_character.png", color_mode='character')
-        crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_spin_AM.png", color_mode='spin_am')
-        crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_phon_AM.png", color_mode='phon_am')
+            crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_character.png", color_mode='character')
+            crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_spin_AM.png", color_mode='spin_am')
+            crystal_data.plot_hybridized_path_dispersions(f"{out_dir}/hybridized_phon_AM.png", color_mode='phon_am')
 
-    crystal_data.save_hybrid_path_properties(f"{out_dir}/hybrid_path_properties.csv")
+        crystal_data.save_hybrid_path_properties(f"{out_dir}/hybrid_path_properties.csv")
 
 
-    # Push path data to GPU for scanning kernels
-    d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
-    d_path_q_cart = cuda.to_device(crystal_data.path_q_cart)
-    d_path_w_phon = cuda.to_device(crystal_data.path_w_phon)
-    d_path_w_mag = cuda.to_device(crystal_data.path_w_mag)
-    d_path_eig_phon = cuda.to_device(crystal_data.path_eig_phon)
-    d_path_eig_mag = cuda.to_device(crystal_data.path_eig_mag)
-    d_path_eig_hyb = cuda.to_device(crystal_data.path_eig_hyb)
-    d_path_w_hyb = cuda.to_device(crystal_data.path_w_hyb)
+        # Push path data to GPU for scanning kernels
+        d_path_q_frac = cuda.to_device(crystal_data.path_q_frac)
+        d_path_q_cart = cuda.to_device(crystal_data.path_q_cart)
+        d_path_w_phon = cuda.to_device(crystal_data.path_w_phon)
+        d_path_w_mag = cuda.to_device(crystal_data.path_w_mag)
+        d_path_eig_phon = cuda.to_device(crystal_data.path_eig_phon)
+        d_path_eig_mag = cuda.to_device(crystal_data.path_eig_mag)
+        d_path_eig_hyb = cuda.to_device(crystal_data.path_eig_hyb)
+        d_path_w_hyb = cuda.to_device(crystal_data.path_w_hyb)
 
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
@@ -3772,548 +3775,304 @@ if __name__ == "__main__":
     d_n_phon = cuda.to_device(n_phon_cpu)
 
 
-
-    # =============== Hybrid Lifetimes ( Whole BZ) ===============
-    """
-    num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
-
-    total_loops = N_points**2 * num_hyb_branches**3
-    max_channels = int(total_loops * anticipated_fraction)
+    if not args.dynamics_only:
+        # ========================== Path Lifetime Evaluation ==========================
+        print("\nStarting Path Lifetime Evaluation...")
     
-    # 7 Rows format exactly maps the generic triad coordinates
-    d_chan_indices = cuda.device_array((7, max_channels), dtype=np.int32)
-    d_chan_weights = cuda.device_array(max_channels, dtype=np.float64)
-    d_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))
+        # 1. Setup fractional grid mapping
+        grid_q_frac_cpu = crystal_data.q_grid.astype(np.float64) / crystal_data.mesh
+        d_grid_q_frac = cuda.to_device(grid_q_frac_cpu)
 
-    print(f"\nInitializing global Bose-Einstein populations at {T_mag_init} K...")
-    n_hyb_cpu = init_bose_einstein(crystal_data.w_hyb, T_mag_init)
-    d_n_hyb = cuda.to_device(n_hyb_cpu)
-
-    # 2. Execute Phase 1
-    print("\nStarting Phase 1: Scanning Hybrid Phase Space and Computing Vertices...")
-
-    threads_per_block_2d = (16, 16) 
-    blocks_x = math.ceil(N_points / threads_per_block_2d[0])
-    blocks_y = math.ceil(N_points / threads_per_block_2d[1])
-    blocks_per_grid_2d = (blocks_x, blocks_y)
-
-    phase_1_scan_hybrid[blocks_per_grid_2d, threads_per_block_2d](
-        gpu_data["mesh"], 
-        gpu_data["q_grid"], 
-        gpu_data["q_grid_cart"],
-        gpu_data["grid_map"], 
-        gpu_data["w_hyb"], 
-        gpu_data["grad_f_hyb"], 
-        gpu_data["Qmatrix"],
-        gpu_data["slc_axis"], 
-        gpu_data["slc_rij"], 
-        gpu_data["slc_rik"], 
-        gpu_data["slc_J"], 
-        gpu_data["slc_types"], 
-        gpu_data["eig_phon"],
-        gpu_data["w_phon"],
-        gpu_data["atom_masses"], 
-        gpu_data["mag_moments"],
-        smearing,                 
-        min_sigma,             
-        d_chan_indices,   
-        d_chan_weights, 
-        d_channel_count,
-        crystal_data.phon_branches,
-        crystal_data.n_mag_branches
-    )
-
-    cuda.synchronize()
+        # 2. Setup Phase 1 memory for path scanning
+        N_path = crystal_data.N_path
+        total_path_loops = N_path * N_points * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
+        max_path_channels = int(total_path_loops * anticipated_fraction)
     
-    num_channels = d_channel_count.copy_to_host()[0]
-    print(f"Allowed Hybrid Channels found: {num_channels:,}")
-    print(f" -> Phase space ratio captured: {num_channels / total_loops:.2%}")
+        d_path_chan_indices = cuda.device_array((7, max_path_channels), dtype=np.int32)
+        d_path_chan_weights = cuda.device_array(max_path_channels, dtype=np.float64)
+        d_path_channel_count = cuda.to_device(np.zeros(1, dtype=np.int32))
 
-    d_chan_indices_active = d_chan_indices[:, :num_channels]
-    d_chan_weights_active = d_chan_weights[:num_channels]
+        threads_2d_path = (16, 16)
+        blocks_x_path = math.ceil(N_path / threads_2d_path[0])
+        blocks_y_path = math.ceil(N_points / threads_2d_path[1])
+
+        # 3. Execute Path Scan
+        print(" -> Scanning Phase Space (Path x Grid)...")
+        phase_1_scan_path[(blocks_x_path, blocks_y_path), threads_2d_path](
+            gpu_data["mesh"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
+            d_path_q_frac, d_path_q_cart, d_path_w_phon, d_path_w_mag, d_path_eig_phon,
+            gpu_data["w_phon"], gpu_data["w_mag"], gpu_data["eig_phon"],
+            gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
+            gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"], 
+            smearing, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
+            gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
+        )
     
-    # 3. Lifetimes Evaluation Phase 
-    print("\nCalculating equilibrium SMRTA relaxation rates...")
-    d_gamma_hyb = cuda.to_device(np.zeros(N_points * num_hyb_branches, dtype=np.float64))
-
-    threads_per_block = 256
-    blocks_eval = math.ceil(num_channels / threads_per_block)
-
-
-    phase_lifetime_hybrid[blocks_eval, threads_per_block](
-        d_chan_indices_active,
-        d_chan_weights_active,
-        d_channel_count, 
-        d_n_hyb,      
-        d_gamma_hyb, 
-        N_points
-    )
-
+        cuda.synchronize()
     
-    cuda.synchronize()
+        path_num_channels = d_path_channel_count.copy_to_host()[0]
+        print(f" -> Path Channels found: {path_num_channels:,}")
 
-    # 4. Save Extracted Data
-    gamma_hyb_cpu = d_gamma_hyb.copy_to_host().reshape((N_points, num_hyb_branches))
+        # Slice active channels
+        d_path_chan_indices_active = d_path_chan_indices[:, :path_num_channels]
+        d_path_chan_weights_active = d_path_chan_weights[:path_num_channels]
 
-    phon_chars, mag_chars, phon_ams, spin_ams = crystal_data.extract_full_grid_hybrid_properties()
+        # 4. Allocate Path Scattering Rate Arrays
+        d_gamma_mag_path = cuda.to_device(np.zeros(N_path * crystal_data.n_mag_branches, dtype=np.float64))
+        d_gamma_phon_path = cuda.to_device(np.zeros(N_path * crystal_data.phon_branches, dtype=np.float64))
 
-    # ------------------------------------------------------------------
-    # Magnon-phonon coupling constant G_mp, from the two-temperature
-    # linearization of the RTA dynamics (see theory notes): each mode is
-    # driven toward a character-interpolated local temperature
-    # T*_{kmu} = w_mag*T_m + w_ph*T_p, giving
-    #   dE_m/dt = -sum_kmu w_mag^2 * eps * phi * gamma * (T_m - T_p)
-    # where phi = d n^BE/dT|_T0 = eps/(kB*T0^2) * n0*(n0+1). This reuses
-    # ONLY the already-computed gamma_hyb_cpu / mag_chars / n_hyb_cpu --
-    # no new GPU kernel, run once immediately after the full-BZ lifetime
-    # scan above. T0 is taken to be T_mag_init (the equilibrium the rates
-    # were computed at), consistent with the tau_remag derivation.
-    # ------------------------------------------------------------------
-    kB = 0.08617333262  # meV/K
-    eps = crystal_data.w_hyb
-    with np.errstate(divide="ignore", invalid="ignore"):
-        phi = eps / (kB * T_mag_init**2) * n_hyb_cpu * (n_hyb_cpu + 1.0)
-    phi[~np.isfinite(phi)] = 0.0
-
-    G_mp = np.sum(mag_chars**2 * eps * phi * gamma_hyb_cpu)          # meV / (K * ps)
-    C_m = np.sum(mag_chars**2 * eps * phi)                          # meV / K
-    C_p = np.sum(phon_chars**2 * eps * phi)                         # meV / K
-    tau_mp = np.inf if G_mp <= 0 else 1.0 / (G_mp * (1.0 / C_m + 1.0 / C_p))
-
-    print(f"\n -> G_mp    = {G_mp:.6e} meV/(K*ps)")
-    print(f" -> C_m     = {C_m:.6e} meV/K")
-    print(f" -> C_p     = {C_p:.6e} meV/K")
-    print(f" -> tau_mp  = {tau_mp:.4f} ps   (1/tau = G_mp*(1/C_m+1/C_p), at T0={T_mag_init} K)")
-
-    os.makedirs("Outputs", exist_ok=True)
-    out_file = f"{out_dir}/hybrid_equilibrium_lifetimes.csv"
+        # 5. Execute Path Lifetimes (using evaluated d_n_mag and d_n_phon from the grid)
+        print(" -> Calculating explicit path lifetimes...")
+        blocks_eval_path = math.ceil(path_num_channels / threads_per_block)
     
-    with open(out_file, "w") as f:
-        # Appended headers
-        f.write("q_idx,qx,qy,qz,branch,energy_meV,vx,vy,vz,phon_char,mag_char,phon_AM,spin_AM,gamma_ps-1,tau_ps\n")
-        
-        for q_idx in range(N_points):
-            qx, qy, qz = crystal_data.q_grid[q_idx]
-            for branch in range(num_hyb_branches):
-                energy = crystal_data.w_hyb[q_idx, branch]
-                gamma = gamma_hyb_cpu[q_idx, branch]
-                tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                
-                # Retrieve local characters and AM
-                pc = phon_chars[q_idx, branch]
-                mc = mag_chars[q_idx, branch]
-                pa = phon_ams[q_idx, branch]
-                sa = spin_ams[q_idx, branch]
-                
-                # Retrieve the hybridized group velocities
-                vx = crystal_data.grad_f_hyb[q_idx, branch, 0]
-                vy = crystal_data.grad_f_hyb[q_idx, branch, 1]
-                vz = crystal_data.grad_f_hyb[q_idx, branch, 2]
-                
-                f.write(f"{q_idx},{qx},{qy},{qz},{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{pc:.6f},{mc:.6f},{pa:.6e},{sa:.6e},{gamma:.6e},{tau:.6e}\n")
+        phase_lifetime_path[blocks_eval_path, threads_per_block](
+            d_path_chan_indices_active,
+            d_path_chan_weights_active,
+            d_path_channel_count, 
+            d_n_mag, 
+            d_n_phon, 
+            d_gamma_mag_path, 
+            d_gamma_phon_path, 
+            N_points  # Density of states normalization relies on BZ grid resolution
+        )
+        cuda.synchronize()
 
-    print(f"-> Saved equilibrium hybrid lifetimes, velocities, and characters to {out_file}.")
-    """
+        # 6. Extract and Save
+        gamma_mag_path_cpu = d_gamma_mag_path.copy_to_host().reshape((N_path, crystal_data.n_mag_branches))
+        gamma_phon_path_cpu = d_gamma_phon_path.copy_to_host().reshape((N_path, crystal_data.phon_branches))
 
+        path_dist, label_comment = crystal_data.get_path_distance_info()
 
+        # --- Observables for the BARE modes, same conventions as
+        #     save_hybrid_path_properties (reuses get_nambu_angular_momentum so the
+        #     two files are directly comparable). For unhybridized modes the
+        #     subsystem weights are exact by construction: a bare magnon is 100%
+        #     magnon and carries no phonon AM, a bare phonon is 100% phonon and
+        #     carries no spin AM.
+        _n_ph = crystal_data.phon_branches
+        _n_mg = crystal_data.n_mag_branches
+        _dim_block = _n_ph + _n_mg
 
-    # ========================== Path Lifetime Evaluation ==========================
-    print("\nStarting Path Lifetime Evaluation...")
-    
-    # 1. Setup fractional grid mapping
-    grid_q_frac_cpu = crystal_data.q_grid.astype(np.float64) / crystal_data.mesh
-    d_grid_q_frac = cuda.to_device(grid_q_frac_cpu)
+        _L_z_total = crystal_data.get_nambu_angular_momentum(axis=2)
 
-    # 2. Setup Phase 1 memory for path scanning
-    N_path = crystal_data.N_path
-    total_path_loops = N_path * N_points * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
-    max_path_channels = int(total_path_loops * anticipated_fraction)
-    
-    d_path_chan_indices = cuda.device_array((7, max_path_channels), dtype=np.int32)
-    d_path_chan_weights = cuda.device_array(max_path_channels, dtype=np.float64)
-    d_path_channel_count = cuda.to_device(np.zeros(1, dtype=np.int32))
+        # Phonon orbital AM: particle block, Cartesian index p = 3*atom + mu.
+        _L_ph = _L_z_total[:_n_ph, :_n_ph]
 
-    threads_2d_path = (16, 16)
-    blocks_x_path = math.ceil(N_path / threads_2d_path[0])
-    blocks_y_path = math.ceil(N_points / threads_2d_path[1])
+        # Magnon spin AM in the magnon-only Nambu space (2*n_mag), pulled out of
+        # the full matrix so the magnon BdG eigenvectors can be applied directly.
+        _S_mag = np.zeros((2 * _n_mg, 2 * _n_mg), dtype=np.complex128)
+        _S_mag[:_n_mg, :_n_mg] = _L_z_total[_n_ph:_dim_block, _n_ph:_dim_block]
+        _S_mag[_n_mg:, _n_mg:] = _L_z_total[_dim_block + _n_ph:, _dim_block + _n_ph:]
 
-    # 3. Execute Path Scan
-    print(" -> Scanning Phase Space (Path x Grid)...")
-    phase_1_scan_path[(blocks_x_path, blocks_y_path), threads_2d_path](
-        gpu_data["mesh"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
-        d_path_q_frac, d_path_q_cart, d_path_w_phon, d_path_w_mag, d_path_eig_phon,
-        gpu_data["w_phon"], gpu_data["w_mag"], gpu_data["eig_phon"],
-        gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
-        gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"], 
-        smearing, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
-        gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
-    )
-    
-    cuda.synchronize()
-    
-    path_num_channels = d_path_channel_count.copy_to_host()[0]
-    print(f" -> Path Channels found: {path_num_channels:,}")
+        with open(f"{out_dir}/path_lifetimes.csv", "w") as f:
+            f.write(label_comment + "\n")
+            f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps,"
+                    "phon_character,mag_character,phon_AM_z_hbar,spin_AM_z_hbar,path_dist\n")
 
-    # Slice active channels
-    d_path_chan_indices_active = d_path_chan_indices[:, :path_num_channels]
-    d_path_chan_weights_active = d_path_chan_weights[:path_num_channels]
+            # Magnons
+            for i in range(N_path):
+                qx, qy, qz = crystal_data.path_q_frac[i]
+                U_mag = crystal_data.path_eig_mag[i]
+                S_q = U_mag.conj().T @ _S_mag @ U_mag
+                for b in range(crystal_data.n_mag_branches):
+                    energy = crystal_data.path_w_mag[i, b]
+                    gamma = gamma_mag_path_cpu[i, b]
+                    tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
+                    spin_AM = S_q[b, b].real
+                    f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},magnon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
+                            f"{0.0:.6f},{1.0:.6f},{0.0:.6e},{spin_AM:.6e},{path_dist[i]:.6f}\n")
 
-    # 4. Allocate Path Scattering Rate Arrays
-    d_gamma_mag_path = cuda.to_device(np.zeros(N_path * crystal_data.n_mag_branches, dtype=np.float64))
-    d_gamma_phon_path = cuda.to_device(np.zeros(N_path * crystal_data.phon_branches, dtype=np.float64))
+            # Phonons
+            for i in range(N_path):
+                qx, qy, qz = crystal_data.path_q_frac[i]
+                for b in range(crystal_data.phon_branches):
+                    energy = crystal_data.path_w_phon[i, b]
+                    gamma = gamma_phon_path_cpu[i, b]
+                    tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
+                    # e is the mass-weighted polarisation vector, flattened to the
+                    # same Cartesian index p = 3*atom + mu used by _L_ph.
+                    e = crystal_data.path_eig_phon[i, b].reshape(-1)
+                    phon_AM = np.vdot(e, _L_ph @ e).real
+                    f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},phonon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
+                            f"{1.0:.6f},{0.0:.6f},{phon_AM:.6e},{0.0:.6e},{path_dist[i]:.6f}\n")
 
-    # 5. Execute Path Lifetimes (using evaluated d_n_mag and d_n_phon from the grid)
-    print(" -> Calculating explicit path lifetimes...")
-    blocks_eval_path = math.ceil(path_num_channels / threads_per_block)
-    
-    phase_lifetime_path[blocks_eval_path, threads_per_block](
-        d_path_chan_indices_active,
-        d_path_chan_weights_active,
-        d_path_channel_count, 
-        d_n_mag, 
-        d_n_phon, 
-        d_gamma_mag_path, 
-        d_gamma_phon_path, 
-        N_points  # Density of states normalization relies on BZ grid resolution
-    )
-    cuda.synchronize()
-
-    # 6. Extract and Save
-    gamma_mag_path_cpu = d_gamma_mag_path.copy_to_host().reshape((N_path, crystal_data.n_mag_branches))
-    gamma_phon_path_cpu = d_gamma_phon_path.copy_to_host().reshape((N_path, crystal_data.phon_branches))
-
-    path_dist, label_comment = crystal_data.get_path_distance_info()
-
-    # --- Observables for the BARE modes, same conventions as
-    #     save_hybrid_path_properties (reuses get_nambu_angular_momentum so the
-    #     two files are directly comparable). For unhybridized modes the
-    #     subsystem weights are exact by construction: a bare magnon is 100%
-    #     magnon and carries no phonon AM, a bare phonon is 100% phonon and
-    #     carries no spin AM.
-    _n_ph = crystal_data.phon_branches
-    _n_mg = crystal_data.n_mag_branches
-    _dim_block = _n_ph + _n_mg
-
-    _L_z_total = crystal_data.get_nambu_angular_momentum(axis=2)
-
-    # Phonon orbital AM: particle block, Cartesian index p = 3*atom + mu.
-    _L_ph = _L_z_total[:_n_ph, :_n_ph]
-
-    # Magnon spin AM in the magnon-only Nambu space (2*n_mag), pulled out of
-    # the full matrix so the magnon BdG eigenvectors can be applied directly.
-    _S_mag = np.zeros((2 * _n_mg, 2 * _n_mg), dtype=np.complex128)
-    _S_mag[:_n_mg, :_n_mg] = _L_z_total[_n_ph:_dim_block, _n_ph:_dim_block]
-    _S_mag[_n_mg:, _n_mg:] = _L_z_total[_dim_block + _n_ph:, _dim_block + _n_ph:]
-
-    with open(f"{out_dir}/path_lifetimes.csv", "w") as f:
-        f.write(label_comment + "\n")
-        f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps,"
-                "phon_character,mag_character,phon_AM_z_hbar,spin_AM_z_hbar,path_dist\n")
-
-        # Magnons
-        for i in range(N_path):
-            qx, qy, qz = crystal_data.path_q_frac[i]
-            U_mag = crystal_data.path_eig_mag[i]
-            S_q = U_mag.conj().T @ _S_mag @ U_mag
-            for b in range(crystal_data.n_mag_branches):
-                energy = crystal_data.path_w_mag[i, b]
-                gamma = gamma_mag_path_cpu[i, b]
-                tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                spin_AM = S_q[b, b].real
-                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},magnon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
-                        f"{0.0:.6f},{1.0:.6f},{0.0:.6e},{spin_AM:.6e},{path_dist[i]:.6f}\n")
-
-        # Phonons
-        for i in range(N_path):
-            qx, qy, qz = crystal_data.path_q_frac[i]
-            for b in range(crystal_data.phon_branches):
-                energy = crystal_data.path_w_phon[i, b]
-                gamma = gamma_phon_path_cpu[i, b]
-                tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                # e is the mass-weighted polarisation vector, flattened to the
-                # same Cartesian index p = 3*atom + mu used by _L_ph.
-                e = crystal_data.path_eig_phon[i, b].reshape(-1)
-                phon_AM = np.vdot(e, _L_ph @ e).real
-                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},phonon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
-                        f"{1.0:.6f},{0.0:.6f},{phon_AM:.6e},{0.0:.6e},{path_dist[i]:.6f}\n")
-
-    print(f"-> Saved true path lifetimes to {out_dir}/path_lifetimes.csv")
+        print(f"-> Saved true path lifetimes to {out_dir}/path_lifetimes.csv")
 
 
-    # ========================== Hybrid Path Lifetime Evaluation ==========================
-    print("\nStarting Hybrid Path Lifetime Evaluation...")
+        # ========================== Hybrid Path Lifetime Evaluation ==========================
+        print("\nStarting Hybrid Path Lifetime Evaluation...")
 
-    num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
-    n_hyb_cpu = init_bose_einstein(crystal_data.w_hyb, T_mag_init)
-    d_n_hyb = cuda.to_device(n_hyb_cpu)
+        num_hyb_branches = crystal_data.phon_branches + crystal_data.n_mag_branches
+        n_hyb_cpu = init_bose_einstein(crystal_data.w_hyb, T_mag_init)
+        d_n_hyb = cuda.to_device(n_hyb_cpu)
 
-    # phase_1_scan_hybrid_path now scans two scattering processes (coalesence and splitting) 
-    #  so the enumerated loop count, and hence the channel buffer, doubles.
-    total_path_hyb_loops = 2 * N_path * N_points * num_hyb_branches**3
-    max_path_hyb_channels = int(total_path_hyb_loops * anticipated_fraction)
+        # phase_1_scan_hybrid_path now scans two scattering processes (coalesence and splitting) 
+        #  so the enumerated loop count, and hence the channel buffer, doubles.
+        total_path_hyb_loops = 2 * N_path * N_points * num_hyb_branches**3
+        max_path_hyb_channels = int(total_path_hyb_loops * anticipated_fraction)
 
-    d_path_hyb_chan_indices = cuda.device_array((7, max_path_hyb_channels), dtype=np.int32)
-    d_path_hyb_chan_weights = cuda.device_array(max_path_hyb_channels, dtype=np.float64)
-    d_path_hyb_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))
+        d_path_hyb_chan_indices = cuda.device_array((7, max_path_hyb_channels), dtype=np.int32)
+        d_path_hyb_chan_weights = cuda.device_array(max_path_hyb_channels, dtype=np.float64)
+        d_path_hyb_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))
 
-    print(" -> Scanning Hybrid Phase Space (Path x Grid)...")
-    phase_1_scan_hybrid_path[(blocks_x_path, blocks_y_path), threads_2d_path](
-        gpu_data["mesh"], gpu_data["q_grid"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
-        d_path_q_frac, d_path_q_cart, d_path_w_hyb, d_path_eig_hyb,
-        gpu_data["w_hyb"], gpu_data["Qmatrix"],
-        gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
-        gpu_data["eig_phon"], gpu_data["w_phon"], d_path_eig_phon, d_path_w_phon,
-        gpu_data["grad_f_hyb"],
-        gpu_data["atom_masses"], gpu_data["mag_moments"],
-        smearing, min_sigma, d_path_hyb_chan_indices, d_path_hyb_chan_weights, d_path_hyb_channel_count,
-        crystal_data.phon_branches, crystal_data.n_mag_branches
-    )
+        print(" -> Scanning Hybrid Phase Space (Path x Grid)...")
+        phase_1_scan_hybrid_path[(blocks_x_path, blocks_y_path), threads_2d_path](
+            gpu_data["mesh"], gpu_data["q_grid"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
+            d_path_q_frac, d_path_q_cart, d_path_w_hyb, d_path_eig_hyb,
+            gpu_data["w_hyb"], gpu_data["Qmatrix"],
+            gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
+            gpu_data["eig_phon"], gpu_data["w_phon"], d_path_eig_phon, d_path_w_phon,
+            gpu_data["grad_f_hyb"],
+            gpu_data["atom_masses"], gpu_data["mag_moments"],
+            smearing, min_sigma, d_path_hyb_chan_indices, d_path_hyb_chan_weights, d_path_hyb_channel_count,
+            crystal_data.phon_branches, crystal_data.n_mag_branches
+        )
 
-    cuda.synchronize()
+        cuda.synchronize()
 
-    path_hyb_num_channels = d_path_hyb_channel_count.copy_to_host()[0]
-    print(f" -> Hybrid Path Channels found: {path_hyb_num_channels:,}")
+        path_hyb_num_channels = d_path_hyb_channel_count.copy_to_host()[0]
+        print(f" -> Hybrid Path Channels found: {path_hyb_num_channels:,}")
 
-    d_path_hyb_chan_indices_active = d_path_hyb_chan_indices[:, :path_hyb_num_channels]
-    d_path_hyb_chan_weights_active = d_path_hyb_chan_weights[:path_hyb_num_channels]
+        d_path_hyb_chan_indices_active = d_path_hyb_chan_indices[:, :path_hyb_num_channels]
+        d_path_hyb_chan_weights_active = d_path_hyb_chan_weights[:path_hyb_num_channels]
 
-    d_gamma_hyb_path = cuda.to_device(np.zeros(N_path * num_hyb_branches, dtype=np.float64))
+        d_gamma_hyb_path = cuda.to_device(np.zeros(N_path * num_hyb_branches, dtype=np.float64))
 
-    print(" -> Calculating explicit hybrid path lifetimes...")
-    blocks_eval_path_hyb = math.ceil(path_hyb_num_channels / threads_per_block)
+        print(" -> Calculating explicit hybrid path lifetimes...")
+        blocks_eval_path_hyb = math.ceil(path_hyb_num_channels / threads_per_block)
 
-    phase_lifetime_hybrid_path[blocks_eval_path_hyb, threads_per_block](
-        d_path_hyb_chan_indices_active,
-        d_path_hyb_chan_weights_active,
-        d_path_hyb_channel_count,
-        d_n_hyb,
-        d_gamma_hyb_path,
-        N_points
-    )
-    cuda.synchronize()
+        phase_lifetime_hybrid_path[blocks_eval_path_hyb, threads_per_block](
+            d_path_hyb_chan_indices_active,
+            d_path_hyb_chan_weights_active,
+            d_path_hyb_channel_count,
+            d_n_hyb,
+            d_gamma_hyb_path,
+            N_points
+        )
+        cuda.synchronize()
 
-    gamma_hyb_path_cpu = d_gamma_hyb_path.copy_to_host().reshape((N_path, num_hyb_branches))
+        gamma_hyb_path_cpu = d_gamma_hyb_path.copy_to_host().reshape((N_path, num_hyb_branches))
 
-    # ---------------- Per-channel scattering analysis --------------------
-    # Which modes does a given hybrid mode scatter into, where in the BZ do
-    # they sit, are they hybrid, and is J_z conserved? Runs off the same
-    # channel buffers the lifetime kernel consumed, so nothing is recomputed
-    # on the GPU. Controlled by --analyse_modes "path_idx:band,...".
-    if args.analyse_modes:
-        from diagnose_channels import channel_table, path_observables
-        print("\n -> Extracting grid/path mode observables for channel analysis...")
-        _grid_props = crystal_data.extract_full_grid_hybrid_properties()
-        _path_props = path_observables(crystal_data)
+        # ---------------- Per-channel scattering analysis --------------------
+        # Which modes does a given hybrid mode scatter into, where in the BZ do
+        # they sit, are they hybrid, and is J_z conserved? Runs off the same
+        # channel buffers the lifetime kernel consumed, so nothing is recomputed
+        # on the GPU. Controlled by --analyse_modes "path_idx:band,...".
+        if args.analyse_modes:
+            from diagnose_channels import channel_table, path_observables
+            print("\n -> Extracting grid/path mode observables for channel analysis...")
+            _grid_props = crystal_data.extract_full_grid_hybrid_properties()
+            _path_props = path_observables(crystal_data)
 
-        for _spec in args.analyse_modes.split(","):
-            _spec = _spec.strip()
-            if not _spec:
-                continue
-            try:
-                _pi, _bb = (int(x) for x in _spec.split(":"))
-            except ValueError:
-                print(f"    skipping malformed --analyse_modes entry '{_spec}' "
-                      "(expected path_idx:band)")
-                continue
-            if _pi >= N_path or _bb >= num_hyb_branches:
-                print(f"    skipping out-of-range entry '{_spec}' "
-                      f"(N_path={N_path}, branches={num_hyb_branches})")
-                continue
-            channel_table(
-                crystal_data,
-                d_path_hyb_chan_indices, d_path_hyb_chan_weights,
-                path_hyb_num_channels, n_hyb_cpu, N_points,
-                path_idx=_pi, band=_bb,
-                grid_props=_grid_props, path_props=_path_props,
-            )
-
-    path_dist, label_comment = crystal_data.get_path_distance_info()
-
-    # Phonon angular momentum of the hybrid modes. Identical construction to
-    # save_hybrid_path_properties: L^z is intrinsically CARTESIAN (Levi-Civita
-    # on x,y,z), so with the Hamiltonian in the bare-phonon-branch basis it must
-    # be rotated per q-point before contracting with the hybrid eigenvectors.
-    _L_z_tot = crystal_data.get_nambu_angular_momentum(axis=2)
-    _L_cart = _L_z_tot[:crystal_data.phon_branches, :crystal_data.phon_branches]
-    _n_ph = crystal_data.phon_branches
-    _blk = num_hyb_branches
-    _dim_tot = 2 * _blk
-
-    # Subsystem weights from the para-unitarity metric J = diag(1_N, -1_N),
-    # split into its phonon and magnon projections (same as
-    # save_hybrid_path_properties). These are basis-independent - an identity
-    # block is invariant under a unitary rotation inside its own subspace - so
-    # unlike L^z they need no per-q rotation and are built once here.
-    _J_phon = np.zeros((_dim_tot, _dim_tot), dtype=np.float64)
-    _J_spin = np.zeros((_dim_tot, _dim_tot), dtype=np.float64)
-
-    np.fill_diagonal(_J_phon[:_n_ph, :_n_ph], 1.0)
-    np.fill_diagonal(_J_phon[_blk:_blk + _n_ph, _blk:_blk + _n_ph], -1.0)
-
-    np.fill_diagonal(_J_spin[_n_ph:_blk, _n_ph:_blk], 1.0)
-    np.fill_diagonal(_J_spin[_blk + _n_ph:_dim_tot, _blk + _n_ph:_dim_tot], -1.0)
-
-    # Spin angular momentum operator (magnon block of L^z), same as
-    # save_hybrid_path_properties. Unlike the phonon PAM this is diagonal in
-    # the magnon subspace and basis-independent w.r.t. the phonon rotation, so
-    # it is built once here rather than per q-point.
-    _L_z_spin = np.zeros((_dim_tot, _dim_tot), dtype=np.complex128)
-    _L_z_spin[_n_ph:_blk, _n_ph:_blk] = _L_z_tot[_n_ph:_blk, _n_ph:_blk]
-    _L_z_spin[_blk + _n_ph:_dim_tot, _blk + _n_ph:_dim_tot] = \
-        _L_z_tot[_blk + _n_ph:_dim_tot, _blk + _n_ph:_dim_tot]
-
-    # Equilibrium Bose-Einstein occupation of the PATH modes at T_mag_init.
-    # NOTE: n_hyb_cpu (built above from crystal_data.w_hyb) is the GRID
-    # occupation used as the scattering partners' bath population inside the
-    # kernel - it is indexed by grid q-point, not path index, so it cannot be
-    # reused here. This is a separate array over path_w_hyb.
-    n_hyb_occ = init_bose_einstein(crystal_data.path_w_hyb, T_mag_init)
-
-    # Cartesian group velocities in Angstrom/ps (columns vx,vy,vz), from the grid gradient.
-    v_hyb_path = crystal_data.get_path_group_velocities()
-
-    with open(f"{out_dir}/hybrid_path_lifetimes.csv", "w") as f:
-        f.write(label_comment + "\n")
-        f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps,"
-                "phon_character,mag_character,phon_AM_z_hbar,spin_AM_z_hbar,n_occ,path_dist,vx,vy,vz\n")
-        for i in range(N_path):
-            qx, qy, qz = crystal_data.path_q_frac[i]
-            T = crystal_data.path_eig_hyb[i]
-            T_dag = T.conj().T
-
-            # E_q[p, lambda] with p = 3*atom + mu
-            E_q = crystal_data.path_eig_phon[i].reshape(_n_ph, _n_ph).T
-            L_branch = E_q.conj().T @ _L_cart @ E_q
-
-            L_z_phon = np.zeros((_dim_tot, _dim_tot), dtype=np.complex128)
-            L_z_phon[:_n_ph, :_n_ph] = L_branch
-            # Hole block: O_hole = -O_particle^*. The Cartesian shortcut
-            # (hole == particle) does not survive the rotation.
-            L_z_phon[_blk:_blk + _n_ph, _blk:_blk + _n_ph] = -L_branch.conj()
-
-            AM_phon_q = T_dag @ L_z_phon @ T
-            AM_spin_q = T_dag @ _L_z_spin @ T
-            char_phon_q = T_dag @ _J_phon @ T
-            char_spin_q = T_dag @ _J_spin @ T
-
-            for b in range(num_hyb_branches):
-                energy = crystal_data.path_w_hyb[i, b]
-                gamma = gamma_hyb_path_cpu[i, b]
-                tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                phon_char = char_phon_q[b, b].real
-                mag_char = char_spin_q[b, b].real
-                phon_AM = AM_phon_q[b, b].real
-                spin_AM = AM_spin_q[b, b].real
-                n_occ = n_hyb_occ[i, b]
-                f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
-                        f"{phon_char:.6f},{mag_char:.6f},{phon_AM:.6e},{spin_AM:.6e},{n_occ:.6e},"
-                        f"{path_dist[i]:.6f},"
-                        f"{v_hyb_path[i, b, 0]:.6f},{v_hyb_path[i, b, 1]:.6f},{v_hyb_path[i, b, 2]:.6f}\n")
-
-    print(f" -> Hybrid Path Channels: found_channels / max_channels : {path_hyb_num_channels / max_path_hyb_channels * 100:.2f}%")
-
-    print(f"-> Saved hybrid path lifetimes to {out_dir}/hybrid_path_lifetimes.csv")
-
-    # ==================== Magnon-Phonon Exchange Grid ====================
-    # Sweeps the magnon<->phonon energy exchange over a 2D (T_m, T_p) grid,
-    # reusing the hybrid path/BZ channels already scanned above
-    # (d_path_hyb_chan_indices_active / _weights_active) - no new vertex
-    # evaluation, just a cheap re-weighting of stored channels per grid point
-    # via the unchanged phase_lifetime_hybrid_path kernel. Only physically
-    # meaningful as a true BZ integral when --full_bz is also set, since the
-    # sum runs over whatever "path" currently is.
-    #
-    # TWO quantities are written per grid point:
-    #
-    #   Q_flux = sum (w_mag)^2 eps gamma[T_m,T_p] * [n(eps;T_m) - n(eps;T_p)]
-    #   G_mp   = sum (w_mag)^2 eps gamma[T_m,T_p] * phi(eps;T_p)
-    #
-    # Q_flux is the EXACT energy flux (dE_m/dt = -Q_flux) and is the quantity
-    # to use in the 2TM. G_mp is its linear-response coefficient, obtained by
-    # replacing the exact occupation difference with its first-order Taylor
-    # expansion about T_0 = T_p, i.e. n(T_m)-n(T_p) ~ phi(T_p)*(T_m-T_p).
-    #
-    # That expansion is only valid for |T_m-T_p| << eps/k_B. Outside it the
-    # choice of expansion point (T_p rather than T_m) - irrelevant at linear
-    # order - becomes a large systematic error, because phi inherits n_BE's
-    # exponential suppression: for eps >> k_B T_p, phi(T_p) is exponentially
-    # small while the true occupation difference is O(1). This shows up as a
-    # strong asymmetry of G_mp under T_m <-> T_p, and makes G_mp underestimate
-    # the flux by orders of magnitude for high-energy modes when T_m >> T_p.
-    # Q_flux has neither problem: it is exactly antisymmetric under the swap
-    # and vanishes identically on the diagonal. G_mp is retained only for
-    # comparison / backwards compatibility.
-    if args.Gmp_grid:
-        from diagnose_channels import path_observables
-
-        print("\nStarting Gmp(T_m, T_p) grid calculation...")
-        print(f" -> Sweeping T_m, T_p in [{args.Gmp_T_min}, {args.Gmp_T_max}] K, "
-              f"step {args.Gmp_T_step} K")
-        if not args.full_bz:
-            print(" -> WARNING: --full_bz is not set. G_mp is a BZ-integrated quantity; "
-                  "this sweep will only sum over the explicit path, not the whole BZ.")
-
-        _grid_mag_char = crystal_data.extract_full_grid_hybrid_properties()[1]
-        _path_ph_char, _path_mag_char, _, _ = path_observables(crystal_data)
-        _path_energy = crystal_data.path_w_hyb  # (N_path, num_hyb_branches), meV
-
-        kB_Gmp = 0.08617333262  # meV/K
-
-        def _phi(energy, T):
-            n0 = init_bose_einstein(energy, T)
-            return energy / (kB_Gmp * T * T) * n0 * (n0 + 1.0)
-
-        T_values = np.arange(args.Gmp_T_min, args.Gmp_T_max + 1e-9, args.Gmp_T_step)
-        Gmp_results = []
-        _weight = ((1-_path_mag_char) ** 2) * _path_energy
-
-        for T_m in T_values:
-            for T_p in T_values:
-                n_hyb_grid_TmTp = init_bose_einstein_two_temp(crystal_data.w_hyb, _grid_mag_char, T_m, T_p)
-                d_n_hyb_TmTp = cuda.to_device(n_hyb_grid_TmTp)
-                d_gamma_TmTp = cuda.to_device(np.zeros(N_path * num_hyb_branches, dtype=np.float64))
-
-                phase_lifetime_hybrid_path[blocks_eval_path_hyb, threads_per_block](
-                    d_path_hyb_chan_indices_active,
-                    d_path_hyb_chan_weights_active,
-                    d_path_hyb_channel_count,
-                    d_n_hyb_TmTp,
-                    d_gamma_TmTp,
-                    N_points
+            for _spec in args.analyse_modes.split(","):
+                _spec = _spec.strip()
+                if not _spec:
+                    continue
+                try:
+                    _pi, _bb = (int(x) for x in _spec.split(":"))
+                except ValueError:
+                    print(f"    skipping malformed --analyse_modes entry '{_spec}' "
+                          "(expected path_idx:band)")
+                    continue
+                if _pi >= N_path or _bb >= num_hyb_branches:
+                    print(f"    skipping out-of-range entry '{_spec}' "
+                          f"(N_path={N_path}, branches={num_hyb_branches})")
+                    continue
+                channel_table(
+                    crystal_data,
+                    d_path_hyb_chan_indices, d_path_hyb_chan_weights,
+                    path_hyb_num_channels, n_hyb_cpu, N_points,
+                    path_idx=_pi, band=_bb,
+                    grid_props=_grid_props, path_props=_path_props,
                 )
-                cuda.synchronize()
 
-                gamma_TmTp_cpu = d_gamma_TmTp.copy_to_host().reshape((N_path, num_hyb_branches))
+        path_dist, label_comment = crystal_data.get_path_distance_info()
 
-                # Exact occupation difference - no expansion, no reference point.
-                dn_exact = (init_bose_einstein(_path_energy, T_m)
-                            - init_bose_einstein(_path_energy, T_p))
-                Q_flux = np.sum(_weight * gamma_TmTp_cpu * dn_exact)
+        # Phonon angular momentum of the hybrid modes. Identical construction to
+        # save_hybrid_path_properties: L^z is intrinsically CARTESIAN (Levi-Civita
+        # on x,y,z), so with the Hamiltonian in the bare-phonon-branch basis it must
+        # be rotated per q-point before contracting with the hybrid eigenvectors.
+        _L_z_tot = crystal_data.get_nambu_angular_momentum(axis=2)
+        _L_cart = _L_z_tot[:crystal_data.phon_branches, :crystal_data.phon_branches]
+        _n_ph = crystal_data.phon_branches
+        _blk = num_hyb_branches
+        _dim_tot = 2 * _blk
 
-                # Linear-response coefficient, kept for comparison only.
-                G_mp = np.sum(_weight * gamma_TmTp_cpu * _phi(_path_energy, T_p))
+        # Subsystem weights from the para-unitarity metric J = diag(1_N, -1_N),
+        # split into its phonon and magnon projections (same as
+        # save_hybrid_path_properties). These are basis-independent - an identity
+        # block is invariant under a unitary rotation inside its own subspace - so
+        # unlike L^z they need no per-q rotation and are built once here.
+        _J_phon = np.zeros((_dim_tot, _dim_tot), dtype=np.float64)
+        _J_spin = np.zeros((_dim_tot, _dim_tot), dtype=np.float64)
 
-                Gmp_results.append((T_m, T_p, Q_flux, G_mp))
+        np.fill_diagonal(_J_phon[:_n_ph, :_n_ph], 1.0)
+        np.fill_diagonal(_J_phon[_blk:_blk + _n_ph, _blk:_blk + _n_ph], -1.0)
 
-        with open(f"{out_dir}/Gmp_temperature_grid.csv", "w") as f:
-            f.write("T_m_K,T_p_K,Q_flux,G_mp\n")
-            for T_m, T_p, Q_flux, G_mp in Gmp_results:
-                f.write(f"{T_m:.4f},{T_p:.4f},{Q_flux:.8e},{G_mp:.8e}\n")
+        np.fill_diagonal(_J_spin[_n_ph:_blk, _n_ph:_blk], 1.0)
+        np.fill_diagonal(_J_spin[_blk + _n_ph:_dim_tot, _blk + _n_ph:_dim_tot], -1.0)
 
-        # Diagnostic: how far the linearization is from the exact flux at the
-        # most-displaced corner of the sweep. A large ratio means the 2TM must
-        # use Q_flux, not G_mp.
-        _T_lo, _T_hi = T_values[0], T_values[-1]
-        _corner = [r for r in Gmp_results if r[0] == _T_hi and r[1] == _T_lo]
-        if _corner:
-            _, _, _Q, _G = _corner[0]
-            _Q_lin = _G * (_T_hi - _T_lo)
-            if abs(_Q_lin) > 0:
-                print(f" -> Linearization check at (T_m,T_p)=({_T_hi:g},{_T_lo:g}) K: "
-                      f"exact Q = {_Q:.4e}, linear G_mp*dT = {_Q_lin:.4e}  "
-                      f"(ratio {_Q / _Q_lin:.3g})")
+        # Spin angular momentum operator (magnon block of L^z), same as
+        # save_hybrid_path_properties. Unlike the phonon PAM this is diagonal in
+        # the magnon subspace and basis-independent w.r.t. the phonon rotation, so
+        # it is built once here rather than per q-point.
+        _L_z_spin = np.zeros((_dim_tot, _dim_tot), dtype=np.complex128)
+        _L_z_spin[_n_ph:_blk, _n_ph:_blk] = _L_z_tot[_n_ph:_blk, _n_ph:_blk]
+        _L_z_spin[_blk + _n_ph:_dim_tot, _blk + _n_ph:_dim_tot] = \
+            _L_z_tot[_blk + _n_ph:_dim_tot, _blk + _n_ph:_dim_tot]
 
-        print(f"-> Saved Q_flux/G_mp(T_m,T_p) grid to {out_dir}/Gmp_temperature_grid.csv")
+        # Equilibrium Bose-Einstein occupation of the PATH modes at T_mag_init.
+        # NOTE: n_hyb_cpu (built above from crystal_data.w_hyb) is the GRID
+        # occupation used as the scattering partners' bath population inside the
+        # kernel - it is indexed by grid q-point, not path index, so it cannot be
+        # reused here. This is a separate array over path_w_hyb.
+        n_hyb_occ = init_bose_einstein(crystal_data.path_w_hyb, T_mag_init)
+
+        # Cartesian group velocities in Angstrom/ps (columns vx,vy,vz), from the grid gradient.
+        v_hyb_path = crystal_data.get_path_group_velocities()
+
+        with open(f"{out_dir}/hybrid_path_lifetimes.csv", "w") as f:
+            f.write(label_comment + "\n")
+            f.write("q_idx,qx,qy,qz,branch,energy_meV,gamma_ps-1,tau_ps,"
+                    "phon_character,mag_character,phon_AM_z_hbar,spin_AM_z_hbar,n_occ,path_dist,vx,vy,vz\n")
+            for i in range(N_path):
+                qx, qy, qz = crystal_data.path_q_frac[i]
+                T = crystal_data.path_eig_hyb[i]
+                T_dag = T.conj().T
+
+                # E_q[p, lambda] with p = 3*atom + mu
+                E_q = crystal_data.path_eig_phon[i].reshape(_n_ph, _n_ph).T
+                L_branch = E_q.conj().T @ _L_cart @ E_q
+
+                L_z_phon = np.zeros((_dim_tot, _dim_tot), dtype=np.complex128)
+                L_z_phon[:_n_ph, :_n_ph] = L_branch
+                # Hole block: O_hole = -O_particle^*. The Cartesian shortcut
+                # (hole == particle) does not survive the rotation.
+                L_z_phon[_blk:_blk + _n_ph, _blk:_blk + _n_ph] = -L_branch.conj()
+
+                AM_phon_q = T_dag @ L_z_phon @ T
+                AM_spin_q = T_dag @ _L_z_spin @ T
+                char_phon_q = T_dag @ _J_phon @ T
+                char_spin_q = T_dag @ _J_spin @ T
+
+                for b in range(num_hyb_branches):
+                    energy = crystal_data.path_w_hyb[i, b]
+                    gamma = gamma_hyb_path_cpu[i, b]
+                    tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
+                    phon_char = char_phon_q[b, b].real
+                    mag_char = char_spin_q[b, b].real
+                    phon_AM = AM_phon_q[b, b].real
+                    spin_AM = AM_spin_q[b, b].real
+                    n_occ = n_hyb_occ[i, b]
+                    f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
+                            f"{phon_char:.6f},{mag_char:.6f},{phon_AM:.6e},{spin_AM:.6e},{n_occ:.6e},"
+                            f"{path_dist[i]:.6f},"
+                            f"{v_hyb_path[i, b, 0]:.6f},{v_hyb_path[i, b, 1]:.6f},{v_hyb_path[i, b, 2]:.6f}\n")
+
+        print(f" -> Hybrid Path Channels: found_channels / max_channels : {path_hyb_num_channels / max_path_hyb_channels * 100:.2f}%")
+
+        print(f"-> Saved hybrid path lifetimes to {out_dir}/hybrid_path_lifetimes.csv")
+
 
     # 3. Execute Phase 1
     print("\nStarting Phase 1: Scanning Phase Space and computing FT Vertices...")
@@ -4369,6 +4128,10 @@ if __name__ == "__main__":
     num_channels = d_channel_count.copy_to_host()[0]
     print(f"Allowed Channels found: {num_channels:,}", flush=True)
     print(f" -> Percentage of phase space allowed: {num_channels / total_loops:.2%}", flush=True)
+    if num_channels > max_channels:
+        raise SystemExit(f"Channel buffer overflow: found {num_channels:,} > max {max_channels:,}. "
+                         f"Increase anticipated_fraction to at least "
+                         f"{1.05 * num_channels / total_loops:.4f} (now {anticipated_fraction}).")
 
     # Slice the device arrays so Phase 2 ONLY iterates over valid channels
     # Slicing along the 2nd axis preserves the C-contiguous layout
@@ -4410,35 +4173,36 @@ if __name__ == "__main__":
     gamma_mag_cpu = d_gamma_mag.copy_to_host().reshape((N_points, crystal_data.n_mag_branches))
     gamma_phon_cpu = d_gamma_phon.copy_to_host().reshape((N_points, crystal_data.phon_branches))
 
-    # Write to CSV
-    os.makedirs("Outputs", exist_ok=True)
-    with open(f"{out_dir}/equilibrium_lifetimes.csv", "w") as f:
-        f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,vx,vy,vz,gamma_ps-1,tau_ps\n")
-        # Write Magnon Lifetimes
-        for q_idx in range(N_points):
-            qx, qy, qz = crystal_data.q_grid[q_idx]
-            for branch in range(crystal_data.n_mag_branches):
-                energy = crystal_data.w_mag[q_idx, branch]
-                gamma = gamma_mag_cpu[q_idx, branch]
-                vx = crystal_data.grad_f_mag[q_idx, branch, 0]
-                vy = crystal_data.grad_f_mag[q_idx, branch, 1]
-                vz = crystal_data.grad_f_mag[q_idx, branch, 2]
-                tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                f.write(f"{q_idx},{qx},{qy},{qz},magnon,{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{gamma:.6e},{tau:.6e}\n")
+    if not args.dynamics_only:
+        # Write to CSV
+        os.makedirs("Outputs", exist_ok=True)
+        with open(f"{out_dir}/equilibrium_lifetimes.csv", "w") as f:
+            f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,vx,vy,vz,gamma_ps-1,tau_ps\n")
+            # Write Magnon Lifetimes
+            for q_idx in range(N_points):
+                qx, qy, qz = crystal_data.q_grid[q_idx]
+                for branch in range(crystal_data.n_mag_branches):
+                    energy = crystal_data.w_mag[q_idx, branch]
+                    gamma = gamma_mag_cpu[q_idx, branch]
+                    vx = crystal_data.grad_f_mag[q_idx, branch, 0]
+                    vy = crystal_data.grad_f_mag[q_idx, branch, 1]
+                    vz = crystal_data.grad_f_mag[q_idx, branch, 2]
+                    tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
+                    f.write(f"{q_idx},{qx},{qy},{qz},magnon,{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{gamma:.6e},{tau:.6e}\n")
                 
-        # Write Phonon Lifetimes
-        for q_idx in range(N_points):
-            qx, qy, qz = crystal_data.q_grid[q_idx]
-            for branch in range(crystal_data.phon_branches):
-                energy = crystal_data.w_phon[q_idx, branch]
-                gamma = gamma_phon_cpu[q_idx, branch]
-                vx = crystal_data.grad_f_phon[q_idx, branch, 0]
-                vy = crystal_data.grad_f_phon[q_idx, branch, 1]
-                vz = crystal_data.grad_f_phon[q_idx, branch, 2]
-                tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
-                f.write(f"{q_idx},{qx},{qy},{qz},phonon,{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{gamma:.6e},{tau:.6e}\n")
+            # Write Phonon Lifetimes
+            for q_idx in range(N_points):
+                qx, qy, qz = crystal_data.q_grid[q_idx]
+                for branch in range(crystal_data.phon_branches):
+                    energy = crystal_data.w_phon[q_idx, branch]
+                    gamma = gamma_phon_cpu[q_idx, branch]
+                    vx = crystal_data.grad_f_phon[q_idx, branch, 0]
+                    vy = crystal_data.grad_f_phon[q_idx, branch, 1]
+                    vz = crystal_data.grad_f_phon[q_idx, branch, 2]
+                    tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
+                    f.write(f"{q_idx},{qx},{qy},{qz},phonon,{branch},{energy:.6f},{vx:.6f},{vy:.6f},{vz:.6f},{gamma:.6e},{tau:.6e}\n")
 
-    print(f"-> Saved equilibrium lifetimes.", flush=True)
+        print(f"-> Saved equilibrium lifetimes.", flush=True)
 
     # Save
     np.savetxt(f"{out_dir}/w_mag_grid.csv", crystal_data.w_mag, delimiter=",")
