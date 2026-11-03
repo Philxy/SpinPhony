@@ -58,6 +58,95 @@ def load_literature(path):
 
 
 # ---------------------------------------------------------------------------
+# Reference (bare phonon) group velocities
+# ---------------------------------------------------------------------------
+THZ_TO_MEV = 4.135667696
+VASP_TO_THZ = 15.633302     # sqrt(eV/(A^2 amu)) -> THz, same factor as SpinPhony.py
+HBAR_MEV_PS = 0.6582119569
+DEFAULT_REF = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
+                           "Inputs", "fccNi", "combined_40x40x40_fccNi.h5")
+
+
+def _reference_from_yaml(yaml_path):
+    """Phonopy's own frequencies (THz -> meV) and group velocities (THz*A = A/ps)."""
+    import yaml
+    try:
+        from yaml import CSafeLoader as Loader
+    except ImportError:
+        from yaml import SafeLoader as Loader
+    with open(yaml_path) as f:
+        cfg = yaml.load(f, Loader=Loader)
+    ph = cfg['phonon']
+    E = np.array([[b['frequency'] for b in p['band']] for p in ph], float) * THZ_TO_MEV
+    v = np.array([[b['group_velocity'] for b in p['band']] for p in ph], float)
+    q = np.array([p['q-position'] for p in ph], float)
+    return q, E, v
+
+
+def _reference_from_h5(h5_path):
+    """
+    Group velocities straight from the h5 if it carries them; otherwise
+    Hellmann-Feynman on the grid:  dw_n/df_i = <e_n| dD/df_i |e_n> / (2 w_n),
+    with dD/df from a 4th-order central difference of D(q) on the periodic mesh
+    (error ~ h^4, h = 1/N), then f -> Cartesian via q_cart = f @ (2 pi B).
+    Degenerate bands (Gamma, high-symmetry lines) are basis-ambiguous in this
+    scheme - the yaml velocities from phonopy do not have that problem.
+    """
+    import h5py
+    with h5py.File(h5_path, 'r') as h:
+        q = np.array(h['q_positions'], float)
+        mesh = np.array(h['mesh'], int)
+        B = np.array(h['reciprocal_lattice'], float)
+        D = np.array(h['dynamical_matrices'])
+        if 'group_velocities' in h and 'frequencies' in h:
+            return q, np.array(h['frequencies'], float) * THZ_TO_MEV, np.array(h['group_velocities'], float), 'h5'
+
+    D = D * (VASP_TO_THZ * THZ_TO_MEV) ** 2                          # meV^2
+    grid = np.rint(q * mesh).astype(int) % mesh
+    gmap = np.full(tuple(mesh), -1, int)
+    gmap[grid[:, 0], grid[:, 1], grid[:, 2]] = np.arange(len(q))
+    if (gmap < 0).any():
+        raise SystemExit("Reference h5 is not a complete q mesh; cannot differentiate on the grid.")
+
+    def shifted(axis, s):
+        g = grid.copy()
+        g[:, axis] = (g[:, axis] + s) % mesh[axis]
+        return gmap[g[:, 0], g[:, 1], g[:, 2]]
+
+    ev, U = np.linalg.eigh(D)
+    E = np.sqrt(np.clip(ev, 0.0, None))
+    grad_f = np.zeros((len(q), D.shape[1], 3))
+    for ax in range(3):
+        dD = (8.0 * (D[shifted(ax, 1)] - D[shifted(ax, -1)])
+              - (D[shifted(ax, 2)] - D[shifted(ax, -2)])) / 12.0 * mesh[ax]
+        diag = np.einsum('qin,qij,qjn->qn', U.conj(), dD, U).real
+        with np.errstate(divide='ignore', invalid='ignore'):
+            grad_f[:, :, ax] = np.where(E > 0.05, diag / (2.0 * E), 0.0)
+    M_inv = np.linalg.inv(2.0 * np.pi * B)
+    v = np.einsum('ai,qni->qna', M_inv, grad_f) / HBAR_MEV_PS
+    return q, E, v, 'h5-FD'
+
+
+def load_reference(path):
+    """Priority: h5 velocity dataset > sibling phonopy yaml (same name without .h5) > grid finite difference."""
+    if path is None or not os.path.exists(path):
+        print(f"No reference file at {path}: reference velocities skipped.")
+        return None
+    yaml_path = path[:-3] if path.endswith('.h5') else path
+    if path.endswith('.h5') and os.path.exists(yaml_path):
+        try:
+            q, E, v = _reference_from_yaml(yaml_path)
+            return dict(q=q, E=E, v=v, source='phonopy yaml')
+        except Exception as e:
+            print(f" -> could not read {yaml_path} ({e}); falling back to {path}")
+    if path.endswith('.h5'):
+        q, E, v, src = _reference_from_h5(path)
+        return dict(q=q, E=E, v=v, source='h5 (grid FD)' if src == 'h5-FD' else 'h5')
+    q, E, v = _reference_from_yaml(path)
+    return dict(q=q, E=E, v=v, source='phonopy yaml')
+
+
+# ---------------------------------------------------------------------------
 # G_mp = (1/N) sum_{q,lam} w * E * gamma * dn_BE/dT      [see calc_Gmp.py]
 # ---------------------------------------------------------------------------
 KB_MEV = 0.08617333262            # meV/K
@@ -145,6 +234,10 @@ def main():
                         help="Optional literature magnon rates: energy_meV, gamma_ps-1")
     parser.add_argument("--lit_phon", type=str, default=None,
                         help="Optional literature phonon rates: energy_meV, gamma_ps-1")
+    parser.add_argument("--ref", type=str, default=DEFAULT_REF,
+                        help="Reference phonon file: combined_*.h5 (a sibling phonopy yaml of the same name "
+                             "without .h5 is preferred if present) or a yaml. Overlaid on the group velocity plot.")
+    parser.add_argument("--no_ref", action="store_true", help="Do not overlay reference group velocities")
     args = parser.parse_args()
 
     if not os.path.exists(args.filepath):
@@ -279,23 +372,42 @@ def main():
     else:
         print("Skipping G_mp (file has no q_idx / gamma_ps-1 columns).")
 
-    # PLOT 4: Group velocity magnitude (only if the file has velocities)
-    if {'vx', 'vy', 'vz'} <= set(df_valid.columns):
+    # PLOT 4: Group velocity magnitude: SpinPhony hybrid modes + reference bare phonons
+    has_v = {'vx', 'vy', 'vz'} <= set(df_valid.columns)
+    ref = None if args.no_ref else load_reference(args.ref)
+    if has_v or ref is not None:
         print("Generating Group Velocity Magnitude Plot...")
-        v = np.sqrt(df_valid['vx']**2 + df_valid['vy']**2 + df_valid['vz']**2)
-        pos = v > 0
-        if pos.any():
-            fig4, ax4 = plt.subplots(figsize=(8, 6))
-            sc4 = ax4.scatter(df_valid['energy_meV'][pos], v[pos], c=character[pos],
-                              cmap=cmap, vmin=-1.0, vmax=1.0, s=dot_size, alpha=alpha_val, edgecolors='none')
+        fig4, ax4 = plt.subplots(figsize=(8, 6))
+        plotted = False
+        if ref is not None:
+            E_ref = ref['E'].reshape(-1)
+            v_ref = np.linalg.norm(ref['v'], axis=-1).reshape(-1)
+            ok = (E_ref > 0.05) & (v_ref > 0)
+            ax4.scatter(E_ref[ok], v_ref[ok], marker='s', s=10, facecolors='none', edgecolors='0.35',
+                        linewidths=0.6, zorder=1, label=f"Reference phonons ({ref['source']})", alpha=0.7)
+            plotted = plotted or ok.any()
+            print(f" -> reference: {ok.sum():,} phonon modes from {ref['source']}")
+        if has_v:
+            v = np.sqrt(df_valid['vx']**2 + df_valid['vy']**2 + df_valid['vz']**2)
+            pos = v > 0
+            if pos.any():
+                sc4 = ax4.scatter(df_valid['energy_meV'][pos], v[pos], c=character[pos],
+                                  cmap=cmap, vmin=-1.0, vmax=1.0, s=dot_size, alpha=alpha_val,
+                                  edgecolors='none', zorder=2, label='Hybrid Polarons (SpinPhony)')
+                fig4.colorbar(sc4, ax=ax4).set_label('Character (Blue=Phonon, Red=Magnon)', fontsize=12, alpha=0.9)
+                plotted = True
+            else:
+                print(" -> all SpinPhony velocities are zero; only the reference is drawn.")
+        if plotted:
             style(ax4, ylabel=r'Group Velocity Magnitude |v| ($\AA$/ps)')
-            ax4.set_title('Ni: Hybrid Polaron Group Velocity Magnitude vs Energy', fontsize=14)
-            fig4.colorbar(sc4, ax=ax4).set_label('Character (Blue=Phonon, Red=Magnon)', fontsize=12)
+            ax4.set_title('Ni: Group Velocity Magnitude vs Energy', fontsize=14)
+            ax4.legend(loc='best', fontsize=10, framealpha=0.9)
             save_and_maybe_show(fig4, os.path.join(out_dir, "group_velocities_vs_energy.png"), args.show)
         else:
-            print("Skipping Group Velocity Plot (all velocities are zero - velocity calc disabled in SpinPhony).")
+            plt.close(fig4)
+            print("Skipping Group Velocity Plot (nothing to draw).")
     else:
-        print("Skipping Group Velocity Plot (no vx/vy/vz columns in this file).")
+        print("Skipping Group Velocity Plot (no vx/vy/vz columns and no reference).")
 
 
 if __name__ == "__main__":

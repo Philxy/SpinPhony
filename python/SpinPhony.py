@@ -3213,56 +3213,6 @@ def phase_lifetime_hybrid_path(chan_indices, chan_weights, num_channels, n_hyb_g
     cuda.atomic.add(gamma_hyb_path, path_idx * num_bands + b_q, rate_q)
 
 
-@cuda.jit
-def compute_G_mp_kernel(chan_indices, chan_weights, d_channel_count, w_mag, w_phon, temperature, G_mp_out, N_points):
-    """
-    Calculates the 3TM spin-lattice coupling constant G_mp by summing over
-    the magnon emission phase space (c_type == 0).
-    """
-    idx = cuda.grid(1)
-    if idx >= d_channel_count[0] or idx >= chan_weights.shape[0]:
-        return
-
-    # The G_mp formula restricts the sum to the magnon emission channel
-    c_type = chan_indices[0, idx]
-    if c_type != 0:
-        return
-
-    q_idx = chan_indices[1, idx]  # Initial Magnon (parent)
-    k_idx = chan_indices[2, idx]  # Final Magnon (child)
-    p_idx = chan_indices[3, idx]  # Emitted Phonon (child)
-    n     = chan_indices[4, idx]
-    m     = chan_indices[5, idx]
-    lam   = chan_indices[6, idx]
-
-    V_sq_delta = chan_weights[idx]  # Contains |V|^2 * delta(E)
-
-    E_init = w_mag[q_idx, n]
-    E_fin  = w_mag[k_idx, m]
-    E_phon = w_phon[p_idx, lam]
-
-    kB = 0.08617333262 # meV/K
-    if temperature <= 0.0:
-        return
-
-    beta = 1.0 / (kB * temperature)
-
-    # Filter zero-energy modes (acoustic modes at Gamma) to prevent infinities
-    if E_init < 1e-5 or E_fin < 1e-5 or E_phon < 1e-5:
-        return
-
-    # Equilibrium Bose-Einstein distributions
-    n_mag_init = 1.0 / (math.exp(E_init * beta) - 1.0)
-    n_mag_fin  = 1.0 / (math.exp(E_fin * beta) - 1.0)
-    n_phon     = 1.0 / (math.exp(E_phon * beta) - 1.0)
-
-    hbar = 0.6582119569 # meV * ps
-    prefactor = (2.0 * math.pi / hbar) / (N_points * N_points)
-
-    # Summand: (n_ph + 1)(n_mag_fin + 1)(n_mag_init) * (E_ph^2) / (k_B * T^2)
-    term = prefactor * V_sq_delta * (n_phon + 1.0) * (n_mag_fin + 1.0) * n_mag_init  * (E_phon * E_phon) * (beta / temperature)
-
-    cuda.atomic.add(G_mp_out, 0, term)
 
 def calc_heat_capacity_per_cell(w_grid, temperature):
     """
@@ -3301,62 +3251,6 @@ def calc_heat_capacity_per_cell(w_grid, temperature):
     c_mode[valid_mask] = c_mode_valid
     
     return np.sum(c_mode) / N_q
-
-
-def calculate_and_save_Gmp_vs_T(chan_indices_active, chan_weights_active, d_channel_count, num_channels,
-                                 d_w_mag, d_w_phon, w_mag_host, w_phon_host, N_points,
-                                 filename="Outputs/G_mp_temperature_scan.csv"):
-    """
-    Evaluates the G_mp(T) kernel, the magnon/lattice heat capacities, and the
-    resulting spin-lattice relaxation time tau(T) over a temperature grid, and
-    writes them to a CSV.
-
-    Units (all "per primitive unit cell", consistent throughout):
-        G_mp : meV / (K * ps)   (already the native output of compute_G_mp_kernel)
-        C_s, C_l : meV / K      (magnon / phonon heat capacity, see calc_heat_capacity_per_cell)
-        tau = [G_mp * (1/C_s + 1/C_l)]^-1
-            units: [meV/(K*ps)] / [meV/K] = 1/ps  =>  tau in ps
-    """
-    print(f"\nCalculating temperature-dependent G_mp, heat capacities, and tau, saving to {filename}...")
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-
-    d_G_mp_out = cuda.device_array(1, dtype=np.float64)
-
-    threads_per_block = 256
-    blocks_eval = math.ceil(num_channels / threads_per_block)
-
-    temperatures = [1.0 , 4.0, 10.0, 20.0, 30.0, 50.0, 300.0, 500.0, 600.0, 800.0]
-
-    with open(filename, 'w') as f:
-        f.write("Temperature_K,G_mp_meV_per_K_ps_per_cell,C_s_meV_per_K_per_cell,tau_ps\n")
-
-        for T in temperatures:
-            d_G_mp_out.copy_to_device(np.zeros(1, dtype=np.float64))
-
-            compute_G_mp_kernel[blocks_eval, threads_per_block](
-                chan_indices_active,
-                chan_weights_active,
-                d_channel_count,
-                d_w_mag,
-                d_w_phon,
-                T,
-                d_G_mp_out,
-                N_points
-            )
-            cuda.synchronize()
-
-            G_mp_val = d_G_mp_out.copy_to_host()[0]
-
-            C_s_val = calc_heat_capacity_per_cell(w_mag_host, T)
-
-            if G_mp_val > 0.0 and C_s_val > 0.0:
-                tau_val = 1.0 / (G_mp_val * (1.0 / C_s_val ))
-            else:
-                tau_val = float('inf')
-
-            f.write(f"{T:.2f},{G_mp_val:.6e},{C_s_val:.6e},{tau_val:.6e}\n")
-
-    print(f"-> G_mp(T), C_s(T), and tau(T) calculation complete!")
 
 
 def init_bose_einstein(w_distribution, temperature_K):
@@ -4546,32 +4440,11 @@ if __name__ == "__main__":
 
     print(f"-> Saved equilibrium lifetimes.", flush=True)
 
-
-
-    # ========================== G_mp Temperature Scan ==========================
-    # We pass the GPU arrays for w_mag/w_phon to prevent cross-memory-space crashes
-    calculate_and_save_Gmp_vs_T(
-        d_chan_indices_active,
-        d_chan_weights_active,
-        d_channel_count,
-        num_channels,
-        gpu_data["w_mag"],
-        gpu_data["w_phon"],
-        crystal_data.w_mag,
-        crystal_data.w_phon,
-        N_points,
-        filename=f"{out_dir}/G_mp_temperature_scan.csv"
-    )
-
     # Save
     np.savetxt(f"{out_dir}/w_mag_grid.csv", crystal_data.w_mag, delimiter=",")
     np.savetxt(f"{out_dir}/w_phon_grid.csv", crystal_data.w_phon, delimiter=",")
 
     # ========================== Time-evolution Phase ==========================
-    
-    # Setup temperatures
-    T_mag_init = 500
-    T_phon_init = 300
     
     print(f"\nInitializing populations for the dynamics:")
     print(f" -> Magnons: {T_mag_init} K")
@@ -4600,9 +4473,6 @@ if __name__ == "__main__":
     print(f"\nStarting Phase 2: Time Integration ({steps} steps)...")
 
     current_time = 0.0
-
-    exit()
-    pass
 
     for step in range(steps):
         
