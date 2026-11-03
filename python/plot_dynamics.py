@@ -13,9 +13,14 @@ from matplotlib.colors import LogNorm, TwoSlopeNorm
 #   <run>/flux_dynamics.csv          magnon -> phonon energy flux by phonon branch / phonon energy
 #   <run>/final_populations.npz      (optional) final n(q, branch)
 #
-# Optional comparison with the two-temperature model:
-#   --twotm Outputs/2TM_CrI3_Dynamics.csv      columns Time(ps), T_mag(K), T_phon(K), M_over_M0
-#   --gmp   <run>/G_mp_temperature_scan.csv    linear-response G_mp(T), C and tau_mp(T)
+# No G_mp table is needed. The coupling is read off the dynamics itself (G_eff(t) = P / (T_mag - T_phon)).
+# Optionally assume a constant coupling and compare with the linear two-temperature model:
+#   --gmp_value G     constant G_mp in meV/(K ps)/cell. The 2TM with this G and constant heat capacities has the
+#                     exact solution  dT = dT0 exp(-t G (1/C_mag + 1/C_phon)),  energy conservation fixes T_final.
+#   --c_mag, --c_phon heat capacities in meV/(K cell); default: secant estimate dE/dT_fit from the run itself
+#   --n_cells N       number of q-points (default: read from final_populations.npz)
+# and/or overlay an external 2TM trajectory:
+#   --twotm file.csv  columns Time(ps), T_mag(K), T_phon(K), M_over_M0
 #
 # Figures (written to --out_dir, default: the run folder):
 #   dyn_temperatures.png   thermal-fit T_mag, T_phon (+ legacy T_eff, + 2TM), magnon mu, N_mag
@@ -23,7 +28,12 @@ from matplotlib.colors import LogNorm, TwoSlopeNorm
 #   dyn_entropy.png        entropy production, distance to the thermal state (dS, eta)
 #   dyn_spectral.png       mode temperature and n/n_fit maps over (time, energy), both subsystems
 #   dyn_flux_spectrum.png  who carries the energy: flux by phonon energy and branch
-#   dyn_relaxation.png     Delta T = T_mag - T_phon: exponential fit vs linear-response tau and 2TM
+#   dyn_relaxation.png     Delta T = T_mag - T_phon: exponential fit vs the constant-G 2TM (and external 2TM)
+#   dyn_angular_momentum.png   (hybrid dynamics only, SpinPhony.py --hybrid_dynamics) M/M(T_eq), spin / phonon AM
+#                          and their rates, entropy production rate
+#
+# Hybrid-dynamics output (columns Jz_cell, ...) is detected automatically: T_mag/T_phon are then the character-weighted
+# effective temperatures of the theory, the "thermal" reference is the common equilibrium T_eq, mu_mag is 0.
 #   dynamics_summary.txt   numbers quoted from these plots
 
 
@@ -32,6 +42,14 @@ def load_obs(run):
     if not os.path.exists(path):
         raise SystemExit(f"{path} not found")
     return pd.read_csv(path, sep=r"\s+")
+
+
+def two_temp_const_G(t, Tm0, Tp0, G, Cm, Cp):
+    """Exact linear 2TM: constant G and heat capacities. Returns T_mag(t), T_phon(t), tau."""
+    lam = G * (1.0 / Cm + 1.0 / Cp)
+    dT = (Tm0 - Tp0) * np.exp(-lam * t)
+    Tf = (Cm * Tm0 + Cp * Tp0) / (Cm + Cp)
+    return Tf + Cp / (Cm + Cp) * dT, Tf - Cm / (Cm + Cp) * dT, 1.0 / lam
 
 
 def maybe(path):
@@ -45,18 +63,40 @@ def tfmt(ax, logt):
         ax.set_xscale("log")
 
 
-def fit_decay(t, dT, window=(0.8, 0.1)):
-    """tau from ln(dT) = a - t/tau between the times where dT has dropped to `window[0]` and `window[1]` of dT(0)."""
-    ok = np.isfinite(dT) & (np.abs(dT) > 0)
+def fit_offset_exp(t, dT):
+    """
+    dT(t) = A exp(-(t - t0)/tau) + dT_inf, fitted to the SIGNED difference over the whole run (grid search in tau,
+    linear least squares for A and dT_inf). dT_inf != 0 means the two fitted temperatures do not meet, which is
+    a diagnostic in itself (energy non-conservation, frozen modes, non-thermal end state).
+    """
+    ok = np.isfinite(dT)
     t, dT = t[ok], dT[ok]
-    if len(t) < 5 or dT[0] == 0:
-        return float("nan"), None
-    frac = dT / dT[0]
-    sel = (frac < window[0]) & (frac > window[1])
-    if sel.sum() < 4:
-        return float("nan"), None
-    slope, icpt = np.polyfit(t[sel], np.log(np.abs(dT[sel])), 1)
-    return (-1.0 / slope if slope < 0 else float("nan")), (slope, icpt, t[sel][[0, -1]])
+    if len(t) < 6 or abs(dT[0]) < 1e-9:
+        return None
+    span = t[-1] - t[0]
+    best = None
+    for tau in np.geomspace(span * 1e-3, span * 1e2, 400):
+        X = np.c_[np.exp(-(t - t[0]) / tau), np.ones_like(t)]
+        coef = np.linalg.lstsq(X, dT, rcond=None)[0]
+        r = float(np.sqrt(np.mean((X @ coef - dT) ** 2)))
+        if best is None or r < best[0]:
+            best = (r, tau, coef)
+    r, tau, (A, Dinf) = best
+    return dict(tau=tau, A=A, dinf=Dinf, rms=r / abs(dT[0]), t0=t[0],
+                at_bound=tau > 50 * span or tau < 2e-3 * span,
+                fn=lambda tt: A * np.exp(-(tt - t[0]) / tau) + Dinf)
+
+
+def decay_rate(t, dT, smooth=5, floor=0.01):
+    """Instantaneous rate lambda(t) = -d ln|dT| / dt (a single exponential gives a constant)."""
+    ad = np.abs(dT)
+    ok = np.isfinite(ad) & (ad > floor * ad[0])
+    if ok.sum() < smooth + 3:
+        return t[:0], dT[:0]
+    k = np.ones(smooth) / smooth
+    ln = np.convolve(np.log(ad[ok]), k, mode="valid")
+    tt = np.convolve(t[ok], k, mode="valid")
+    return tt[1:-1], -np.gradient(ln, tt)[1:-1]
 
 
 def main():
@@ -64,8 +104,11 @@ def main():
     ap.add_argument("run_dir")
     ap.add_argument("--out_dir", default=None)
     ap.add_argument("--twotm", default=None, help="2TM csv: Time(ps), T_mag(K), T_phon(K), M_over_M0")
-    ap.add_argument("--gmp", default=None, help="G_mp_temperature_scan.csv for the linear-response tau_mp")
-    ap.add_argument("--T_ref", type=float, default=None, help="temperature for the tau_mp lookup (default: final T)")
+    ap.add_argument("--gmp_value", type=float, default=None,
+                    help="assumed constant G_mp in meV/(K ps)/cell for the linear 2TM comparison")
+    ap.add_argument("--c_mag", type=float, default=None, help="magnon heat capacity, meV/(K cell) (default: from the run)")
+    ap.add_argument("--c_phon", type=float, default=None, help="phonon heat capacity, meV/(K cell) (default: from the run)")
+    ap.add_argument("--n_cells", type=int, default=None, help="number of q-points (default: from final_populations.npz)")
     ap.add_argument("--logt", action="store_true", help="logarithmic time axis")
     ap.add_argument("--tmax", type=float, default=None, help="restrict plots to t <= tmax (ps)")
     ap.add_argument("--show", action="store_true")
@@ -77,10 +120,10 @@ def main():
 
     obs = load_obs(run)
     new_cols = "T_mag_fit_K" in obs.columns
+    hyb = "Jz_cell" in obs.columns
     spec = maybe(os.path.join(run, "spectral_dynamics.csv"))
     flux = maybe(os.path.join(run, "flux_dynamics.csv"))
     tm = maybe(a.twotm) if a.twotm else None
-    gm = maybe(a.gmp) if a.gmp else None
     if a.tmax is not None:
         obs = obs[obs.Time_ps <= a.tmax]
         if spec is not None:
@@ -91,6 +134,34 @@ def main():
             tm = tm[tm["Time(ps)"] <= a.tmax]
     t = obs.Time_ps.to_numpy()
     summary = []
+
+    # ---- constant-G linear 2TM (optional): needs per-cell heat capacities
+    G0 = a.gmp_value
+    twotm_const = None
+    if G0 is not None and new_cols:
+        n_cells = a.n_cells
+        npz = os.path.join(run, "final_populations.npz")
+        if n_cells is None and os.path.exists(npz):
+            n_cells = int(np.load(npz)["n_mag"].shape[0])
+        Cm, Cp = a.c_mag, a.c_phon
+        if (Cm is None or Cp is None) and n_cells is None:
+            print("WARNING: --gmp_value needs heat capacities: give --c_mag/--c_phon or --n_cells; "
+                  "constant-G 2TM curves are skipped")
+        else:
+            dTm = obs.T_mag_fit_K.iloc[-1] - obs.T_mag_fit_K.iloc[0]
+            dTp = obs.T_phon_fit_K.iloc[-1] - obs.T_phon_fit_K.iloc[0]
+            if Cm is None:
+                Cm = (obs.E_mag_meV.iloc[-1] - obs.E_mag_meV.iloc[0]) / n_cells / dTm if abs(dTm) > 1e-9 else float("nan")
+            if Cp is None:
+                Cp = (obs.E_phon_meV.iloc[-1] - obs.E_phon_meV.iloc[0]) / n_cells / dTp if abs(dTp) > 1e-9 else float("nan")
+            if np.isfinite(Cm) and np.isfinite(Cp) and Cm > 0 and Cp > 0:
+                Tm_c, Tp_c, tau_c = two_temp_const_G(t, obs.T_mag_fit_K.iloc[0], obs.T_phon_fit_K.iloc[0], G0, Cm, Cp)
+                twotm_const = dict(Tm=Tm_c, Tp=Tp_c, tau=tau_c, Cm=Cm, Cp=Cp)
+                src = "given" if (a.c_mag is not None and a.c_phon is not None) else "secant estimate from the run"
+                summary.append(f"constant-G 2TM: G = {G0:.4e} meV/(K ps)/cell, C_mag = {Cm:.4e}, C_phon = {Cp:.4e} "
+                               f"meV/(K cell) ({src}) -> tau = {tau_c:.5g} ps, T_final = {Tm_c[-1]:.2f} K (t_end)")
+            else:
+                print("WARNING: heat capacities from the run are not positive/finite; give --c_mag and --c_phon")
 
     def save(fig, name):
         fig.tight_layout()
@@ -111,6 +182,9 @@ def main():
     if tm is not None:
         ax.plot(tm["Time(ps)"], tm["T_mag(K)"], color="#d62728", lw=1.5, ls=":", label="2TM magnons")
         ax.plot(tm["Time(ps)"], tm["T_phon(K)"], color="#1f77b4", lw=1.5, ls=":", label="2TM phonons")
+    if twotm_const is not None:
+        ax.plot(t, twotm_const["Tm"], color="#d62728", lw=1.6, ls="-.", label=f"linear 2TM, G = {G0:.3g}")
+        ax.plot(t, twotm_const["Tp"], color="#1f77b4", lw=1.6, ls="-.")
     ax.set_ylabel("Temperature (K)")
     ax.legend(fontsize=8, ncol=2)
     ax.set_title("Subsystem temperatures")
@@ -121,9 +195,11 @@ def main():
         ax2.set_ylabel(r"magnon chemical potential $\mu_{mag}$ (meV)", color="#9467bd")
         ax3 = ax2.twinx()
         ax3.plot(t, obs.N_mag / obs.N_mag.iloc[0] - 1.0, color="k", lw=1.2, ls="--")
-        ax3.set_ylabel(r"$N_{mag}/N_{mag}(0) - 1$  (magnetization change)")
+        ax3.set_ylabel(r"$N_{mag}/N_{mag}(0) - 1$  (magnetization change)" if not hyb
+                       else r"$\sum w_{mag} n\,/\,$initial $- 1$  (magnon content)")
         ax3.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
-    ax2.set_title(r"Conserved magnon number $\Rightarrow$ $\mu_{mag} \neq 0$")
+    ax2.set_title(r"Polariton number not conserved: $\mu = 0$, magnon content can change" if hyb
+                  else r"Conserved magnon number $\Rightarrow$ $\mu_{mag} \neq 0$")
     tfmt(ax2, a.logt)
     save(fig, "dyn_temperatures.png")
 
@@ -145,7 +221,11 @@ def main():
 
     ax = axs[0, 1]
     if new_cols:
-        ax.plot(t, obs.P_mp_cell, color="#2ca02c", lw=2)
+        ax.plot(t, obs.P_mp_cell, color="#2ca02c", lw=2, label="Boltzmann P")
+        if G0 is not None:
+            ax.plot(t, G0 * (obs.T_mag_fit_K - obs.T_phon_fit_K), color="k", lw=1.3, ls="--",
+                    label=r"$G\,(T_{mag}-T_{phon})$, constant $G$")
+            ax.legend(fontsize=9)
         ax.set_ylabel(r"$P_{m\to p} = -dE_{mag}/dt$ (meV ps$^{-1}$ / cell)")
         ax.set_yscale("symlog", linthresh=max(1e-12, np.nanmax(np.abs(obs.P_mp_cell)) * 1e-4))
     ax.set_title("Magnon $\\to$ phonon energy flux")
@@ -154,12 +234,8 @@ def main():
     ax = axs[1, 0]
     if new_cols:
         ax.plot(t, obs.G_eff_cell, color="#8c564b", lw=2, label=r"$G_{eff}(t) = P/(T_{mag}-T_{phon})$")
-        if gm is not None:
-            Tref = a.T_ref if a.T_ref is not None else float(obs.T_phon_fit_K.iloc[-1])
-            row = gm.iloc[(gm.Temperature_K - Tref).abs().argmin()]
-            ax.axhline(row.G_mp_meV_per_K_ps_per_cell, color="k", ls="--",
-                       label=f"2TM linear $G_{{mp}}$ ({row.Temperature_K:.0f} K)")
-            summary.append(f"2TM linear G_mp({row.Temperature_K:.0f} K) = {row.G_mp_meV_per_K_ps_per_cell:.4e} meV/(K ps)/cell")
+        if G0 is not None:
+            ax.axhline(G0, color="k", ls="--", label=f"assumed constant $G$ = {G0:.3g}")
         ax.set_ylabel(r"$G_{eff}$ (meV K$^{-1}$ ps$^{-1}$ / cell)")
         ax.legend(fontsize=9)
         g = obs.G_eff_cell.replace([np.inf, -np.inf], np.nan).dropna()
@@ -183,6 +259,50 @@ def main():
     tfmt(ax, a.logt)
     save(fig, "dyn_energy_flux.png")
 
+    # ---------------------------------------------------------------- hybrid: M, S^z, L^z, J^z
+    if hyb:
+        fig, axs = plt.subplots(2, 2, figsize=(12, 8))
+        ax = axs[0, 0]
+        ax.plot(t, obs.M_over_Meq, color="k", lw=2, label=r"hybrid Boltzmann $M(t)/M(T_{eq})$")
+        if tm is not None and "M_over_M0" in tm.columns:
+            ax.plot(tm["Time(ps)"], tm["M_over_M0"], color="#1f77b4", ls=":", lw=2, label="external 2TM $M/M_0$ (own normalisation)")
+        ax.axhline(1.0, color="0.5", lw=0.8)
+        ax.set_ylabel(r"$M / M(T_{eq})$")
+        ax.legend(fontsize=8)
+        ax.set_title("Magnetization from the magnon content of the polaritons")
+        tfmt(ax, a.logt)
+        summary.append(f"M/M(T_eq): {obs.M_over_Meq.iloc[0]:.5f} -> {obs.M_over_Meq.iloc[-1]:.5f}")
+
+        ax = axs[0, 1]
+        for col, lab, c in (("Sz_cell", r"$S^z$", "#d62728"), ("Lz_cell", r"$L^z$ (phonon)", "#1f77b4"), ("Jz_cell", r"$J^z = S^z + L^z$", "k")):
+            ax.plot(t, obs[col] - obs[col].iloc[0], color=c, lw=2 if col != "Jz_cell" else 1.5,
+                    ls="-" if col != "Jz_cell" else "--", label=lab)
+        ax.set_ylabel(r"change of angular momentum per cell ($\hbar$)")
+        ax.legend(fontsize=9)
+        ax.set_title("Spin and phonon angular momentum")
+        tfmt(ax, a.logt)
+        summary.append(f"angular momentum per cell (hbar): dS^z = {obs.Sz_cell.iloc[-1] - obs.Sz_cell.iloc[0]:+.4e}, "
+                       f"dL^z = {obs.Lz_cell.iloc[-1] - obs.Lz_cell.iloc[0]:+.4e}, dJ^z = {obs.Jz_cell.iloc[-1] - obs.Jz_cell.iloc[0]:+.4e}")
+
+        ax = axs[1, 0]
+        for col, lab, c in (("dSz_rate_cell", r"$\dot S^z$", "#d62728"), ("dLz_rate_cell", r"$\dot L^z$", "#1f77b4"), ("dJz_rate_cell", r"$\dot J^z$", "k")):
+            ax.plot(t, obs[col], color=c, lw=1.8, ls="-" if col != "dJz_rate_cell" else "--", label=lab)
+        ax.set_yscale("symlog", linthresh=max(1e-12, float(np.nanmax(np.abs(obs.dSz_rate_cell))) * 1e-4))
+        ax.set_ylabel(r"rate per cell ($\hbar$ ps$^{-1}$)")
+        ax.legend(fontsize=9)
+        ax.set_title(r"Angular-momentum exchange ($\dot J^z \neq 0$: hybridization does not conserve $J^z$)")
+        tfmt(ax, a.logt)
+
+        ax = axs[1, 1]
+        ax.plot(t, obs.dSdt_cell, color="#2ca02c", lw=2)
+        ax.set_yscale("symlog", linthresh=max(1e-12, float(np.nanmax(np.abs(obs.dSdt_cell))) * 1e-4))
+        ax.set_ylabel(r"entropy production per cell ($k_B$ ps$^{-1}$)")
+        ax.set_title(r"Entropy production rate ($\geq 0$)")
+        tfmt(ax, a.logt)
+        neg = int((obs.dSdt_cell < -1e-12 * np.nanmax(np.abs(obs.dSdt_cell))).sum())
+        summary.append(f"entropy production rate negative at {neg} of {len(obs)} outputs (H-theorem: 0 up to broadening)")
+        save(fig, "dyn_angular_momentum.png")
+
     # ---------------------------------------------------------------- entropy / non-thermality
     if new_cols:
         fig, axs = plt.subplots(1, 3, figsize=(16, 4.8))
@@ -200,9 +320,10 @@ def main():
         ax.plot(t, obs.dS_mag, color="#d62728", lw=2, label="magnons")
         ax.plot(t, obs.dS_phon, color="#1f77b4", lw=2, label="phonons")
         ax.set_yscale("log")
-        ax.set_ylabel(r"$S[n_{fit}] - S[n]$  ($k_B$)")
+        ax.set_ylabel(r"$S[n_{eq}] - S[n]$  ($k_B$)" if hyb else r"$S[n_{fit}] - S[n]$  ($k_B$)")
         ax.legend()
-        ax.set_title("Entropy still to gain inside each subsystem")
+        ax.set_title(r"Entropy still to gain towards $T_{eq}$ (character split)" if hyb
+                     else "Entropy still to gain inside each subsystem")
         tfmt(ax, a.logt)
 
         ax = axs[2]
@@ -249,8 +370,9 @@ def main():
             lim = max(lim, 0.02)
             pc = ax.pcolormesh(tx, ey, r, cmap="RdBu_r", shading="flat",
                                norm=TwoSlopeNorm(vcenter=1.0, vmin=np.exp(-lim), vmax=np.exp(lim)))
-            fig.colorbar(pc, ax=ax).set_label(r"$n / n_{fit}$  (1 = thermal)")
-            ax.set_title(f"{sub.capitalize()}s: deviation from thermal fit")
+            fig.colorbar(pc, ax=ax).set_label(r"$n / n_{BE}(T_{eq})$" if hyb else r"$n / n_{fit}$  (1 = thermal)")
+            ax.set_title(f"{sub.capitalize()}-like modes: deviation from $n_{{BE}}(T_{{eq}})$" if hyb
+                         else f"{sub.capitalize()}s: deviation from thermal fit")
         for ax in axs[-1]:
             tfmt(ax, a.logt)
         save(fig, "dyn_spectral.png")
@@ -268,8 +390,8 @@ def main():
                 dd = fe[fe.time_ps == times[i]]
                 ax.plot(dd.E_meV, dd.P_meV_per_ps_cell, color=c, lw=1.6, label=f"t = {times[i]:.3g} ps")
             ax.axhline(0, color="k", lw=0.6)
-            ax.set_xlabel("phonon energy (meV)")
-            ax.set_ylabel(r"$P(\omega_p)$ (meV ps$^{-1}$ / cell / bin)")
+            ax.set_xlabel("parent energy (meV)" if hyb else "phonon energy (meV)")
+            ax.set_ylabel(r"$P(\omega)$ (meV ps$^{-1}$ / cell / bin)")
             ax.set_title("Spectral magnon $\\to$ phonon flux")
             ax.legend(fontsize=8)
             ax.grid(True, ls=":", alpha=0.5)
@@ -296,42 +418,56 @@ def main():
             Ebr = fb.groupby("index").E_meV.first().reindex(piv.columns).to_numpy()
             ax = axs[2]
             ax.bar(piv.columns.to_numpy(), integ, color=plt.cm.plasma(Ebr / max(Ebr.max(), 1e-9)))
-            ax.set_xlabel("phonon branch (colour: mean energy)")
+            ax.set_xlabel("parent hybrid band (colour: mean energy)" if hyb else "phonon branch (colour: mean energy)")
             ax.set_ylabel(r"$\int P\, dt$ (meV / cell)")
-            ax.set_title("Energy delivered to each phonon branch")
+            ax.set_title("Magnon-to-phonon energy by parent band" if hyb else "Energy delivered to each phonon branch")
             ax.grid(True, ls=":", alpha=0.5, axis="y")
             top = np.argsort(integ)[::-1][:3]
             summary.append("energy delivered per branch (top 3): " +
                            ", ".join(f"branch {int(piv.columns[i])} ({Ebr[i]:.1f} meV): {100 * integ[i] / integ.sum():.1f}%" for i in top))
         save(fig, "dyn_flux_spectrum.png")
 
-    # ---------------------------------------------------------------- relaxation vs 2TM / linear response
+    # ---------------------------------------------------------------- relaxation vs 2TM / constant G
     if new_cols:
         dT = (obs.T_mag_fit_K - obs.T_phon_fit_K).to_numpy()
-        tau_fit, info = fit_decay(t, dT)
-        fig, ax = plt.subplots(figsize=(7.5, 5.5))
+        fit = fit_offset_exp(t, dT)
+        fig, (ax, axr) = plt.subplots(2, 1, figsize=(7.5, 9), sharex=True)
         ax.plot(t, np.abs(dT), color="k", lw=2, label=r"Boltzmann $|T_{mag}-T_{phon}|$")
-        if info is not None:
-            slope, icpt, (t0, t1) = info
-            tt = np.linspace(t[0], t[-1], 200)
-            ax.plot(tt, np.exp(icpt + slope * tt), color="#d62728", ls="--", label=fr"exp. fit, $\tau$ = {tau_fit:.4g} ps")
-            ax.axvspan(t0, t1, color="#d62728", alpha=0.08)
-            summary.append(f"relaxation time from exponential fit of T_mag-T_phon: tau = {tau_fit:.5g} ps")
+        crosses = int((np.diff(np.sign(dT)) != 0).sum())
+        if crosses:
+            summary.append(f"WARNING: T_mag_fit - T_phon_fit changes sign {crosses}x (the log plot shows |dT|)")
+        if fit is not None:
+            ax.plot(t, np.abs(fit["fn"](t)), color="#d62728", ls="--",
+                    label=fr"fit $A e^{{-t/\tau}} + \Delta T_\infty$: $\tau$ = {fit['tau']:.4g} ps, "
+                          fr"$\Delta T_\infty$ = {fit['dinf']:.3g} K")
+            ax.axhline(abs(fit["dinf"]), color="#d62728", lw=0.8, ls=":")
+            summary.append(f"relaxation fit dT = A exp(-t/tau) + dT_inf over the whole run: tau = {fit['tau']:.5g} ps, "
+                           f"dT_inf = {fit['dinf']:.4g} K, rms residual = {100 * fit['rms']:.2f}% of dT(0)"
+                           + ("  [tau at the edge of the search range: no clean exponential]" if fit["at_bound"] else ""))
         if tm is not None:
-            ax.plot(tm["Time(ps)"], np.abs(tm["T_mag(K)"] - tm["T_phon(K)"]), color="#1f77b4", ls=":", lw=2, label="2TM")
-            tau2, _ = fit_decay(tm["Time(ps)"].to_numpy(), (tm["T_mag(K)"] - tm["T_phon(K)"]).to_numpy())
-            summary.append(f"2TM relaxation time (same fit): tau = {tau2:.5g} ps")
-        if gm is not None:
-            Tref = a.T_ref if a.T_ref is not None else float(obs.T_phon_fit_K.iloc[-1])
-            row = gm.iloc[(gm.Temperature_K - Tref).abs().argmin()]
-            ax.plot(t, np.abs(dT[0]) * np.exp(-t / row.tau_ps), color="#2ca02c", ls="-.",
-                    label=fr"linear response $\tau_{{mp}}$({row.Temperature_K:.0f} K) = {row.tau_ps:.4g} ps")
-            summary.append(f"linear-response tau_mp({row.Temperature_K:.0f} K) = {row.tau_ps:.5g} ps")
+            ax.plot(tm["Time(ps)"], np.abs(tm["T_mag(K)"] - tm["T_phon(K)"]), color="#1f77b4", ls=":", lw=2, label="external 2TM")
+        if twotm_const is not None:
+            ax.plot(t, np.abs(twotm_const["Tm"] - twotm_const["Tp"]), color="#2ca02c", ls="-.", lw=2,
+                    label=fr"linear 2TM, constant $G$ = {G0:.3g}: $\tau$ = {twotm_const['tau']:.4g} ps")
         ax.set_yscale("log")
         ax.set_ylabel("temperature difference (K)")
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=8)
         ax.set_title("Magnon-phonon temperature relaxation")
-        tfmt(ax, a.logt)
+        ax.grid(True, ls=":", alpha=0.5)
+
+        tr, lam = decay_rate(t, dT)
+        if len(tr):
+            axr.plot(tr, lam, color="k", lw=2, label=r"$\lambda(t) = -d\ln|\Delta T|/dt$")
+            if twotm_const is not None:
+                axr.axhline(1.0 / twotm_const["tau"], color="#2ca02c", ls="-.", label="linear 2TM, constant G")
+            if fit is not None and not fit["at_bound"]:
+                axr.axhline(1.0 / fit["tau"], color="#d62728", ls="--", label="fit")
+            axr.legend(fontsize=8)
+            summary.append(f"instantaneous rate lambda(t): first quarter median {np.median(lam[:max(1, len(lam)//4)]):.4g}, "
+                           f"last quarter median {np.median(lam[-max(1, len(lam)//4):]):.4g} ps^-1 "
+                           "(equal for a single exponential)")
+        axr.set_ylabel(r"relaxation rate $\lambda$ (ps$^{-1}$)")
+        tfmt(axr, a.logt)
         save(fig, "dyn_relaxation.png")
 
         summary.append(f"final: T_mag_fit = {obs.T_mag_fit_K.iloc[-1]:.3f} K, T_phon_fit = {obs.T_phon_fit_K.iloc[-1]:.3f} K, "
