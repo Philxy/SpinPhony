@@ -6,6 +6,7 @@ import math
 import h5py
 import argparse
 import sys
+import mode_id
 
 try:
     import tomllib
@@ -1712,7 +1713,13 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                     slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
                     smearing, chan_indices, chan_weights, channel_count, 
                     atom_masses, mag_moments, gamma_idx):
-    """Scans phase space integrating exact path points against the BZ grid using Adaptive Broadening."""
+    """Scans phase space integrating exact path points against the BZ grid using Adaptive Broadening.
+
+    c_type 0  M(path,n) <-> M(k,m) + Ph(path-k,lam)             V^{+-}   (exchange striction + antisymmetric xy)
+    c_type 2  Ph(path,lam) <-> M(k,n) - M(k-path,m)             V^{+-}
+    The relativistic (V^{++}, V^{--}) processes c_type 3/4 are scanned by phase_1_scan_path_rel (--relativistic): a
+    separate kernel, so that this one is untouched (the extra branch cost +69 % runtime through register pressure).
+    """
     path_idx, k_idx = cuda.grid(2)
     
     if path_idx >= path_q_frac.shape[0] or k_idx >= grid_q_frac.shape[0]: 
@@ -1794,8 +1801,6 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                         chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
                         chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
                         chan_weights[c_idx] = V_sq * weight
-
-
 
                 """
                 # ---------------------------------------------------------
@@ -2134,6 +2139,104 @@ def calc_vertex_V(kpx, kpy, kpz, qx, qy, qz, q_idx, lambda_phon, n, m, grid_map,
             V_complex += disp_amp * e_mu * W_tot
 
     return V_complex #* omega_mask
+
+
+# ==========================================
+# Relativistic (magnon-number NON-conserving) bare vertices        [--relativistic]
+# ==========================================
+# Theory: theory/bare_scattering_rates_plus_relativistic.tex, "Relaxation Rates in the Multi-Sublattice Basis".
+# The same spin-lattice coupling J^{ab,mu} that gives the number-conserving vertex V^{+-} (calc_vertex_V: isotropic
+# exchange striction  J^xx + J^yy,  J^zz  and the antisymmetric  -i J^xy + i J^yx) also contains
+#     H ~ sum_q (a_q + a^+_-q) [ V^{++}_{kq,nm} b^+_{k n} b^+_{q-k m} + V^{--}_{kq,nm} b_{k n} b_{-k-q m} ] ,
+#     W^{++}_{nml}(k,q) = 1/(2 sqrt(S_n S_m)) [ J~^xx - s_n s_m J~^yy + i s_m J~^xy + i s_n J~^yx ](k-q, q)
+#     W^{--}_{nml}(k,q) = 1/(2 sqrt(S_n S_m)) [ J~^xx - s_n s_m J~^yy - i s_m J~^xy - i s_n J~^yx ](-k-q, q)
+#     V^{nu}_{kq lam,nm} = 1/sqrt(N) sum_{l,mu} sqrt(hbar / (2 M_l omega_q)) e^mu_{l lam}(q) W^{nu,mu}_{nml}
+# (s_n = sign of the moment of magnetic atom n; 1/sqrt(N) is applied by the callers as the 1/N of |V|^2.)
+# These vanish for an isotropic coupling J^{ab} = J delta_ab (exchange striction) and need an anisotropic
+# (J^xx != J^yy) or a symmetric-off-diagonal (J^xy + J^yx != 0) part, or, for antiparallel sublattices, an
+# antisymmetric one: they are the *relativistic* channels  ph(q) <-> mag(k) + mag(q-k)  (the phonon decays into two
+# magnons / two magnons merge into a phonon, changing S^z by 2 hbar).
+
+
+@cuda.jit(device=True)
+def calc_vertex_nc(kind, kx, ky, kz, qx, qy, qz, conj_e, eig_phon_q, lambda_phon, omega, n, m,
+                   slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments, min_omega):
+    """
+    Complex amplitude V^{++} (kind = 0) or V^{--} (kind = 1) of tex Sec. "Final Compact Form", without the 1/sqrt(N).
+
+      (kx,ky,kz)   magnon label k of the vertex V_{k q lam, n m}  (the first magnon operator is b_{k n})
+      (qx,qy,qz)   phonon label q of the vertex (the phonon of the field a_q + a^+_{-q}); omega = omega_{q lam}
+      eig_phon_q   eigenvectors [lam, atom, mu] AT THE MOMENTUM WHOSE LABEL IS q; conj_e = 1 conjugates them. A
+                   vertex V_{k,-q} needs e(-q) = conj(e(q)): pass the eigenvectors of q with conj_e = 1 and the
+                   label -q.
+    """
+    if omega < min_omega:
+        return 0.0 + 0.0j
+
+    hbar = 0.6582119569  # meV * ps
+    DALTON_TO_meV_PS2_PER_A2 = 0.10364269
+
+    S_n = math.fabs(mag_moments[n] / 2.0)
+    S_m = math.fabs(mag_moments[m] / 2.0)
+    sig_n = 1.0
+    if mag_moments[n] < 0.0:
+        sig_n = -1.0
+    sig_m = 1.0
+    if mag_moments[m] < 0.0:
+        sig_m = -1.0
+
+    # first Fourier argument of J~ (conjugate to r_ij)
+    if kind == 0:
+        ax = kx - qx
+        ay = ky - qy
+        az = kz - qz
+        sgn = 1.0
+    else:
+        ax = -kx - qx
+        ay = -ky - qy
+        az = -kz - qz
+        sgn = -1.0
+
+    J_tilde = cuda.local.array((3, 3), dtype=np.complex128)
+    V_complex = 0.0 + 0.0j
+    num_atoms = atom_masses.shape[0]
+    pref_W = 1.0 / (2.0 * math.sqrt(S_n * S_m))
+
+    for l in range(num_atoms):
+        mass_l = atom_masses[l] * DALTON_TO_meV_PS2_PER_A2
+        disp_amp = math.sqrt((hbar * hbar) / (2.0 * mass_l * omega))
+        for mu in range(3):
+            e_mu = eig_phon_q[lambda_phon, l, mu]
+            if conj_e != 0:
+                e_mu = complex(e_mu.real, -e_mu.imag)
+
+            calc_fourier_transform_vec(ax, ay, az, qx, qy, qz, slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                                       n + 1, m + 1, l + 1, mu, J_tilde)
+
+            W = (J_tilde[0, 0] - sig_n * sig_m * J_tilde[1, 1]
+                 + sgn * 1j * sig_m * J_tilde[0, 1] + sgn * 1j * sig_n * J_tilde[1, 0]) * pref_W
+            V_complex += disp_amp * e_mu * W
+
+    return V_complex
+
+
+@cuda.jit(device=True)
+def calc_pair_amplitude_nc(kind, k1x, k1y, k1z, k2x, k2y, k2z, qx, qy, qz, conj_e, eig_phon_q, lambda_phon, omega, n, m,
+                           slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments, min_omega):
+    """
+    Exact golden-rule amplitude of the process with the unordered magnon pair {(k1,n),(k2,m)} and the phonon (q, lam):
+        A = V_{k1,q,nm} + V_{k2,q,mn}
+    (the sum over both orderings of the identical-boson operator product b_{k1 n} b_{k2 m}, which the ordered sum of
+    the Hamiltonian contains twice). The tex replaces it by 2 V assuming V_{k1,nm} = V_{k2,mn}; that is exact only if the
+    spin-lattice rows are closed under swapping the two magnetic atoms - the stored rows are not (a cut-off on the
+    displaced atom), so the sum is used and no symmetry is assumed. The labels must obey k1 + k2 = +q (kind 0, V^{++}) or
+    k1 + k2 = -q (kind 1, V^{--}) EXACTLY (literal, not folded) so that both terms use the same gauge.
+    """
+    V1 = calc_vertex_nc(kind, k1x, k1y, k1z, qx, qy, qz, conj_e, eig_phon_q, lambda_phon, omega, n, m,
+                        slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments, min_omega)
+    V2 = calc_vertex_nc(kind, k2x, k2y, k2z, qx, qy, qz, conj_e, eig_phon_q, lambda_phon, omega, m, n,
+                        slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments, min_omega)
+    return V1 + V2
 
 
 # ==========================================
@@ -3448,8 +3551,17 @@ def phase_2_time_step(chan_indices, chan_weights, num_channels, n_mag, n_phon, d
     """
 
 @cuda.jit
-def phase_lifetime_path(chan_indices, chan_weights, num_channels, n_mag_grid, n_phon_grid, gamma_mag_path, gamma_phon_path, N_grid_points):
-    """Calculates lifetimes for the path array by evaluating the thermal distributions on the regular grid."""
+def phase_lifetime_path(chan_indices, chan_weights, num_channels, n_mag_grid, n_phon_grid, gamma_mag_path, gamma_phon_path,
+                        gamma_mag_rel_path, gamma_phon_rel_path, N_grid_points):
+    """Calculates lifetimes for the path array by evaluating the thermal distributions on the regular grid.
+
+    c_type 0 / 2   number-conserving V^{+-}  ->  gamma_mag_path / gamma_phon_path
+    c_type 3 / 4   relativistic V^{--} / V^{++} (--relativistic) -> gamma_phon_rel_path / gamma_mag_rel_path
+        3  phonon(path,lam):  (2 pi/hbar N) * 1/2 |A^{--}|^2 delta (1 + n_k,n + n_{q-k},m)     [tex 1.1: 2|V|^2 if A = 2V]
+        4  magnon(path,n)  :  (2 pi/hbar N) *     |A^{++}|^2 delta (n_k,m - n_ph(k+q,lam))      [tex 2.2: 4|V|^2 if A = 2V]
+       A = V_{k,nm} + V_{p,mn} is the exact two-ordering amplitude of the magnon pair (calc_pair_amplitude_nc);
+       chan_weights = |A|^2 delta; the sums run over all ordered (k, n, m) / (k, m, lam) of the scan.
+    """
     idx = cuda.grid(1)
     if idx >= num_channels[0] or idx >= chan_weights.shape[0]: 
         return
@@ -3482,6 +3594,20 @@ def phase_lifetime_path(chan_indices, chan_weights, num_channels, n_mag_grid, n_
         n_kminq_mag = n_mag_grid[p_idx, m]
         rate = fgr_prefactor * V_sq * (n_kminq_mag - nk_mag)
         cuda.atomic.add(gamma_phon_path, path_idx * num_phon_branches + lam, rate)
+
+    elif c_type == 3:
+        # Relativistic phonon channel: ordered (k,n),(p=q-k,m), each unordered pair is enumerated twice -> 1/2
+        nk_mag = n_mag_grid[k_idx, n]
+        np_mag = n_mag_grid[p_idx, m]
+        rate = 0.5 * fgr_prefactor * V_sq * (1.0 + nk_mag + np_mag)
+        cuda.atomic.add(gamma_phon_rel_path, path_idx * num_phon_branches + lam, rate)
+
+    elif c_type == 4:
+        # Relativistic magnon channel: M(path,n) + M(k,m) <-> Ph(s=path+k,lam); one partner per unordered pair, |A|^2 = |V_nm + V_mn|^2
+        nk_mag = n_mag_grid[k_idx, m]
+        nph = n_phon_grid[p_idx, lam]
+        rate = fgr_prefactor * V_sq * (nk_mag - nph)
+        cuda.atomic.add(gamma_mag_rel_path, path_idx * num_mag_branches + n, rate)
 
 
     """
@@ -3519,6 +3645,331 @@ def phase_lifetime_path(chan_indices, chan_weights, num_channels, n_mag_grid, n_
     """
 
 
+
+
+
+@cuda.jit
+def phase_1_scan_path_rel(mesh, grid_q_frac, grid_q_cart, grid_map,
+                          path_q_frac, path_q_cart, path_w_phon, path_w_mag, path_eig_phon,
+                          w_phon_grid, w_mag_grid, eig_phon_grid,
+                          grad_f_phon, grad_f_mag,
+                          slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                          smearing, min_sigma, chan_indices, chan_weights, channel_count,
+                          atom_masses, mag_moments, gamma_idx):
+    """
+    Relativistic (magnon-number non-conserving) processes of the path scan (--relativistic); appends to the channel
+    buffers that phase_1_scan_path filled (same layout; run it AFTER that kernel, same channel_count).
+    c_type 3  Ph(path,lam) <-> M(k,n) + M(path-k,m)    chan_weights = |A^{--}|^2 delta,  A = V^{--}_{k,-path,nm} + V^{--}_{path-k,-path,mn}
+    c_type 4  M(path,n) + M(k,m) <-> Ph(path+k,lam)    chan_weights = |A^{++}|^2 delta,  A = V^{++}_{path,s,nm}  + V^{++}_{s-path,s,mn}
+    Gaussian width max(adaptive, min_sigma); partner magnons/phonons at Gamma and zero-weight events are not stored.
+    (Separate kernel: the extra branch in phase_1_scan_path cost +69 % runtime of the default scan.)
+    """
+    path_idx, k_idx = cuda.grid(2)
+    if path_idx >= path_q_frac.shape[0] or k_idx >= grid_q_frac.shape[0]:
+        return
+
+    n_mag = path_w_mag.shape[1]
+    n_phon = path_w_phon.shape[1]
+
+    # path - k -> p (grid nearest neighbour)
+    px_int = int(math.floor(((path_q_frac[path_idx, 0] - grid_q_frac[k_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
+    py_int = int(math.floor(((path_q_frac[path_idx, 1] - grid_q_frac[k_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
+    pz_int = int(math.floor(((path_q_frac[path_idx, 2] - grid_q_frac[k_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
+    idx_qmink = grid_map[px_int, py_int, pz_int]
+
+    # 3. Kinematics mapping (relativistic type 4): path + k -> s(grid nearest neighbour)
+    sx_int = int(math.floor(((path_q_frac[path_idx, 0] + grid_q_frac[k_idx, 0]) % 1.0) * mesh[0] + 0.5)) % mesh[0]
+    sy_int = int(math.floor(((path_q_frac[path_idx, 1] + grid_q_frac[k_idx, 1]) % 1.0) * mesh[1] + 0.5)) % mesh[1]
+    sz_int = int(math.floor(((path_q_frac[path_idx, 2] + grid_q_frac[k_idx, 2]) % 1.0) * mesh[2] + 0.5)) % mesh[2]
+    idx_pplusk = grid_map[sx_int, sy_int, sz_int]
+    # Phonon label of the type-4 vertex V^{++}_{q,k+q}. UMKLAPP GAUGE: the eigenvector of the grid point s is in the
+    # atom-position gauge and is only valid together with the FOLDED momentum of that grid point, so the label is
+    # the folded one (not path + k, which can differ from it by a reciprocal-lattice vector).
+    # grid index of the path point itself (-1 when it is not a grid point, e.g. a high-symmetry path)
+    P_grid_idx = -1
+    fx = path_q_frac[path_idx, 0] * mesh[0]
+    fy = path_q_frac[path_idx, 1] * mesh[1]
+    fz = path_q_frac[path_idx, 2] * mesh[2]
+    if (abs(fx - math.floor(fx + 0.5)) < 1e-6 and abs(fy - math.floor(fy + 0.5)) < 1e-6
+            and abs(fz - math.floor(fz + 0.5)) < 1e-6):
+        P_grid_idx = grid_map[int(math.floor(fx + 0.5)) % mesh[0], int(math.floor(fy + 0.5)) % mesh[1],
+                              int(math.floor(fz + 0.5)) % mesh[2]]
+    s_lab_x = grid_q_cart[idx_pplusk, 0]
+    s_lab_y = grid_q_cart[idx_pplusk, 1]
+    s_lab_z = grid_q_cart[idx_pplusk, 2]
+
+
+    for n in range(n_mag):
+        for m in range(n_mag):
+            for lam in range(n_phon):
+                # ---------------------------------------------------------
+                # Relativistic phonon channel (c_type 3): Ph(path,lam) <-> M(k,n) + M(path-k,m).
+                # Merge amplitude V^{--}_{k,-q,lam,nm}: phonon label -path, so its eigenvector is
+                # e(-path) = conj(e(path)) (the path point's own eigenvector, conjugated).
+                # ---------------------------------------------------------
+                dE_3 = path_w_phon[path_idx, lam] - w_mag_grid[k_idx, n] - w_mag_grid[idx_qmink, m]
+                var_3 = 0.0
+                for i in range(3):
+                    d_g = -grad_f_mag[k_idx, n, i] + grad_f_mag[idx_qmink, m, i]
+                    step_w = d_g / mesh[i]
+                    var_3 += step_w * step_w
+                sigma_raw_3 = smearing * math.sqrt(var_3 / 12.0)
+                sigma_3 = sigma_raw_3 if sigma_raw_3 > min_sigma else min_sigma
+
+                if abs(dE_3) < 2.0 * sigma_3 and k_idx != gamma_idx and idx_qmink != gamma_idx:   # Gamma partner: not in the bath
+                    weight = (0.4179 / sigma_3) * math.exp(-0.5 * (dE_3 * dE_3) / (sigma_3 * sigma_3))
+                    # canonical label pair (lower grid index first, ties by band), see phase_1_scan_nc
+                    if k_idx < idx_qmink or (k_idx == idx_qmink and n <= m):
+                        V = calc_pair_amplitude_nc(1, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
+                                       path_q_cart[path_idx, 0] - grid_q_cart[k_idx, 0],
+                                       path_q_cart[path_idx, 1] - grid_q_cart[k_idx, 1],
+                                       path_q_cart[path_idx, 2] - grid_q_cart[k_idx, 2],
+                                       -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2],
+                                       1, path_eig_phon[path_idx], lam, path_w_phon[path_idx, lam], n, m,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
+                                       PHONON_COUPLING_CUTOFF)
+                    else:
+                        V = calc_pair_amplitude_nc(1, grid_q_cart[idx_qmink, 0], grid_q_cart[idx_qmink, 1], grid_q_cart[idx_qmink, 2],
+                                       path_q_cart[path_idx, 0] - grid_q_cart[idx_qmink, 0],
+                                       path_q_cart[path_idx, 1] - grid_q_cart[idx_qmink, 1],
+                                       path_q_cart[path_idx, 2] - grid_q_cart[idx_qmink, 2],
+                                       -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2],
+                                       1, path_eig_phon[path_idx], lam, path_w_phon[path_idx, lam], m, n,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
+                                       PHONON_COUPLING_CUTOFF)
+                    V_sq = V.real * V.real + V.imag * V.imag
+                    c_idx = -1
+                    if V_sq > 0.0:                      # zero-weight events are not stored
+                        c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx >= 0 and c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 3; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * weight
+
+                # ---------------------------------------------------------
+                # Relativistic magnon channel (c_type 4): M(path,n) + M(k,m) <-> Ph(path+k,lam).
+                # Creation amplitude V^{++}_{q,k+q,lam,nm}: magnon label q = path, phonon label s = path + k
+                # (eigenvector of the grid point s, plain).
+                # ---------------------------------------------------------
+                dE_4 = path_w_mag[path_idx, n] + w_mag_grid[k_idx, m] - w_phon_grid[idx_pplusk, lam]
+                var_4 = 0.0
+                for i in range(3):
+                    d_g = grad_f_mag[k_idx, m, i] - grad_f_phon[idx_pplusk, lam, i]
+                    step_w = d_g / mesh[i]
+                    var_4 += step_w * step_w
+                sigma_raw_4 = smearing * math.sqrt(var_4 / 12.0)
+                sigma_4 = sigma_raw_4 if sigma_raw_4 > min_sigma else min_sigma
+
+                if abs(dE_4) < 2.0 * sigma_4 and k_idx != gamma_idx and idx_pplusk != gamma_idx:   # Gamma partner: not in the bath
+                    weight = (0.4179 / sigma_4) * math.exp(-0.5 * (dE_4 * dE_4) / (sigma_4 * sigma_4))
+                    # canonical label pair (lower grid index first, ties by band) when the path point is itself a grid point
+                    if P_grid_idx >= 0 and (k_idx < P_grid_idx or (k_idx == P_grid_idx and m < n)):
+                        V = calc_pair_amplitude_nc(0, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
+                                       s_lab_x - grid_q_cart[k_idx, 0], s_lab_y - grid_q_cart[k_idx, 1],
+                                       s_lab_z - grid_q_cart[k_idx, 2],
+                                       s_lab_x, s_lab_y, s_lab_z,
+                                       0, eig_phon_grid[idx_pplusk], lam, w_phon_grid[idx_pplusk, lam], m, n,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
+                                       PHONON_COUPLING_CUTOFF)
+                    else:
+                        V = calc_pair_amplitude_nc(0, path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2],
+                                       s_lab_x - path_q_cart[path_idx, 0], s_lab_y - path_q_cart[path_idx, 1],
+                                       s_lab_z - path_q_cart[path_idx, 2],
+                                       s_lab_x, s_lab_y, s_lab_z,
+                                       0, eig_phon_grid[idx_pplusk], lam, w_phon_grid[idx_pplusk, lam], n, m,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
+                                       PHONON_COUPLING_CUTOFF)
+                    V_sq = V.real * V.real + V.imag * V.imag
+                    c_idx = -1
+                    if V_sq > 0.0:                      # zero-weight events are not stored
+                        c_idx = cuda.atomic.add(channel_count, 0, 1)
+                    if c_idx >= 0 and c_idx < chan_indices.shape[1]:
+                        chan_indices[0, c_idx] = 4; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
+                        chan_indices[3, c_idx] = idx_pplusk; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                        chan_weights[c_idx] = V_sq * weight
+
+
+
+
+
+# ==========================================
+# Relativistic bare dynamics: ph(q) <-> mag(k,n) + mag(p=q-k,m)            [--relativistic]
+# ==========================================
+# One stored event per ORDERED triple (q,lam ; k,n ; p,m) (both orderings of the magnon pair are present, because the
+# scan runs over all k). With w = |A|^2 delta, A = V^{--}_{k,-q,nm} + V^{--}_{p,-q,mn} (exact pair amplitude), every event
+# updates ALL THREE populations by
+#       R = 1/2 (2 pi / hbar N) w [ (n_ph+1) n_k n_p - n_ph (n_k+1)(n_p+1) ],   dn_ph += R,  dn_k -= R,  dn_p -= R .
+# Summed over the ordered events this gives the phonon rate (2 pi/hbar) sum_unordered |A|^2 [..] (= tex 1.1, 2|V|^2 per
+# ordered pair, when A = 2V) and, because an unordered pair is seen twice (once per ordering, each updating both
+# magnons), the magnon rate (2 pi/hbar)|A|^2 [..] per partner (= tex 2.2, 4|V|^2). Magnon number changes by -2 per merge,
+# the phonon number by +1. Linearised: gamma_ph = pref w (1 + n_k + n_p), gamma_k = pref w (n_p - n_ph), pref = (2 pi/hbar N)/2.
+
+
+@cuda.jit
+def phase_1_scan_nc(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
+                    grad_f_phon, grad_f_mag,
+                    slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                    base_smearing, min_sigma, nc_indices, nc_weights, nc_count, atom_masses, mag_moments, gamma_idx):
+    """Phase-space scan of the relativistic events on the BZ grid (thread = (phonon q, magnon k)).
+    Events in which the Gamma point takes part (phonon q or either magnon) are skipped: like in the diagnostics, Gamma is not
+    part of the bath (its occupations are initialised to 0, whereas n_BE of the gapped Gamma magnon is huge)."""
+    q_idx, k_idx = cuda.grid(2)
+    N = q_grid.shape[0]
+    if q_idx >= N or k_idx >= N:
+        return
+
+    n_mag = w_mag.shape[1]
+    n_phon = w_phon.shape[1]
+
+    qx_i = (q_grid[q_idx, 0] - q_grid[k_idx, 0] + mesh[0]) % mesh[0]
+    qy_i = (q_grid[q_idx, 1] - q_grid[k_idx, 1] + mesh[1]) % mesh[1]
+    qz_i = (q_grid[q_idx, 2] - q_grid[k_idx, 2] + mesh[2]) % mesh[2]
+    p_idx = grid_map[qx_i, qy_i, qz_i]
+
+    if q_idx == gamma_idx or k_idx == gamma_idx or p_idx == gamma_idx:
+        return
+
+    for lam in range(n_phon):
+        omega = w_phon[q_idx, lam]
+        if omega < PHONON_COUPLING_CUTOFF:          # below the cutoff the vertex is zero (as calc_vertex_V)
+            continue
+        for n in range(n_mag):
+            if w_mag[k_idx, n] < MAGNON_MIN_ENERGY:
+                continue
+            for m in range(n_mag):
+                if w_mag[p_idx, m] < MAGNON_MIN_ENERGY:
+                    continue
+                dE = omega - w_mag[k_idx, n] - w_mag[p_idx, m]
+                variance = 0.0
+                for i in range(3):
+                    d_g = -grad_f_mag[k_idx, n, i] + grad_f_mag[p_idx, m, i]
+                    step_width = d_g / mesh[i]
+                    variance += step_width * step_width
+                sigma_raw = base_smearing * math.sqrt(variance / 12.0)
+                sigma = sigma_raw if sigma_raw > min_sigma else min_sigma
+
+                if abs(dE) < 2.0 * sigma:
+                    delta_weight = (0.4179 / sigma) * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
+                    # CANONICAL LABELS: the pair amplitude is ONE matrix element, so both orderings of the pair must
+                    # carry the same weight. The label pair is always (folded momentum of the magnon with the LOWER
+                    # grid index - ties: the lower band - and q minus it) with the bands ordered accordingly.
+                    if k_idx < p_idx or (k_idx == p_idx and n <= m):
+                        V = calc_pair_amplitude_nc(1, q_grid_cart[k_idx, 0], q_grid_cart[k_idx, 1], q_grid_cart[k_idx, 2],
+                                       q_grid_cart[q_idx, 0] - q_grid_cart[k_idx, 0],
+                                       q_grid_cart[q_idx, 1] - q_grid_cart[k_idx, 1],
+                                       q_grid_cart[q_idx, 2] - q_grid_cart[k_idx, 2],
+                                       -q_grid_cart[q_idx, 0], -q_grid_cart[q_idx, 1], -q_grid_cart[q_idx, 2],
+                                       1, eig_phon[q_idx], lam, omega, n, m,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
+                                       PHONON_COUPLING_CUTOFF)
+                    else:
+                        V = calc_pair_amplitude_nc(1, q_grid_cart[p_idx, 0], q_grid_cart[p_idx, 1], q_grid_cart[p_idx, 2],
+                                       q_grid_cart[q_idx, 0] - q_grid_cart[p_idx, 0],
+                                       q_grid_cart[q_idx, 1] - q_grid_cart[p_idx, 1],
+                                       q_grid_cart[q_idx, 2] - q_grid_cart[p_idx, 2],
+                                       -q_grid_cart[q_idx, 0], -q_grid_cart[q_idx, 1], -q_grid_cart[q_idx, 2],
+                                       1, eig_phon[q_idx], lam, omega, m, n,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
+                                       PHONON_COUPLING_CUTOFF)
+                    V_sq = V.real * V.real + V.imag * V.imag
+                    if V_sq == 0.0:
+                        continue
+                    c_idx = cuda.atomic.add(nc_count, 0, 1)
+                    if c_idx < nc_indices.shape[1]:
+                        nc_indices[0, c_idx] = 3; nc_indices[1, c_idx] = q_idx; nc_indices[2, c_idx] = k_idx
+                        nc_indices[3, c_idx] = p_idx; nc_indices[4, c_idx] = n; nc_indices[5, c_idx] = m
+                        nc_indices[6, c_idx] = lam
+                        nc_weights[c_idx] = V_sq * delta_weight
+
+
+@cuda.jit
+def phase_2_time_step_nc(nc_indices, nc_weights, num_nc, n_mag, n_phon, dn_mag, dn_phon, N_points):
+    idx = cuda.grid(1)
+    if idx >= num_nc[0] or idx >= nc_weights.shape[0]:
+        return
+    q_idx = nc_indices[1, idx]
+    k_idx = nc_indices[2, idx]
+    p_idx = nc_indices[3, idx]
+    n = nc_indices[4, idx]
+    m = nc_indices[5, idx]
+    lam = nc_indices[6, idx]
+    hbar = 0.6582119569  # meV * ps
+    pref = 0.5 * (2.0 * math.pi / hbar) / N_points
+
+    nk = n_mag[k_idx, n]
+    npp = n_mag[p_idx, m]
+    nph = n_phon[q_idx, lam]
+    R = pref * nc_weights[idx] * ((nph + 1.0) * nk * npp - nph * (nk + 1.0) * (npp + 1.0))
+
+    cuda.atomic.add(dn_phon, q_idx * n_phon.shape[1] + lam, R)
+    cuda.atomic.add(dn_mag, k_idx * n_mag.shape[1] + n, -R)
+    cuda.atomic.add(dn_mag, p_idx * n_mag.shape[1] + m, -R)
+
+
+@cuda.jit
+def phase_2_flux_diagnostic_nc(nc_indices, nc_weights, num_nc, n_mag, n_phon, w_mag, w_phon,
+                               N_points, inv_bin_width, n_bins, acc, flux_branch, flux_spec):
+    """Same bookkeeping as phase_2_flux_diagnostic for the relativistic events (acc has 4 entries; the conserving kernel
+    only fills 0..2):
+        acc[0] += dE_mag/dt = -R (w_k + w_p)    acc[1] += dE_phon/dt = R w_q
+        acc[2] += dN_phon/dt = R                acc[3] += dN_mag/dt  = -2 R
+    flux_branch / flux_spec: magnon -> phonon energy flux R (w_k + w_p) by phonon branch / phonon energy."""
+    idx = cuda.grid(1)
+    if idx >= num_nc[0] or idx >= nc_weights.shape[0]:
+        return
+    q_idx = nc_indices[1, idx]
+    k_idx = nc_indices[2, idx]
+    p_idx = nc_indices[3, idx]
+    n = nc_indices[4, idx]
+    m = nc_indices[5, idx]
+    lam = nc_indices[6, idx]
+    hbar = 0.6582119569  # meV * ps
+    pref = 0.5 * (2.0 * math.pi / hbar) / N_points
+
+    nk = n_mag[k_idx, n]
+    npp = n_mag[p_idx, m]
+    nph = n_phon[q_idx, lam]
+    R = pref * nc_weights[idx] * ((nph + 1.0) * nk * npp - nph * (nk + 1.0) * (npp + 1.0))
+    wk = w_mag[k_idx, n]
+    wp = w_mag[p_idx, m]
+    wq = w_phon[q_idx, lam]
+
+    cuda.atomic.add(acc, 0, -R * (wk + wp))
+    cuda.atomic.add(acc, 1, R * wq)
+    cuda.atomic.add(acc, 2, R)
+    cuda.atomic.add(acc, 3, -2.0 * R)
+    cuda.atomic.add(flux_branch, lam, R * (wk + wp))
+    b = int(wq * inv_bin_width)
+    if b < 0:
+        b = 0
+    if b >= n_bins:
+        b = n_bins - 1
+    cuda.atomic.add(flux_spec, b, R * (wk + wp))
+
+
+@cuda.jit
+def phase_lifetime_nc_dyn(nc_indices, nc_weights, num_nc, n_mag, n_phon, gamma_mag, gamma_phon, N_points):
+    """Linearised relaxation rates of every mode from exactly the events the dynamics integrates (n = the given
+    reference occupations): gamma_ph += pref w (1 + n_k + n_p), gamma_k += pref w (n_p - n_ph), gamma_p += pref w (n_k - n_ph),
+    with pref = (2 pi / hbar N) / 2. Compare with phase_lifetime_path (c_type 3 / 4) for a start-up consistency check."""
+    idx = cuda.grid(1)
+    if idx >= num_nc[0] or idx >= nc_weights.shape[0]:
+        return
+    q_idx = nc_indices[1, idx]
+    k_idx = nc_indices[2, idx]
+    p_idx = nc_indices[3, idx]
+    n = nc_indices[4, idx]
+    m = nc_indices[5, idx]
+    lam = nc_indices[6, idx]
+    hbar = 0.6582119569  # meV * ps
+    pref = 0.5 * (2.0 * math.pi / hbar) / N_points * nc_weights[idx]
+
+    nk = n_mag[k_idx, n]
+    npp = n_mag[p_idx, m]
+    nph = n_phon[q_idx, lam]
+    cuda.atomic.add(gamma_phon, q_idx * n_phon.shape[1] + lam, pref * (1.0 + nk + npp))
+    cuda.atomic.add(gamma_mag, k_idx * n_mag.shape[1] + n, pref * (npp - nph))
+    cuda.atomic.add(gamma_mag, p_idx * n_mag.shape[1] + m, pref * (nk - nph))
 
 
 def compute_and_write_observables(step, current_time, n_mag, n_phon, w_mag, w_phon, file_handle):
@@ -3726,6 +4177,7 @@ class DynamicsDiagnostics:
         dEtot_rate_cell               d(E_mag + E_phon)/dt [meV/ps per cell]; must vanish (broadening error)
         dNphon_rate_cell              dN_phon/dt per cell [1/ps]
         G_eff_cell                    P_mp / (T_mag_fit - T_phon_fit)  [meV/(K ps) per cell]
+        dNmag_rate_cell               dN_mag/dt per cell [1/ps]; non-zero only with --relativistic (V++/V-- change the magnon number by -+2)
     spectral_dynamics.csv   (every spec_every-th observation)
         step,time_ps,subsystem,E_meV,n_mean,n_fit_mean,T_mode_K,n_modes   binned in energy
     flux_dynamics.csv
@@ -3757,7 +4209,7 @@ class DynamicsDiagnostics:
         self.obs = open(f"{out_dir}/observables_dynamics.txt", "w")
         self.obs.write("Step\tTime_ps\tE_tot_meV\tE_mag_meV\tE_phon_meV\tN_mag\tN_phon\tT_eff_mag_K\tT_eff_phon_K\t"
                        "S_mag\tS_phon\tS_tot\tT_mag_fit_K\tmu_mag_meV\tT_phon_fit_K\tdS_mag\tdS_phon\t"
-                       "eta_mag\teta_phon\tP_mp_cell\tdEtot_rate_cell\tdNphon_rate_cell\tG_eff_cell\n")
+                       "eta_mag\teta_phon\tP_mp_cell\tdEtot_rate_cell\tdNphon_rate_cell\tG_eff_cell\tdNmag_rate_cell\n")
         self.spec = open(f"{out_dir}/spectral_dynamics.csv", "w")
         self.spec.write("step,time_ps,subsystem,E_meV,n_mean,n_fit_mean,T_mode_K,n_modes\n")
         self.flux = open(f"{out_dir}/flux_dynamics.csv", "w")
@@ -3805,13 +4257,14 @@ class DynamicsDiagnostics:
         P_mp = -acc[0] / N
         dE_rate = (acc[0] + acc[1]) / N
         dN_rate = acc[2] / N
+        dNmag_rate = acc[3] / N if acc.shape[0] > 3 else 0.0      # nonzero only with the relativistic channels
         dT = T_m - T_p
         G_eff = P_mp / dT if np.isfinite(dT) and abs(dT) > 1e-9 else float("nan")
 
         self.obs.write(f"{step}\t{t:.8e}\t{E_mag + E_phon:.8e}\t{E_mag:.8e}\t{E_phon:.8e}\t{N_mag:.8e}\t{N_phon:.8e}\t"
                        f"{T_eff_mag:.4f}\t{T_eff_phon:.4f}\t{S_m:.8e}\t{S_p:.8e}\t{S_m + S_p:.8e}\t"
                        f"{T_m:.4f}\t{mu_m:.6f}\t{T_p:.4f}\t{dS_m:.6e}\t{dS_p:.6e}\t{eta_m:.6e}\t{eta_p:.6e}\t"
-                       f"{P_mp:.8e}\t{dE_rate:.8e}\t{dN_rate:.8e}\t{G_eff:.8e}\n")
+                       f"{P_mp:.8e}\t{dE_rate:.8e}\t{dN_rate:.8e}\t{G_eff:.8e}\t{dNmag_rate:.8e}\n")
         self.obs.flush()
 
         if self.count % self.spec_every == 0:
@@ -4035,7 +4488,21 @@ class HybridDynamicsDiagnostics:
     flux_dynamics.csv       kind 'energy' (parent energy bins) and 'branch' (parent hybrid band index)
     """
 
-    def __init__(self, out_dir, eps, w_mag, w_ph, sz, lz, n_mag_branches, n_init, spec_every=10, n_bins=60):
+    def __init__(self, out_dir, eps, w_mag, w_ph, sz, lz, n_mag_branches, n_init, spec_every=10, n_bins=60,
+                 pump_flat=None, n_base=None, n_snapshots=0, n_records=0):
+        # pump_flat : flat indices (q * n_bands + band) of the pumped modes (empty/None without --pump)
+        # n_base    : occupations before the pump was added (reference for the pump excess energy)
+        # n_snapshots, n_records : number of full-occupation snapshots to keep (log-spaced in the record index) and
+        #                          the total number of record() calls of the run
+        self.pump_flat = np.zeros(0, dtype=np.int64) if pump_flat is None else np.asarray(pump_flat, dtype=np.int64)
+        self.n_base = None if n_base is None else np.asarray(n_base, dtype=np.float64)
+        self.snap_idx = set()
+        if n_snapshots and n_records > 1:
+            k = np.unique(np.round(np.geomspace(1, n_records - 1, max(1, int(n_snapshots) - 1))).astype(np.int64))
+            self.snap_idx = {0, n_records - 1} | set(int(x) for x in k)
+        self.snap_n, self.snap_t = [], []
+        self.M0 = None
+        self.pump_E0 = None
         self.eps = np.asarray(eps, dtype=np.float64)
         self.w_mag = np.asarray(w_mag, dtype=np.float64)
         self.w_ph = np.asarray(w_ph, dtype=np.float64)
@@ -4077,7 +4544,8 @@ class HybridDynamicsDiagnostics:
                        "S_mag\tS_phon\tS_tot\tT_mag_fit_K\tmu_mag_meV\tT_phon_fit_K\tdS_mag\tdS_phon\t"
                        "eta_mag\teta_phon\tP_mp_cell\tdEtot_rate_cell\tdNphon_rate_cell\tG_eff_cell\t"
                        "N_hyb\tSz_cell\tLz_cell\tJz_cell\tdSz_rate_cell\tdLz_rate_cell\tdJz_rate_cell\t"
-                       "dN_mag_rate_cell\tdSdt_cell\tM_over_Meq\tT_eq_K\n")
+                       "dN_mag_rate_cell\tdSdt_cell\tM_over_Meq\tT_eq_K\t"
+                       "M_over_M0\tn_pump_mean\tT_pump_K\tE_pump_excess_frac\n")
         self.spec = open(f"{out_dir}/spectral_dynamics.csv", "w")
         self.spec.write("step,time_ps,subsystem,E_meV,n_mean,n_fit_mean,T_mode_K,n_modes\n")
         self.flux = open(f"{out_dir}/flux_dynamics.csv", "w")
@@ -4131,11 +4599,30 @@ class HybridDynamicsDiagnostics:
         Lz = float(np.sum(self.lz[a] * na)) / N
         M_ratio = (1.0 - N_mag / self.cap_mag) / self.M_eq if self.M_eq != 0 else float("nan")
 
+        # --- pump metrics (nan without --pump) and the magnetization relative to the initial state
+        M_abs = 1.0 - N_mag / self.cap_mag
+        if self.M0 is None:
+            self.M0 = M_abs
+        M_over_M0 = M_abs / self.M0 if self.M0 != 0 else float("nan")
+        n_pump = T_pump = E_pump_frac = float("nan")
+        if self.pump_flat.size:
+            nf = n.reshape(-1)
+            n_pump = float(np.mean(nf[self.pump_flat]))
+            e_p = float(np.mean(self.eps.reshape(-1)[self.pump_flat]))
+            T_pump = e_p / (KB_MEV * np.log1p(1.0 / n_pump)) if n_pump > 1e-14 else 0.0
+            E_exc = float(np.sum(self.eps.reshape(-1)[self.pump_flat] * (nf[self.pump_flat] - self.n_base.reshape(-1)[self.pump_flat])))
+            if self.pump_E0 is None:
+                self.pump_E0 = E_exc
+            E_pump_frac = E_exc / self.pump_E0 if self.pump_E0 != 0 else float("nan")
+        if self.count in self.snap_idx:
+            self.snap_n.append(n.copy()); self.snap_t.append(t)
+
         self.obs.write(f"{step}\t{t:.8e}\t{E_tot:.8e}\t{E_mag:.8e}\t{E_ph:.8e}\t{N_mag:.8e}\t{N_ph:.8e}\t"
                        f"{T_eff_m:.4f}\t{T_eff_p:.4f}\t{S_m:.8e}\t{S_p:.8e}\t{S_tot:.8e}\t{T_m:.4f}\t0.000000\t{T_p:.4f}\t"
                        f"{dS_m:.6e}\t{dS_p:.6e}\t{eta_m:.6e}\t{eta_p:.6e}\t{P_mp:.8e}\t{dE_tot:.8e}\t{dN_ph:.8e}\t{G_eff:.8e}\t"
                        f"{N_hyb:.8e}\t{Sz:.8e}\t{Lz:.8e}\t{Sz + Lz:.8e}\t{dSz:.8e}\t{dLz:.8e}\t{dSz + dLz:.8e}\t"
-                       f"{dN_mag:.8e}\t{dSent:.8e}\t{M_ratio:.8f}\t{self.T_eq:.4f}\n")
+                       f"{dN_mag:.8e}\t{dSent:.8e}\t{M_ratio:.8f}\t{self.T_eq:.4f}\t"
+                       f"{M_over_M0:.8f}\t{n_pump:.8e}\t{T_pump:.4f}\t{E_pump_frac:.8e}\n")
         self.obs.flush()
 
         if self.count % self.spec_every == 0:
@@ -4151,11 +4638,23 @@ class HybridDynamicsDiagnostics:
 
         self.t_list.append(t); self.dT_list.append(dT)
         row = dict(step=step, t=t, T_m=T_m, T_p=T_p, E_tot=E_tot, S_tot=S_tot, Sz=Sz, Lz=Lz, M=M_ratio, P=P_mp,
-                   dE=dE_tot, dJ=dSz + dLz, dSent=dSent, eta_m=eta_m, eta_p=eta_p, N_hyb=N_hyb, N_mag=N_mag)
+                   dE=dE_tot, dJ=dSz + dLz, dSent=dSent, eta_m=eta_m, eta_p=eta_p, N_hyb=N_hyb, N_mag=N_mag,
+                   M0r=M_over_M0, n_pump=n_pump, T_pump=T_pump, E_pump_frac=E_pump_frac)
         if self.last is None:
             self.first = row
         self.last = row
         return row
+
+    def save_snapshots(self, path, extra=None):
+        """Full occupation n[q, band] at the kept record indices (log-spaced in time) + everything needed to plot
+        the effective temperature T_eff(eps) of every mode (python/plot_occupation.py)."""
+        if not self.snap_n:
+            return False
+        np.savez(path, t_ps=np.array(self.snap_t), n=np.array(self.snap_n), eps=self.eps, w_mag=self.w_mag,
+                 w_ph=self.w_ph, n_eq=self.n_eq, T_eq=self.T_eq, pump_flat=self.pump_flat,
+                 n_base=self.n_base if self.n_base is not None else np.zeros(0), min_energy=HYB_MIN_ENERGY,
+                 **(extra or {}))
+        return True
 
     def close(self):
         for f in (self.obs, self.spec, self.flux):
@@ -4164,11 +4663,16 @@ class HybridDynamicsDiagnostics:
 
 def run_hybrid_dynamics(out_dir, crystal_data, d_chan_indices, d_chan_weights, d_channel_count,
                         num_channels, max_channels, total_loops, N_points, T_mag_init, T_phon_init, dt, steps,
-                        obs_every, spec_every, gamma_lifetime_ref, n_ref_equilibrium, threads_per_block=256):
+                        obs_every, spec_every, gamma_lifetime_ref, n_ref_equilibrium, threads_per_block=256,
+                        pump=None, n_snapshots=40):
     """
     Time integration of the hybrid collision integral (see the header of this section) on the c_type 0 channels
     of the full-BZ hybrid-path scan. Initial state: the quasi-equilibrium ansatz of the theory,
     n*_{k mu} = w_mag n_BE(eps; T_mag) + w_ph n_BE(eps; T_phon).
+    pump : None, or dict(modes=[resolved modes of mode_id.parse_pump], dn=[quanta per mode], base='thermal'|'none').
+           The quanta are ADDED to the named modes on top of that background ('none': the background is zero, i.e. a
+           vacuum plus pump).  See python/mode_id.py for how modes are named.
+    n_snapshots : full-occupation snapshots kept for python/plot_occupation.py (log-spaced in time; 0 = none).
     gamma_lifetime_ref / n_ref_equilibrium : rates and occupations of the (unchanged) hybrid-path lifetime run,
     used for a start-up consistency check of the linearised event set against it.
     """
@@ -4198,6 +4702,21 @@ def run_hybrid_dynamics(out_dir, crystal_data, d_chan_indices, d_chan_weights, d
         print(f" WARNING: quasi-equilibrium ansatz negative for {int((n_cpu < 0).sum())} modes "
               f"(w_mag range {mag_ch.min():.3f}..{mag_ch.max():.3f}); clipped to 0.")
         n_cpu = np.maximum(n_cpu, 0.0)
+
+    # ---- named-mode pump: quanta added on top of the background (or of the vacuum with base = 'none') ----------
+    pump_flat = np.zeros(0, dtype=np.int64)
+    if pump is not None:
+        if pump.get("base", "thermal") == "none":
+            n_cpu[:] = 0.0
+        n_base = n_cpu.copy()
+        pump_flat = np.array([m["q_idx"] * nb + m["band"] for m in pump["modes"]], dtype=np.int64)
+        for m, dn_i in zip(pump["modes"], pump["dn"]):
+            if not eps[m["q_idx"], m["band"]] >= HYB_MIN_ENERGY:
+                raise SystemExit(f"Pumped mode {m['label']} (q_idx {m['q_idx']}) is below the scattering cutoff "
+                                 f"{HYB_MIN_ENERGY} meV and never scatters.")
+            n_cpu[m["q_idx"], m["band"]] += dn_i
+    else:
+        n_base = n_cpu.copy()
     d_n = cuda.to_device(n_cpu)
     d_dn = cuda.to_device(np.zeros(N_points * nb, dtype=np.float64))
 
@@ -4232,10 +4751,25 @@ def run_hybrid_dynamics(out_dir, crystal_data, d_chan_indices, d_chan_weights, d
     if dt * g_max > 0.2:
         print("   WARNING: dt * gamma_max > 0.2 - the explicit Euler step is likely unstable / inaccurate.")
 
+    n_records = int(math.ceil(steps / max(1, obs_every))) + 1          # record() calls: every obs_every steps + the last
     diag = HybridDynamicsDiagnostics(out_dir, eps, mag_ch, phon_ch, spin_am, phon_am,
-                                     crystal_data.n_mag_branches, n_cpu, spec_every=spec_every)
+                                     crystal_data.n_mag_branches, n_cpu, spec_every=spec_every,
+                                     pump_flat=pump_flat, n_base=n_base, n_snapshots=n_snapshots, n_records=n_records)
     print(f" Initial state: T_mag = {T_mag_init} K, T_phon = {T_phon_init} K (quasi-equilibrium ansatz); "
           f"{int(act.sum()):,} of {act.size:,} modes active (eps >= {HYB_MIN_ENERGY} meV)")
+    if pump is not None:
+        print(f" PUMP (background: {'thermal as above' if pump.get('base', 'thermal') != 'none' else 'none (vacuum)'}):")
+        E_in = 0.0
+        for m, dn_i in zip(pump["modes"], pump["dn"]):
+            e_m = dn_i * m["eps"] / N_points
+            E_in += e_m
+            n0 = n_cpu[m["q_idx"], m["band"]]
+            T0 = m["eps"] / (KB_MEV * math.log1p(1.0 / n0)) if n0 > 1e-14 else 0.0
+            print(f"   {m['label']:18s} q_idx {m['q_idx']:5d} band {m['band']:2d}  dn = {dn_i:10.4g} quanta  "
+                  f"-> n = {n0:.4g} (T_eff = {T0:.4g} K)   energy {e_m:.4g} meV/cell   w_mag = {m['w_mag']:.3f}")
+        E_bg = float(np.sum(eps[act] * n_base[act])) / N_points
+        print(f"   absorbed {E_in:.4g} meV/cell on top of {E_bg:.4g} meV/cell of background "
+              f"({E_in / max(E_bg, 1e-300):.3g} x)")
     print(f" Energy-conserving common temperature T_eq = {diag.T_eq:.3f} K;  M(T_eq) = {diag.M_eq:.5f} (capacity-normalised)")
     print(f" Equilibrium reference per cell: S^z_eq = {diag.Sz_eq:.5f}, L^z_eq = {diag.Lz_eq:.5f} (hbar)")
     # ---- start-up check 2: is the equilibrium state stationary under the broadened events? ----------------------
@@ -4275,7 +4809,8 @@ def run_hybrid_dynamics(out_dir, crystal_data, d_chan_indices, d_chan_weights, d
             print(f"  step {step:>10,d}  t = {t:9.4f} ps | T_mag {row['T_m']:8.2f}  T_phon {row['T_p']:8.2f} K"
                   f" | dE/E0 {(row['E_tot'] - e0) / e0:+.2e} | S {row['S_tot']:.5e}"
                   f" | M/M_eq {row['M']:.5f} | J^z {row['Sz'] + row['Lz']:+.5e}"
-                  f" | P {row['P']:+.3e}", flush=True)
+                  f" | P {row['P']:+.3e}"
+                  + (f" | n_pump {row['n_pump']:.4g}  M/M0 {row['M0r']:.5f}" if pump is not None else ""), flush=True)
 
     t_now = 0.0
     for step in range(steps):
@@ -4287,6 +4822,11 @@ def run_hybrid_dynamics(out_dir, crystal_data, d_chan_indices, d_chan_weights, d
         apply_euler_hybrid[blocks_euler, threads_per_block](d_n, d_dn, dt)
         t_now += dt
     run_diag(steps, t_now)
+    snap_saved = diag.save_snapshots(
+        f"{out_dir}/occupation_snapshots.npz",
+        extra=dict(q_frac=crystal_data.q_grid.astype(np.float64) / crystal_data.mesh,
+                   pump_labels=np.array([m["label"] for m in pump["modes"]]) if pump else np.array([], dtype=str),
+                   pump_dn=np.array(pump["dn"]) if pump else np.zeros(0)))
     diag.close()
 
     n_final = d_n.copy_to_host()
@@ -4318,7 +4858,19 @@ def run_hybrid_dynamics(out_dir, crystal_data, d_chan_indices, d_chan_weights, d
           f"   J^z: {f0['Sz'] + f0['Lz']:+.5e} -> {f1['Sz'] + f1['Lz']:+.5e} (hbar)")
     print(f" Non-thermal fraction eta (end): magnon-like {f1['eta_m']:.3e}, phonon-like {f1['eta_p']:.3e}")
     print(f" Polariton number N_hyb: {f0['N_hyb']:.6e} -> {f1['N_hyb']:.6e} (not conserved by 1 -> 2 processes)")
-    print(f" Outputs: observables_dynamics.txt, spectral_dynamics.csv, flux_dynamics.csv, final_populations_hybrid.npz in {out_dir}")
+    print(f" Magnetization relative to the initial state M(t)/M(0)  : {f0['M0r']:.5f} -> {f1['M0r']:.5f}  (min {np.nanmin(np.atleast_1d(obs_table['M_over_M0'])):.5f})")
+    if pump is not None:
+        npm = np.atleast_1d(obs_table["n_pump_mean"]); tt = np.atleast_1d(obs_table["Time_ps"])
+        half = np.nonzero(npm <= npm[0] / 2)[0]
+        print(f" Pumped modes: n_pump {f0['n_pump']:.4g} -> {f1['n_pump']:.4g}; excess energy left in them "
+              f"{f1['E_pump_frac']:.3e} of the initial; time to halve n_pump: "
+              f"{tt[half[0]]:.4g} ps" if len(half) else
+              f" Pumped modes: n_pump {f0['n_pump']:.4g} -> {f1['n_pump']:.4g}; excess energy left in them "
+              f"{f1['E_pump_frac']:.3e} of the initial (n_pump did not halve within the run)")
+    print(f" Outputs: observables_dynamics.txt, spectral_dynamics.csv, flux_dynamics.csv, final_populations_hybrid.npz"
+          f"{', occupation_snapshots.npz' if snap_saved else ''} in {out_dir}")
+    if snap_saved:
+        print(f" Plot the occupation with:  python python/plot_occupation.py --dir {out_dir}")
     print("-" * 70)
 
 
@@ -4421,12 +4973,47 @@ if __name__ == "__main__":
                         help="Run the time-resolved Boltzmann dynamics in the hybridized magnon-polaron basis "
                              "(theory/mag_polaron_dyn.tex) on the full-BZ hybrid-path channels, instead of the "
                              "bare magnon/phonon dynamics. Requires --full_bz. The lifetime calculations run unchanged.")
+    parser.add_argument("--pump", action="append", default=None, metavar="SPEC",
+                        help="Hybrid dynamics only: add quanta to a NAMED hybrid mode on top of the initial occupation. "
+                             "SPEC = '<k>:<selectors>', e.g. \"G:Eu,L-,E=25.3\", \"G:b=22\", \"0.5,0,0:ph,E=12\"; "
+                             "repeat the flag or separate with ';' for several modes. Modes are named by k-point, "
+                             "irrep (Gamma, needs `structure` in the config), phonon helicity (L+/L-) and energy "
+                             "(E=meV); list them with --pump_list. See python/mode_id.py.")
+    parser.add_argument("--pump_E", type=float, default=None,
+                        help="Energy absorbed by the pumped modes, meV per unit cell (shared equally between the "
+                             "modes): dn = N_cells * E / eps for each mode.")
+    parser.add_argument("--pump_dn", type=float, default=None,
+                        help="Alternative to --pump_E: number of quanta added to EACH pumped mode.")
+    parser.add_argument("--pump_base", choices=["thermal", "none"], default="thermal",
+                        help="Background the pump is added to: the usual quasi-equilibrium state at --tmag/--tphon "
+                             "('thermal', default) or empty modes ('none').")
+    parser.add_argument("--pump_list", nargs="?", const="G", default=None, metavar="K",
+                        help="Print the catalogue of named hybrid modes at k-point K (default G = Gamma; same syntax "
+                             "as the k part of --pump) and exit. Needs no GPU and no scan.")
+    parser.add_argument("--snapshots", type=int, default=40,
+                        help="Hybrid dynamics: number of full-occupation snapshots (log-spaced in time) written to "
+                             "occupation_snapshots.npz for python/plot_occupation.py (0 = none).")
+    parser.add_argument("--relativistic", action="store_true",
+                        help="Bare basis: add the RELATIVISTIC magnon-number non-conserving channels ph(q) <-> mag(k) + "
+                             "mag(q-k) (vertices V^{++}, V^{--} of theory/bare_scattering_rates_plus_relativistic.tex; they "
+                             "need J^xx != J^yy or J^xy + J^yx != 0 in the spin-lattice tensor, and vanish for an isotropic "
+                             "(exchange-striction) coupling). Adds them to the bare path lifetimes (path_lifetimes.csv gets "
+                             "gamma_exch / gamma_rel columns and gamma_ps-1 becomes the total) and to the bare dynamics. Not used by "
+                             "--hybrid_dynamics. Gaussian width of these channels: max(adaptive, --min_sigma), whereas the "
+                             "number-conserving path channels floor it at 1e-5 meV. Partner modes at Gamma are excluded.")
+    parser.add_argument("--test_slc_aniso", type=str, default=None, metavar="A,B",
+                        help="TEST ONLY: add a synthetic anisotropic part to every spin-lattice row between magnetic atoms: "
+                             "J^xx += A r, J^yy -= A r, J^xy += B r, J^yx += B r (r = reproducible random 0.5..1.5), i.e. "
+                             "J^xx - J^yy = 2A r and J^xy + J^yx = 2B r. Makes the --relativistic channels non-zero for "
+                             "tensors that have none (the real CrI3 tensor has J^xx = J^yy, J^xy = -J^yx exactly).")
     parser.add_argument("--dynamics_only", action="store_true",
                         help="Skip all path / hybrid-path lifetime work and the G_mp grid; run only "
                              "the bare magnon-phonon channel scan and the time integration.")
 
     args = parser.parse_args()
 
+    if args.relativistic and args.hybrid_dynamics:
+        print("NOTE: --relativistic enters the bare path lifetimes only; the hybrid dynamics does not include V++ / V--.")
     if args.hybrid_dynamics and not args.full_bz:
         raise SystemExit("--hybrid_dynamics integrates the full-BZ hybrid-path channels: add --full_bz.")
     # The hybrid dynamics needs the hybrid-path scan, so --dynamics_only must not skip it.
@@ -4486,8 +5073,34 @@ if __name__ == "__main__":
         include_slc=not args.no_slc,
     )
     
+    if args.test_slc_aniso:
+        _a, _b = (float(x) for x in args.test_slc_aniso.split(","))
+        _r = np.random.default_rng(3).uniform(0.5, 1.5, len(crystal_data.slc_J))
+        _m = (crystal_data.slc_types[:, 0] <= crystal_data.n_mag_branches) & (crystal_data.slc_types[:, 1] <= crystal_data.n_mag_branches)
+        crystal_data.slc_J[_m, 0, 0] += _a * _r[_m]; crystal_data.slc_J[_m, 1, 1] -= _a * _r[_m]
+        crystal_data.slc_J[_m, 0, 1] += _b * _r[_m]; crystal_data.slc_J[_m, 1, 0] += _b * _r[_m]
+        print(f" TEST ONLY: injected J^xx-J^yy = {2 * _a} r and J^xy+J^yx = {2 * _b} r into {int(_m.sum())} spin-lattice rows")
+
     crystal_data.print_summary()
     #crystal_data.check_slc_asr()
+
+    # ---- named modes: catalogue and pump resolution BEFORE any scan (a bad name must fail early) ----------------
+    structure_file = mat_config.get("structure")
+    pump = None
+    if args.pump_list is not None or args.pump:
+        mode_props = crystal_data.extract_full_grid_hybrid_properties()
+        if args.pump_list is not None:
+            qi = mode_id.parse_k(args.pump_list, crystal_data)
+            mode_id.print_catalogue(crystal_data, qi, mode_id.mode_catalogue(
+                crystal_data, qi, mode_props, structure_file, min_energy=HYB_MIN_ENERGY))
+            sys.exit(0)
+        if not args.hybrid_dynamics:
+            raise SystemExit("--pump sets the initial occupation of the hybrid dynamics: add --hybrid_dynamics --full_bz.")
+        pump_modes = mode_id.parse_pump(args.pump, crystal_data, mode_props, structure_file, min_energy=HYB_MIN_ENERGY)
+        pump = dict(modes=pump_modes, base=args.pump_base,
+                    dn=mode_id.pump_occupation(pump_modes, crystal_data.N, E_abs=args.pump_E, dn=args.pump_dn))
+    elif args.pump_E is not None or args.pump_dn is not None:
+        raise SystemExit("--pump_E / --pump_dn need --pump (name the mode(s) to pump; list them with --pump_list).")
 
     gpu_data = crystal_data.push_to_gpu()
 
@@ -4555,12 +5168,12 @@ if __name__ == "__main__":
 
         # 2. Setup Phase 1 memory for path scanning
         N_path = crystal_data.N_path
-        total_path_loops = N_path * N_points * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * 3
+        total_path_loops = N_path * N_points * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * (5 if args.relativistic else 3)
         max_path_channels = int(total_path_loops * anticipated_fraction)
     
         d_path_chan_indices = cuda.device_array((7, max_path_channels), dtype=np.int32)
         d_path_chan_weights = cuda.device_array(max_path_channels, dtype=np.float64)
-        d_path_channel_count = cuda.to_device(np.zeros(1, dtype=np.int32))
+        d_path_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))   # int64: the counter keeps counting past the buffer
 
         threads_2d_path = (16, 16)
         blocks_x_path = math.ceil(N_path / threads_2d_path[0])
@@ -4577,11 +5190,29 @@ if __name__ == "__main__":
             smearing, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
             gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
         )
+        if args.relativistic:
+            # relativistic processes (c_type 3/4) in their own kernel, appended to the same channel buffers
+            phase_1_scan_path_rel[(blocks_x_path, blocks_y_path), threads_2d_path](
+                gpu_data["mesh"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
+                d_path_q_frac, d_path_q_cart, d_path_w_phon, d_path_w_mag, d_path_eig_phon,
+                gpu_data["w_phon"], gpu_data["w_mag"], gpu_data["eig_phon"],
+                gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
+                gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
+                smearing, min_sigma, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
+                gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
+            )
     
         cuda.synchronize()
     
         path_num_channels = d_path_channel_count.copy_to_host()[0]
         print(f" -> Path Channels found: {path_num_channels:,}")
+        if path_num_channels > max_path_channels:
+            msg = (f"path channel buffer overflow: found {path_num_channels:,} > max {max_path_channels:,}; the event list is "
+                   f"truncated and the lifetimes are too small. Increase anticipated_fraction to >= "
+                   f"{1.05 * path_num_channels / total_path_loops:.4f}.")
+            if args.relativistic:
+                raise SystemExit("Relativistic run: " + msg)
+            print(" WARNING: " + msg)
 
         # Slice active channels
         d_path_chan_indices_active = d_path_chan_indices[:, :path_num_channels]
@@ -4590,6 +5221,9 @@ if __name__ == "__main__":
         # 4. Allocate Path Scattering Rate Arrays
         d_gamma_mag_path = cuda.to_device(np.zeros(N_path * crystal_data.n_mag_branches, dtype=np.float64))
         d_gamma_phon_path = cuda.to_device(np.zeros(N_path * crystal_data.phon_branches, dtype=np.float64))
+        # relativistic (number non-conserving) contributions, accumulated separately (all zero without --relativistic)
+        d_gamma_mag_rel_path = cuda.to_device(np.zeros(N_path * crystal_data.n_mag_branches, dtype=np.float64))
+        d_gamma_phon_rel_path = cuda.to_device(np.zeros(N_path * crystal_data.phon_branches, dtype=np.float64))
 
         # 5. Execute Path Lifetimes (using evaluated d_n_mag and d_n_phon from the grid)
         print(" -> Calculating explicit path lifetimes...")
@@ -4603,6 +5237,8 @@ if __name__ == "__main__":
             d_n_phon, 
             d_gamma_mag_path, 
             d_gamma_phon_path, 
+            d_gamma_mag_rel_path,
+            d_gamma_phon_rel_path,
             N_points  # Density of states normalization relies on BZ grid resolution
         )
         cuda.synchronize()
@@ -4610,6 +5246,16 @@ if __name__ == "__main__":
         # 6. Extract and Save
         gamma_mag_path_cpu = d_gamma_mag_path.copy_to_host().reshape((N_path, crystal_data.n_mag_branches))
         gamma_phon_path_cpu = d_gamma_phon_path.copy_to_host().reshape((N_path, crystal_data.phon_branches))
+        gamma_mag_rel_cpu = d_gamma_mag_rel_path.copy_to_host().reshape((N_path, crystal_data.n_mag_branches))
+        gamma_phon_rel_cpu = d_gamma_phon_rel_path.copy_to_host().reshape((N_path, crystal_data.phon_branches))
+        gamma_mag_exch_cpu = gamma_mag_path_cpu.copy()       # number-conserving (exchange striction + antisym. xy)
+        gamma_phon_exch_cpu = gamma_phon_path_cpu.copy()
+        if args.relativistic:                                  # gamma_ps-1 becomes the TOTAL rate
+            gamma_mag_path_cpu = gamma_mag_exch_cpu + gamma_mag_rel_cpu
+            gamma_phon_path_cpu = gamma_phon_exch_cpu + gamma_phon_rel_cpu
+            print(f" -> relativistic channels: sum gamma_rel / sum gamma_exch = magnons "
+                  f"{gamma_mag_rel_cpu.sum() / max(gamma_mag_exch_cpu.sum(), 1e-300):.3e}, phonons "
+                  f"{gamma_phon_rel_cpu.sum() / max(gamma_phon_exch_cpu.sum(), 1e-300):.3e}")
 
         path_dist, label_comment = crystal_data.get_path_distance_info()
 
@@ -4637,7 +5283,8 @@ if __name__ == "__main__":
         with open(f"{out_dir}/path_lifetimes.csv", "w") as f:
             f.write(label_comment + "\n")
             f.write("q_idx,qx,qy,qz,particle,branch,energy_meV,gamma_ps-1,tau_ps,"
-                    "phon_character,mag_character,phon_AM_z_hbar,spin_AM_z_hbar,path_dist\n")
+                    "phon_character,mag_character,phon_AM_z_hbar,spin_AM_z_hbar,path_dist"
+                    + (",gamma_exch_ps-1,gamma_rel_ps-1" if args.relativistic else "") + "\n")
 
             # Magnons
             for i in range(N_path):
@@ -4649,8 +5296,9 @@ if __name__ == "__main__":
                     gamma = gamma_mag_path_cpu[i, b]
                     tau = 1.0 / gamma if gamma > 1e-12 else float('inf')
                     spin_AM = S_q[b, b].real
+                    extra = (f",{gamma_mag_exch_cpu[i, b]:.6e},{gamma_mag_rel_cpu[i, b]:.6e}" if args.relativistic else "")
                     f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},magnon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
-                            f"{0.0:.6f},{1.0:.6f},{0.0:.6e},{spin_AM:.6e},{path_dist[i]:.6f}\n")
+                            f"{0.0:.6f},{1.0:.6f},{0.0:.6e},{spin_AM:.6e},{path_dist[i]:.6f}{extra}\n")
 
             # Phonons
             for i in range(N_path):
@@ -4663,8 +5311,9 @@ if __name__ == "__main__":
                     # same Cartesian index p = 3*atom + mu used by _L_ph.
                     e = crystal_data.path_eig_phon[i, b].reshape(-1)
                     phon_AM = np.vdot(e, _L_ph @ e).real
+                    extra = (f",{gamma_phon_exch_cpu[i, b]:.6e},{gamma_phon_rel_cpu[i, b]:.6e}" if args.relativistic else "")
                     f.write(f"{i},{qx:.6f},{qy:.6f},{qz:.6f},phonon,{b},{energy:.6f},{gamma:.6e},{tau:.6e},"
-                            f"{1.0:.6f},{0.0:.6f},{phon_AM:.6e},{0.0:.6e},{path_dist[i]:.6f}\n")
+                            f"{1.0:.6f},{0.0:.6f},{phon_AM:.6e},{0.0:.6e},{path_dist[i]:.6f}{extra}\n")
 
         print(f"-> Saved true path lifetimes to {out_dir}/path_lifetimes.csv")
 
@@ -4850,7 +5499,8 @@ if __name__ == "__main__":
             d_path_hyb_chan_indices_active, d_path_hyb_chan_weights_active, d_path_hyb_channel_count,
             path_hyb_num_channels, max_path_hyb_channels, total_path_hyb_loops, N_points,
             T_mag_init, T_phon_init, dt, steps, args.obs_every, args.spec_every,
-            gamma_hyb_path_cpu, n_hyb_cpu, threads_per_block=threads_per_block
+            gamma_hyb_path_cpu, n_hyb_cpu, threads_per_block=threads_per_block,
+            pump=pump, n_snapshots=args.snapshots
         )
         print("Hybrid dynamics complete; the bare-basis scan and dynamics are skipped.")
         sys.exit(0)
@@ -4920,6 +5570,61 @@ if __name__ == "__main__":
     d_chan_weights_active = d_chan_weights[:num_channels]
     
     blocks_eval = math.ceil(num_channels / threads_per_block)
+
+    # ====== Relativistic (number non-conserving) events: ph(q) <-> mag(k) + mag(q-k) ======
+    num_nc = 0
+    d_nc_indices_active = d_nc_weights_active = d_nc_count = None
+    if args.relativistic:
+        total_nc_loops = N_points**2 * crystal_data.n_mag_branches**2 * crystal_data.phon_branches
+        max_nc = max(int(total_nc_loops * anticipated_fraction), 1)
+        d_nc_indices = cuda.device_array((7, max_nc), dtype=np.int32)
+        d_nc_weights = cuda.device_array(max_nc, dtype=np.float64)
+        d_nc_count = cuda.to_device(np.zeros(1, dtype=np.int64))
+        print("\nScanning the relativistic (V^{++}, V^{--}) phase space ...", flush=True)
+        phase_1_scan_nc[blocks_per_grid_2d, threads_per_block_2d](
+            gpu_data["mesh"], gpu_data["q_grid"], gpu_data["q_grid_cart"], gpu_data["grid_map"],
+            gpu_data["w_phon"], gpu_data["w_mag"], gpu_data["eig_phon"],
+            gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
+            gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
+            smearing, min_sigma, d_nc_indices, d_nc_weights, d_nc_count,
+            gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx)
+        cuda.synchronize()
+        num_nc = int(d_nc_count.copy_to_host()[0])
+        print(f"Relativistic events with a non-zero vertex: {num_nc:,}  ({num_nc / total_nc_loops:.2%} of the scanned phase space)", flush=True)
+        if num_nc > max_nc:
+            raise SystemExit(f"Relativistic event buffer overflow: found {num_nc:,} > max {max_nc:,}. Increase "
+                             f"anticipated_fraction to at least {1.05 * num_nc / total_nc_loops:.4f} (now {anticipated_fraction}).")
+        if num_nc == 0:
+            _J = crystal_data.slc_J
+            _aniso = max(float(np.abs(_J[:, 0, 0] - _J[:, 1, 1]).max()), float(np.abs(_J[:, 0, 1] + _J[:, 1, 0]).max()))
+            if _aniso < 1e-12:
+                print("  NOTE: V^{++} and V^{--} vanish identically for this spin-lattice tensor (J^xx = J^yy and J^xy = -J^yx in every "
+                      "row, i.e. no anisotropic / symmetric-off-diagonal part): --relativistic changes nothing.")
+            else:
+                print(f"  NOTE: the tensor has anisotropic parts (max |J^xx-J^yy| or |J^xy+J^yx| = {_aniso:.3g}) but no event is "
+                      f"energy-resonant on this mesh at sigma >= {min_sigma} meV (phonons below {PHONON_COUPLING_CUTOFF} meV and "
+                      f"the Gamma point are excluded): try a larger --min_sigma or a finer mesh.")
+        d_nc_indices_active = d_nc_indices[:, :num_nc]
+        d_nc_weights_active = d_nc_weights[:num_nc]
+
+        # start-up check: linearised rates of the event list vs the path-lifetime kernel (same events, same n_BE)
+        if num_nc > 0 and run_lifetimes and args.full_bz and 'gamma_mag_rel_cpu' in globals():
+            d_gm = cuda.to_device(np.zeros(N_points * crystal_data.n_mag_branches))
+            d_gp = cuda.to_device(np.zeros(N_points * crystal_data.phon_branches))
+            phase_lifetime_nc_dyn[math.ceil(num_nc / threads_per_block), threads_per_block](
+                d_nc_indices_active, d_nc_weights_active, d_nc_count, d_n_mag, d_n_phon, d_gm, d_gp, N_points)
+            cuda.synchronize()
+            g_dyn_m = d_gm.copy_to_host().reshape(N_points, -1); g_dyn_p = d_gp.copy_to_host().reshape(N_points, -1)
+            print(" Start-up check: linearised relativistic dynamics rates vs phase_lifetime_path (c_type 3/4), same n_BE:")
+            for name, a, b in (("magnons", g_dyn_m, gamma_mag_rel_cpu), ("phonons", g_dyn_p, gamma_phon_rel_cpu)):
+                ok = (a > 1e-10) & (b > 1e-10)
+                if ok.any():
+                    r = a[ok] / b[ok]
+                    print(f"   {name}: gamma_dyn/gamma_lifetime median {np.median(r):.3f}, quartiles {np.quantile(r, .25):.3f}.."
+                          f"{np.quantile(r, .75):.3f}, ratio of sums {a[ok].sum() / b[ok].sum():.3f}  ({int(ok.sum()):,} modes)")
+                else:
+                    print(f"   {name}: no mode with a finite rate in both")
+            print("   (1 expected; the path scan and the event list use the same sigma floor (min_sigma), cut-offs and canonical labels, so any deviation is a bug; note the Gamma point is excluded in both)")
 
     # ====== Lifetime and scattering rate phase ======
 
@@ -5012,13 +5717,14 @@ if __name__ == "__main__":
     max_elements = max(N_points * crystal_data.n_mag_branches, N_points * crystal_data.phon_branches)
     blocks_euler = math.ceil(max_elements / threads_per_block)
     
+    blocks_nc = max(1, math.ceil(num_nc / threads_per_block))
     diag = DynamicsDiagnostics(out_dir, crystal_data.w_mag, crystal_data.w_phon, N_points,
                                spec_every=args.spec_every, exclude_idx=gamma_idx)
     n_phon_branches = crystal_data.phon_branches
 
     def run_diagnostics(step, t):
         """Copy populations, run the flux kernel on the current state, append all diagnostics."""
-        d_acc = cuda.to_device(np.zeros(3, dtype=np.float64))
+        d_acc = cuda.to_device(np.zeros(4, dtype=np.float64))
         d_flux_branch = cuda.to_device(np.zeros(n_phon_branches, dtype=np.float64))
         d_flux_spec = cuda.to_device(np.zeros(diag.n_bins, dtype=np.float64))
         phase_2_flux_diagnostic[blocks_eval, threads_per_block](
@@ -5026,6 +5732,12 @@ if __name__ == "__main__":
             d_n_mag, d_n_phon, gpu_data["w_mag"], gpu_data["w_phon"],
             N_points, diag.inv_bin_width, diag.n_bins, d_acc, d_flux_branch, d_flux_spec
         )
+        if num_nc > 0:
+            phase_2_flux_diagnostic_nc[blocks_nc, threads_per_block](
+                d_nc_indices_active, d_nc_weights_active, d_nc_count,
+                d_n_mag, d_n_phon, gpu_data["w_mag"], gpu_data["w_phon"],
+                N_points, diag.inv_bin_width, diag.n_bins, d_acc, d_flux_branch, d_flux_spec
+            )
         cuda.synchronize()
         diag.record(step, t, d_n_mag.copy_to_host(), d_n_phon.copy_to_host(),
                     d_acc.copy_to_host(), d_flux_branch.copy_to_host(), d_flux_spec.copy_to_host())
@@ -5048,6 +5760,10 @@ if __name__ == "__main__":
             N_points, 
             smearing
         )
+        if num_nc > 0:
+            phase_2_time_step_nc[blocks_nc, threads_per_block](
+                d_nc_indices_active, d_nc_weights_active, d_nc_count,
+                d_n_mag, d_n_phon, d_dn_mag, d_dn_phon, N_points)
         cuda.synchronize()
 
             
