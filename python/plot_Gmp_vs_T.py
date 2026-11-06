@@ -24,7 +24,14 @@ ANG3_TO_M3 = 1e-30
 CELL_VOLUME = {
     'CrI3': 281.794,                       # bulk rhombohedral cell, 8 atoms (Inputs/CrI3/band.h5)
     'fccNi': 3.516822176 ** 3 / 4.0,       # fcc primitive, a from the h5 files
-    'bccFe': 2.8665 ** 3 / 2.0,            # bcc primitive
+    'bccFe': 11.430011,                    # bcc primitive, |det(lattice)| of Inputs/bccFe/band.h5 (a = 2.8381 A; config a = 2.8665 would give 11.78)
+}
+
+# Curie temperatures in K (bulk; override with --tc MATERIAL=T)
+CURIE_T = {
+    'CrI3': 61.0,
+    'fccNi': 627.0,
+    'bccFe': 1043.0,
 }
 
 COLUMN_ALIASES = {'mag_char': 'mag_character', 'phon_char': 'phon_character'}
@@ -106,6 +113,9 @@ def main():
     ap.add_argument("--linear_y", action="store_true", help="linear instead of log y axis")
     ap.add_argument("--volume", action="append", default=[], metavar="MAT=V",
                     help="primitive-cell volume in A^3 for a material, e.g. --volume CrI3=80.2")
+    ap.add_argument("--tc", action="append", default=[], metavar="MAT=T",
+                    help="Curie temperature in K for a material, e.g. --tc CrI3=61")
+    ap.add_argument("--absolute_T", action="store_true", help="plot versus T in K instead of T/T_C")
     ap.add_argument("--allow_path", action="store_true",
                     help="also use path-mode runs (G_mp is then NOT a BZ integral)")
     ap.add_argument("--source", choices=["hybrid", "bare", "both"], default="both",
@@ -119,6 +129,11 @@ def main():
         k, v = item.split('=')
         vols[k] = float(v)
 
+    tcs = dict(CURIE_T)
+    for item in args.tc:
+        k, v = item.split('=')
+        tcs[k] = float(v)
+
     roots = [r for pat in args.scans for r in (glob.glob(pat) or [pat])]
     runs = find_runs(roots, args.source)
     if not runs:
@@ -131,6 +146,9 @@ def main():
         mode = p.get('mode', '?')
         if mode != 'fullbz' and not args.allow_path:
             print(f"skip {d}: mode={mode} (use --allow_path to include)")
+            continue
+        if mat not in tcs and not args.absolute_T:
+            print(f"skip {d}: no Curie temperature for '{mat}' (use --tc {mat}=T or --absolute_T)")
             continue
         if mat not in vols:
             print(f"skip {d}: no cell volume for '{mat}' (use --volume {mat}=V)")
@@ -154,7 +172,7 @@ def main():
             key = (mat, p.get('scan', '?'), src, T)
             mtime = os.path.getmtime(csv)
             if key not in rows or mtime > rows[key]['mtime']:       # newest run wins for duplicates
-                rows[key] = dict(material=mat, scan=p.get('scan', '?'), source=src, T_K=T, N_q=N, V_A3=vols[mat],
+                rows[key] = dict(material=mat, scan=p.get('scan', '?'), source=src, T_K=T, N_q=N, V_A3=vols[mat], Tc_K=tcs.get(mat, np.nan), T_over_Tc=T / tcs.get(mat, np.nan),
                                  Gmp_W_m3K=G_vol, Gmp_meV_psK_cell=G_cell, mtime=mtime, run_dir=d)
                 print(f"{mat:6s} {src:6s} T={T:6.1f} K  N={N:6d}  G_mp={G_vol:.4e} W m^-3 K^-1   [{d}]")
 
@@ -173,9 +191,9 @@ def main():
     colors = {m: f"C{i}" for i, m in enumerate(sorted(res['material'].unique()))}
     for (mat, scan, src), g in res.groupby(['material', 'scan', 'source']):
         name = f"{mat} ({scan})" if multi_scan else mat
-        ax.plot(g['T_K'], g[ycol], 'o-' if src == 'hybrid' else 's--', ms=6, color=colors[mat],
+        ax.plot(g['T_K'] if args.absolute_T else g['T_over_Tc'], g[ycol], 'o-' if src == 'hybrid' else 's--', ms=6, color=colors[mat],
                 label=f"{name}, {src}" if res['source'].nunique() > 1 else name)
-    ax.set_xlabel('Temperature (K)', fontsize=12, fontweight='bold')
+    ax.set_xlabel('Temperature (K)' if args.absolute_T else r'$T / T_C$', fontsize=12, fontweight='bold')
     ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
     if not args.linear_y:
         ax.set_yscale('log')
