@@ -17,10 +17,17 @@ sticks out far above it, and the daughters it feeds show up as warm modes at low
 import argparse
 import os
 import numpy as np
-import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+
+def _read_table(path):
+    """Whitespace table with a header row -> {column: float array} (no pandas needed on the cluster)."""
+    with open(path) as f:
+        names = f.readline().split()
+    data = np.atleast_2d(np.genfromtxt(path, skip_header=1))
+    return {n: data[:, i] for i, n in enumerate(names)}
 
 KB = 0.08617333262  # meV / K
 
@@ -127,9 +134,9 @@ def main():
     a = ax[1, 1]
     obs_path = os.path.join(args.dir, "observables_dynamics.txt")
     if os.path.exists(obs_path):
-        o = pd.read_csv(obs_path, sep=r"\s+")
-        tt = o.Time_ps.values
-        a.plot(tt, (o.M_over_M0.values - 1.0) * 100.0, "k", lw=2, label=r"$\Delta M/M(0)$  (%)")
+        o = _read_table(obs_path)
+        tt = o['Time_ps']
+        a.plot(tt, (o['M_over_M0'] - 1.0) * 100.0, "k", lw=2, label=r"$\Delta M/M(0)$  (%)")
         a.set_xscale("symlog", linthresh=max(1e-4, tt[1] if len(tt) > 1 else 1e-3)); a.set_xlabel("time  (ps)")
         a.set_ylabel(r"$[M(t)/M(0)-1]\times 100$  (%)"); a.grid(alpha=0.3)
         a.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2), useOffset=False)
@@ -140,9 +147,9 @@ def main():
                         label=f"n of {labels[k] if k < len(labels) else p}")
             b2.set_yscale("log"); b2.set_ylabel("occupation of the pumped mode")
         else:
-            b2.plot(tt, o.T_mag_fit_K, color="C0", lw=1.5, label=r"$T_{\rm mag}$ fit")
-            b2.plot(tt, o.T_phon_fit_K, color="C3", lw=1.5, label=r"$T_{\rm phon}$ fit")
-            b2.axhline(float(o.T_eq_K.iloc[0]), color="k", ls="--", lw=0.8); b2.set_ylabel("temperature (K)")
+            b2.plot(tt, o['T_mag_fit_K'], color="C0", lw=1.5, label=r"$T_{\rm mag}$ fit")
+            b2.plot(tt, o['T_phon_fit_K'], color="C3", lw=1.5, label=r"$T_{\rm phon}$ fit")
+            b2.axhline(float(o['T_eq_K'][0]), color="k", ls="--", lw=0.8); b2.set_ylabel("temperature (K)")
         h1, l1 = a.get_legend_handles_labels(); h2, l2 = b2.get_legend_handles_labels()
         a.legend(h1 + h2, l1 + l2, fontsize=8, loc="best")
         a.set_title("response of the magnetization" + (" to the pump" if len(pump) else ""))

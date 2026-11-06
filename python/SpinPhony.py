@@ -4955,6 +4955,7 @@ if __name__ == "__main__":
     parser.add_argument("--tmag", type=float, help="Override initial Magnon temperature (K)")
     parser.add_argument("--tphon", type=float, help="Override initial Phonon temperature (K)")
     parser.add_argument("--steps", type=int, help="Override total integration steps")
+    parser.add_argument("--dt", type=float, help="Override the time step (ps)")
     parser.add_argument("--full_bz", action="store_true",help="Evaluate hybrid lifetimes over the whole Brillouin zone.")
     parser.add_argument("--analyse_modes", type=str, default=None,
                         help="Per-channel scattering analysis for the given hybrid modes, "
@@ -5052,7 +5053,7 @@ if __name__ == "__main__":
     steps = args.steps if args.steps is not None else int(sim_config["steps"])
     
     anticipated_fraction = sim_config["anticipated_fraction"]
-    dt = sim_config["dt"]
+    dt = args.dt if args.dt is not None else sim_config["dt"]
 
     out_dir = args.out_dir
     os.makedirs(out_dir, exist_ok=True)
