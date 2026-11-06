@@ -1762,7 +1762,9 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                 sigma_raw_mag = smearing * math.sqrt(var_mag / 12.0)
                 sigma_mag = sigma_raw_mag if sigma_raw_mag > 1e-5 else 1e-5
                 
-                if abs(dE_mag) < 2.0 * sigma_mag:
+                if (abs(dE_mag) < 2.0 * sigma_mag and path_w_mag[path_idx, n] >= BARE_MIN_SCATTERING_ENERGY
+                        and w_mag_grid[k_idx, m] >= BARE_MIN_SCATTERING_ENERGY
+                        and w_phon_grid[idx_qmink, lam] >= BARE_MIN_SCATTERING_ENERGY):
                     weight = (0.4179 / sigma_mag) * math.exp(-0.5 * (dE_mag*dE_mag) / (sigma_mag*sigma_mag))
                     kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
                     qx = grid_q_cart[k_idx, 0] - path_q_cart[path_idx, 0]
@@ -1791,7 +1793,9 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                 sigma_raw_phon = smearing * math.sqrt(var_phon / 12.0)
                 sigma_phon = sigma_raw_phon if sigma_raw_phon > 1e-5 else 1e-5
 
-                if abs(dE_phon) < 2.0 * sigma_phon:
+                if (abs(dE_phon) < 2.0 * sigma_phon and path_w_phon[path_idx, lam] >= BARE_MIN_SCATTERING_ENERGY
+                        and w_mag_grid[idx_kminq, m] >= BARE_MIN_SCATTERING_ENERGY
+                        and w_mag_grid[k_idx, n] >= BARE_MIN_SCATTERING_ENERGY):
                     weight = (0.4179 / sigma_phon) * math.exp(-0.5 * (dE_phon*dE_phon) / (sigma_phon*sigma_phon))
                     kpx, kpy, kpz = grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2]
                     qx, qy, qz = -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2]
@@ -2258,6 +2262,10 @@ def calc_pair_amplitude_nc(kind, k1x, k1y, k1z, k2x, k2y, k2z, qx, qy, qz, conj_
 MAX_HYB_MAG_BRANCHES = 2
 MAX_HYB_PHON_BRANCHES = 24
 
+# Bare scans: modes below this energy never scatter (same cut-off as MIN_SCATTERING_ENERGY_MEV of the hybrid scans). Without it
+# a gapless Gamma magnon (n_BE ~ kT/E ~ 1e8) dominates the rates (bare CrI3 phonon rates of 1e4-1e6 ps^-1).
+BARE_MIN_SCATTERING_ENERGY = 0.2      # meV
+
 
 @cuda.jit(device=True)
 def fill_hybrid_vertex_cache(
@@ -2684,7 +2692,9 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
 
                 #sigma = min_sigma
 
-                if abs(dE) < 2.0 * sigma:
+                if (abs(dE) < 2.0 * sigma and w_mag[q_idx, n] >= BARE_MIN_SCATTERING_ENERGY
+                        and w_mag[k_idx, m] >= BARE_MIN_SCATTERING_ENERGY
+                        and w_phon[idx_qmink, lam] >= BARE_MIN_SCATTERING_ENERGY):
                     # 0.4179 normalizes the 2-sigma Gaussian
                     gaussian_norm = 0.4179 / sigma
                     delta_weight = gaussian_norm * math.exp(-0.5 * (dE * dE) / (sigma * sigma))
@@ -3716,7 +3726,8 @@ def phase_1_scan_path_rel(mesh, grid_q_frac, grid_q_cart, grid_map,
                 sigma_raw_3 = smearing * math.sqrt(var_3 / 12.0)
                 sigma_3 = sigma_raw_3 if sigma_raw_3 > min_sigma else min_sigma
 
-                if abs(dE_3) < 2.0 * sigma_3 and k_idx != gamma_idx and idx_qmink != gamma_idx:   # Gamma partner: not in the bath
+                if (abs(dE_3) < 2.0 * sigma_3 and k_idx != gamma_idx and idx_qmink != gamma_idx and w_mag_grid[k_idx, n] >= BARE_MIN_SCATTERING_ENERGY
+                        and w_mag_grid[idx_qmink, m] >= BARE_MIN_SCATTERING_ENERGY and path_w_phon[path_idx, lam] >= BARE_MIN_SCATTERING_ENERGY):   # Gamma partner: not in the bath
                     weight = (0.4179 / sigma_3) * math.exp(-0.5 * (dE_3 * dE_3) / (sigma_3 * sigma_3))
                     # canonical label pair (lower grid index first, ties by band), see phase_1_scan_nc
                     if k_idx < idx_qmink or (k_idx == idx_qmink and n <= m):
@@ -3760,7 +3771,8 @@ def phase_1_scan_path_rel(mesh, grid_q_frac, grid_q_cart, grid_map,
                 sigma_raw_4 = smearing * math.sqrt(var_4 / 12.0)
                 sigma_4 = sigma_raw_4 if sigma_raw_4 > min_sigma else min_sigma
 
-                if abs(dE_4) < 2.0 * sigma_4 and k_idx != gamma_idx and idx_pplusk != gamma_idx:   # Gamma partner: not in the bath
+                if (abs(dE_4) < 2.0 * sigma_4 and k_idx != gamma_idx and idx_pplusk != gamma_idx and w_mag_grid[k_idx, m] >= BARE_MIN_SCATTERING_ENERGY
+                        and path_w_mag[path_idx, n] >= BARE_MIN_SCATTERING_ENERGY and w_phon_grid[idx_pplusk, lam] >= BARE_MIN_SCATTERING_ENERGY):   # Gamma partner: not in the bath
                     weight = (0.4179 / sigma_4) * math.exp(-0.5 * (dE_4 * dE_4) / (sigma_4 * sigma_4))
                     # canonical label pair (lower grid index first, ties by band) when the path point is itself a grid point
                     if P_grid_idx >= 0 and (k_idx < P_grid_idx or (k_idx == P_grid_idx and m < n)):
@@ -3831,13 +3843,13 @@ def phase_1_scan_nc(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon
 
     for lam in range(n_phon):
         omega = w_phon[q_idx, lam]
-        if omega < PHONON_COUPLING_CUTOFF:          # below the cutoff the vertex is zero (as calc_vertex_V)
+        if omega < PHONON_COUPLING_CUTOFF or omega < BARE_MIN_SCATTERING_ENERGY:   # vertex cut-off / scattering cut-off
             continue
         for n in range(n_mag):
-            if w_mag[k_idx, n] < MAGNON_MIN_ENERGY:
+            if w_mag[k_idx, n] < BARE_MIN_SCATTERING_ENERGY:
                 continue
             for m in range(n_mag):
-                if w_mag[p_idx, m] < MAGNON_MIN_ENERGY:
+                if w_mag[p_idx, m] < BARE_MIN_SCATTERING_ENERGY:
                     continue
                 dE = omega - w_mag[k_idx, n] - w_mag[p_idx, m]
                 variance = 0.0

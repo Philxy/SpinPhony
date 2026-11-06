@@ -29,6 +29,7 @@ CELL_VOLUME = {
 
 COLUMN_ALIASES = {'mag_char': 'mag_character', 'phon_char': 'phon_character'}
 CSV_NAMES = ('hybrid_path_lifetimes.csv', 'hybrid_equilibrium_lifetimes.csv')
+BARE_NAMES = ('path_lifetimes.csv', 'equilibrium_lifetimes.csv')   # bare modes: phon_character = 1 (phonons) / 0 (magnons)
 
 
 def dn_dT(E, T):
@@ -73,17 +74,26 @@ def gmp_of_run(csv, T, V_A3):
     return G_cell, G_cell * MEV_PER_PS_TO_W / (V_A3 * ANG3_TO_M3), T, N, df
 
 
-def find_runs(roots):
+def find_runs(roots, source):
+    """(run_dir, params, {'hybrid': csv, 'bare': csv}) for every run folder with at least one requested lifetimes file."""
     runs = []
     for root in roots:
         for params in glob.glob(os.path.join(root, '**', 'params.txt'), recursive=True):
             d = os.path.dirname(params)
-            csv = next((os.path.join(d, n) for n in CSV_NAMES if os.path.exists(os.path.join(d, n))), None)
-            if csv is None:
+            found = {}
+            if source in ('hybrid', 'both'):
+                c = next((os.path.join(d, n) for n in CSV_NAMES if os.path.exists(os.path.join(d, n))), None)
+                if c: found['hybrid'] = c
+            if source in ('bare', 'both'):
+                c = next((os.path.join(d, n) for n in BARE_NAMES if os.path.exists(os.path.join(d, n))), None)
+                if c: found['bare'] = c
+            if not found:
                 print(f"no lifetimes csv yet in {d} (job unfinished or failed? "
                       f"{'.done present' if os.path.exists(os.path.join(d, '.done')) else 'no .done marker'})")
                 continue
-            runs.append((d, params, csv))
+            if source == 'both' and 'hybrid' not in found:
+                print(f"note {d}: only bare lifetimes (hybrid csv missing)")
+            runs.append((d, params, found))
     return runs
 
 
@@ -98,6 +108,9 @@ def main():
                     help="primitive-cell volume in A^3 for a material, e.g. --volume CrI3=80.2")
     ap.add_argument("--allow_path", action="store_true",
                     help="also use path-mode runs (G_mp is then NOT a BZ integral)")
+    ap.add_argument("--source", choices=["hybrid", "bare", "both"], default="both",
+                    help="lifetimes used: hybrid_path_lifetimes.csv, bare path_lifetimes.csv (w = phonon character 1/0, i.e. only "
+                         "the phonon rates enter), or both (default; hybrid solid, bare dashed)")
     ap.add_argument("--show", action="store_true")
     args = ap.parse_args()
 
@@ -107,12 +120,12 @@ def main():
         vols[k] = float(v)
 
     roots = [r for pat in args.scans for r in (glob.glob(pat) or [pat])]
-    runs = find_runs(roots)
+    runs = find_runs(roots, args.source)
     if not runs:
         raise SystemExit("No run folders (params.txt + lifetimes csv) found below: " + ", ".join(args.scans))
 
     rows = {}
-    for d, params, csv in runs:
+    for d, params, found in runs:
         p = read_params(params)
         mat = p.get('material', '?')
         mode = p.get('mode', '?')
@@ -122,31 +135,32 @@ def main():
         if mat not in vols:
             print(f"skip {d}: no cell volume for '{mat}' (use --volume {mat}=V)")
             continue
-        T = float(p['T_mag']) if 'T_mag' in p else None
-        try:
-            tmp = pd.read_csv(csv, comment='#', usecols=['energy_meV', 'n_occ'])
-        except ValueError:
-            tmp = None
-        if T is None:
-            T = infer_temperature(tmp) if tmp is not None else None
+        for src, csv in found.items():
+            T = float(p['T_mag']) if 'T_mag' in p else None
+            try:
+                tmp = pd.read_csv(csv, comment='#', usecols=['energy_meV', 'n_occ'])
+            except ValueError:
+                tmp = None
             if T is None:
-                print(f"skip {d}: no temperature (no T_mag in params.txt, no n_occ column)")
-                continue
-        else:
-            T_inf = infer_temperature(tmp) if tmp is not None else None
-            if T_inf is not None and abs(T_inf - T) > 0.05 * T:
-                print(f"WARNING {d}: params T_mag={T:g} K but n_occ implies {T_inf:.1f} K")
-        G_cell, G_vol, T, N, _ = gmp_of_run(csv, T, vols[mat])
-        key = (mat, p.get('scan', '?'), T)
-        mtime = os.path.getmtime(csv)
-        if key not in rows or mtime > rows[key]['mtime']:       # newest run wins for duplicates
-            rows[key] = dict(material=mat, scan=p.get('scan', '?'), T_K=T, N_q=N, V_A3=vols[mat],
-                             Gmp_W_m3K=G_vol, Gmp_meV_psK_cell=G_cell, mtime=mtime, run_dir=d)
-            print(f"{mat:6s} T={T:6.1f} K  N={N:6d}  G_mp={G_vol:.4e} W m^-3 K^-1   [{d}]")
+                T = infer_temperature(tmp) if tmp is not None else None
+                if T is None:
+                    print(f"skip {d} [{src}]: no temperature (no T_mag in params.txt, no n_occ column)")
+                    continue
+            else:
+                T_inf = infer_temperature(tmp) if tmp is not None else None
+                if T_inf is not None and abs(T_inf - T) > 0.05 * T:
+                    print(f"WARNING {d}: params T_mag={T:g} K but n_occ implies {T_inf:.1f} K")
+            G_cell, G_vol, T, N, _ = gmp_of_run(csv, T, vols[mat])
+            key = (mat, p.get('scan', '?'), src, T)
+            mtime = os.path.getmtime(csv)
+            if key not in rows or mtime > rows[key]['mtime']:       # newest run wins for duplicates
+                rows[key] = dict(material=mat, scan=p.get('scan', '?'), source=src, T_K=T, N_q=N, V_A3=vols[mat],
+                                 Gmp_W_m3K=G_vol, Gmp_meV_psK_cell=G_cell, mtime=mtime, run_dir=d)
+                print(f"{mat:6s} {src:6s} T={T:6.1f} K  N={N:6d}  G_mp={G_vol:.4e} W m^-3 K^-1   [{d}]")
 
     if not rows:
         raise SystemExit("Nothing to plot.")
-    res = pd.DataFrame(rows.values()).sort_values(['material', 'scan', 'T_K']).drop(columns='mtime')
+    res = pd.DataFrame(rows.values()).sort_values(['material', 'scan', 'source', 'T_K']).drop(columns='mtime')
     csv_out = args.csv or os.path.splitext(args.out)[0] + '.csv'
     res.to_csv(csv_out, index=False)
     print(f" -> Saved {csv_out}")
@@ -156,8 +170,11 @@ def main():
               else r'$G_{mp}$ (W m$^{-3}$ K$^{-1}$)')
     fig, ax = plt.subplots(figsize=(8, 6))
     multi_scan = res.groupby('material')['scan'].nunique().max() > 1
-    for (mat, scan), g in res.groupby(['material', 'scan']):
-        ax.plot(g['T_K'], g[ycol], 'o-', ms=6, label=f"{mat} ({scan})" if multi_scan else mat)
+    colors = {m: f"C{i}" for i, m in enumerate(sorted(res['material'].unique()))}
+    for (mat, scan, src), g in res.groupby(['material', 'scan', 'source']):
+        name = f"{mat} ({scan})" if multi_scan else mat
+        ax.plot(g['T_K'], g[ycol], 'o-' if src == 'hybrid' else 's--', ms=6, color=colors[mat],
+                label=f"{name}, {src}" if res['source'].nunique() > 1 else name)
     ax.set_xlabel('Temperature (K)', fontsize=12, fontweight='bold')
     ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
     if not args.linear_y:

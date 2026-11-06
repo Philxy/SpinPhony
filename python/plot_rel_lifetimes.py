@@ -42,7 +42,10 @@ for kind, c in (("magnon", "C2"), ("phonon", "C1")):
     a.scatter(E[s], gr[s] / tot[s], s=6, color=c, alpha=0.5, label=kind)
 a.set_xlabel("energy (meV)"); a.set_ylabel(r"$\gamma_{rel}/\gamma_{tot}$"); a.set_ylim(-0.02, 1.02)
 a.set_title("relativistic fraction"); a.grid(alpha=0.3); a.legend()
+ax[0].set_xscale("log")
+ax[1].set_xscale("log")
 fig.tight_layout()
 out = args.out or args.csv.rsplit(".", 1)[0] + "_rel.png"
 fig.savefig(out, dpi=150)
+plt.show()
 print("wrote", out)
