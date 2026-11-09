@@ -388,6 +388,16 @@ class PhPhGPU:
         img_n = np.concatenate(self.fc.images).astype(np.float64)
         img_inv_mult = np.concatenate([np.full(len(im), 1.0 / len(im)) for im in self.fc.images])
         self.d_P, self.d_T = cuda.to_device(P), cuda.to_device(T)
+        # dw/df by central differences on the mesh, like phph.Harmonic.gradient. crystal_data.grad_f_phon is NOT used: it is left at zero
+        # (CrystalDataSoA._compute_group_velocities is disabled), which would collapse the adaptive width to min_sigma for every triple.
+        g = np.zeros((self.N, crystal_data.w_phon.shape[1], 3))
+        for i in range(3):
+            d = np.zeros(3, int); d[i] = 1
+            ip = crystal_data.grid_map[tuple(((crystal_data.q_grid + d) % mesh).T)]
+            im = crystal_data.grid_map[tuple(((crystal_data.q_grid - d) % mesh).T)]
+            g[:, :, i] = (crystal_data.w_phon[ip] - crystal_data.w_phon[im]) * (mesh[i] / 2.0)
+        self.d_grad = cuda.to_device(g)
+        print(f" -> phph: phonon energy gradients by central differences (max |dw/df| = {np.abs(g).max():.1f} meV)")
         self.d_phi = cuda.to_device(np.ascontiguousarray(self.fc.phi.reshape(64, 64, 27)))
         self.d_neg = cuda.to_device(neg)
         self.d_img_atom, self.d_img_n, self.d_img_inv_mult = cuda.to_device(img_atom), cuda.to_device(img_n), cuda.to_device(img_inv_mult)
@@ -399,7 +409,7 @@ class PhPhGPU:
         """returns (d_idx, d_w, n_events): count pass (energy conservation only) -> exact allocation -> store pass."""
         d_count = cuda.to_device(np.zeros(1, dtype=np.int64))
         dummy_i, dummy_w = cuda.device_array((7, 1), dtype=np.int32), cuda.device_array(1, dtype=np.float64)
-        args = (gpu_data["mesh"], gpu_data["q_grid"], gpu_data["grid_map"], self.d_neg, gpu_data["w_phon"], gpu_data["grad_f_phon"],
+        args = (gpu_data["mesh"], gpu_data["q_grid"], gpu_data["grid_map"], self.d_neg, gpu_data["w_phon"], self.d_grad,
                 gpu_data["eig_phon"], gpu_data["atom_masses"], self.d_P, self.d_T, smearing, min_sigma, self.min_energy, gamma_idx)
         phph_scan_grid[blocks, threads](*args, 0, dummy_i, dummy_w, d_count)
         cuda.synchronize()
@@ -418,7 +428,7 @@ class PhPhGPU:
     def scan_path(self, gpu_data, d_path_q_frac, d_path_w_phon, d_path_eig_phon, smearing, min_sigma, gamma_idx, blocks, threads, pad=1.02):
         d_count = cuda.to_device(np.zeros(1, dtype=np.int64))
         dummy_i, dummy_w = cuda.device_array((7, 1), dtype=np.int32), cuda.device_array(1, dtype=np.float64)
-        args = (gpu_data["mesh"], gpu_data["q_grid"], gpu_data["grid_map"], self.d_neg, gpu_data["w_phon"], gpu_data["grad_f_phon"],
+        args = (gpu_data["mesh"], gpu_data["q_grid"], gpu_data["grid_map"], self.d_neg, gpu_data["w_phon"], self.d_grad,
                 gpu_data["eig_phon"], gpu_data["atom_masses"], self.d_P, self.d_T, self.d_phi,
                 self.d_img_atom, self.d_img_n, self.d_img_inv_mult, d_path_q_frac, d_path_w_phon, d_path_eig_phon,
                 smearing, min_sigma, self.min_energy, gamma_idx)
