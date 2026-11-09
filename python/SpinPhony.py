@@ -81,6 +81,14 @@ class CrystalDataSoA:
 
         #self._compute_group_velocities() # temporarily disabled for performance; can be re-enabled if needed
         self.grad_f_phon = np.zeros((self.N, self.phon_branches, 3), dtype=np.float64)
+        if not BARE_LEGACY:
+            # dw/df by central differences of the sorted mesh energies (vectorised, O(N)); with the zero array the adaptive Gaussian width of every
+            # magnon-phonon scan ignored the phonon dispersion (d_g = -grad_mag + grad_phon)
+            for i_ax in range(3):
+                shift = np.zeros(3, dtype=np.int64); shift[i_ax] = 1
+                ip = self.grid_map[tuple(((self.q_grid + shift) % self.mesh).T)]
+                im = self.grid_map[tuple(((self.q_grid - shift) % self.mesh).T)]
+                self.grad_f_phon[:, :, i_ax] = (self.w_phon[ip] - self.w_phon[im]) * (self.mesh[i_ax] / 2.0)
 
 
         # Cartesian conversion
@@ -1715,8 +1723,10 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                     atom_masses, mag_moments, gamma_idx):
     """Scans phase space integrating exact path points against the BZ grid using Adaptive Broadening.
 
-    c_type 0  M(path,n) <-> M(k,m) + Ph(path-k,lam)             V^{+-}   (exchange striction + antisymmetric xy)
-    c_type 2  Ph(path,lam) <-> M(k,n) - M(k-path,m)             V^{+-}
+    c_type 0  M(path,n) -> M(k,m) + Ph(path-k,lam)              V^{+-}_{q,q-k}   (tex 2.1, emission term)
+    c_type 1  M(path,n) + Ph(k-path,lam) -> M(k,m)              V^{+-}_{q,q-k}   (tex 2.1, absorption term; not with --legacy_bare)
+    c_type 2  Ph(path,lam) + M(k-path,m) -> M(k,n)              V^{+-}_{k,+q}    (absorption of the phonon; tex 1.2 with the first label k-q)
+    Vertex bookkeeping and audit: theory/bare_vertex_audit.md; --legacy_bare restores the old arguments.
     The relativistic (V^{++}, V^{--}) processes c_type 3/4 are scanned by phase_1_scan_path_rel (--relativistic): a
     separate kernel, so that this one is untouched (the extra branch cost +69 % runtime through register pressure).
     """
@@ -1747,10 +1757,8 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
             for lam in range(n_phon):
 
                 # ---------------------------------------------------------
-                # Unified magnon channel: M(path,n) <-> M(k,m) + Ph(k-path,lam)
-                # Single delta / full bidirectional bracket (mirrors the grid's
-                # unified Process 0), vertex evaluated at (kp=path, q=k-path) to
-                # match the confirmed phonon-equation vertex convention.
+                # Magnon emission: M(path,n) -> M(k,m) + Ph(path-k,lam), bracket 1 + n_ph + n_k.
+                # Vertex V_{q,q-k} (kp=path, q=path-k) as in tex 2.1; the absorption term follows below.
                 # ---------------------------------------------------------
                 dE_mag = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] - w_phon_grid[idx_qmink, lam]
                 var_mag = 0.0
@@ -1767,10 +1775,17 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                         and w_phon_grid[idx_qmink, lam] >= BARE_MIN_SCATTERING_ENERGY):
                     weight = (0.4179 / sigma_mag) * math.exp(-0.5 * (dE_mag*dE_mag) / (sigma_mag*sigma_mag))
                     kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
-                    qx = grid_q_cart[k_idx, 0] - path_q_cart[path_idx, 0]
-                    qy = grid_q_cart[k_idx, 1] - path_q_cart[path_idx, 1]
-                    qz = grid_q_cart[k_idx, 2] - path_q_cart[path_idx, 2]
-                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
+                    if BARE_LEGACY:
+                        qx = grid_q_cart[k_idx, 0] - path_q_cart[path_idx, 0]
+                        qy = grid_q_cart[k_idx, 1] - path_q_cart[path_idx, 1]
+                        qz = grid_q_cart[k_idx, 2] - path_q_cart[path_idx, 2]
+                        V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
+                    else:
+                        # tex 2.1:  V^{+-}_{q, q-k, lam, nm}: phonon momentum q-k, J~(k, q-k)
+                        qx = path_q_cart[path_idx, 0] - grid_q_cart[k_idx, 0]
+                        qy = path_q_cart[path_idx, 1] - grid_q_cart[k_idx, 1]
+                        qz = path_q_cart[path_idx, 2] - grid_q_cart[k_idx, 2]
+                        V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_qmink], w_phon_grid[idx_qmink, lam], atom_masses, mag_moments)
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
                         chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
@@ -1778,10 +1793,36 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                         chan_weights[c_idx] = V_sq * weight
 
                 # ---------------------------------------------------------
-                # Unified phonon channel: Ph(path,lam) <-> M(k,n) - M(k-path,m)
-                # Vertex evaluated at (kp=k, q=-path), matching the confirmed
-                # V^{+-}_{k,-q,lam,nm} directly. Already correct as originally
-                # written (this is the old "Process 2"); kept unchanged.
+                # Magnon absorption (tex 2.1, second term):  M(path,n) + Ph(k-path,lam) -> M(k,m)
+                #   delta(E_q - E_k + E_ph(k-q)) [ n_ph(k-q) - n_k ],  same vertex V_{q,q-k}.  Not part of the legacy kernel.
+                # ---------------------------------------------------------
+                if not BARE_LEGACY:
+                    dE_abs = path_w_mag[path_idx, n] - w_mag_grid[k_idx, m] + w_phon_grid[idx_kminq, lam]
+                    var_abs = 0.0
+                    for i in range(3):
+                        d_g = -grad_f_mag[k_idx, m, i] + grad_f_phon[idx_kminq, lam, i]
+                        step_w = d_g / mesh[i]
+                        var_abs += step_w * step_w
+                    sigma_abs_raw = smearing * math.sqrt(var_abs / 12.0)
+                    sigma_abs = sigma_abs_raw if sigma_abs_raw > 1e-5 else 1e-5
+                    if (abs(dE_abs) < 2.0 * sigma_abs and path_w_mag[path_idx, n] >= BARE_MIN_SCATTERING_ENERGY
+                            and w_mag_grid[k_idx, m] >= BARE_MIN_SCATTERING_ENERGY
+                            and w_phon_grid[idx_kminq, lam] >= BARE_MIN_SCATTERING_ENERGY):
+                        weight_abs = (0.4179 / sigma_abs) * math.exp(-0.5 * (dE_abs * dE_abs) / (sigma_abs * sigma_abs))
+                        kpx, kpy, kpz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
+                        qx = path_q_cart[path_idx, 0] - grid_q_cart[k_idx, 0]
+                        qy = path_q_cart[path_idx, 1] - grid_q_cart[k_idx, 1]
+                        qz = path_q_cart[path_idx, 2] - grid_q_cart[k_idx, 2]
+                        V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
+                        c_idx = cuda.atomic.add(channel_count, 0, 1)
+                        if c_idx < chan_indices.shape[1]:
+                            chan_indices[0, c_idx] = 1; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
+                            chan_indices[3, c_idx] = idx_kminq; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
+                            chan_weights[c_idx] = V_sq * weight_abs
+
+                # ---------------------------------------------------------
+                # Phonon channel: Ph(path,lam) + M(k-path,m) -> M(k,n), bracket n_{k-q} - n_k.
+                # Vertex V_{k,+q} = V*_{k-q,-q} (kp=k, q=+path); the old kernel (and tex 1.2 as written) used V_{k,-q}.
                 # ---------------------------------------------------------
                 dE_phon = path_w_phon[path_idx, lam] + w_mag_grid[idx_kminq, m] - w_mag_grid[k_idx, n]
                 var_phon = 0.0
@@ -1798,7 +1839,12 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                         and w_mag_grid[k_idx, n] >= BARE_MIN_SCATTERING_ENERGY):
                     weight = (0.4179 / sigma_phon) * math.exp(-0.5 * (dE_phon*dE_phon) / (sigma_phon*sigma_phon))
                     kpx, kpy, kpz = grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2]
-                    qx, qy, qz = -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2]
+                    if BARE_LEGACY:
+                        qx, qy, qz = -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2]
+                    else:
+                        # phonon q absorbed by the magnon k-q -> k: amplitude V_{k, +q} = V_{k-q, -q}^*, J~(k-q, q)  (tex 1.2 writes V_{k,-q}: the
+                        # first label should be k-q for the low magnon of the pair, see theory/bare_vertex_audit.md)
+                        qx, qy, qz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
                     V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, path_eig_phon[path_idx], path_w_phon[path_idx, lam], atom_masses, mag_moments)
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
@@ -2266,6 +2312,12 @@ MAX_HYB_PHON_BRANCHES = 24
 # a gapless Gamma magnon (n_BE ~ kT/E ~ 1e8) dominates the rates (bare CrI3 phonon rates of 1e4-1e6 ps^-1).
 BARE_MIN_SCATTERING_ENERGY = 0.2      # meV
 
+# Bare number-conserving magnon-phonon rates: vertex bookkeeping of theory/mag_ph.txt (audit: theory/bare_vertex_audit.md).
+# False (default): V^{+-}_{K,Q} with the annihilated magnon as first Fourier argument, i.e. for the process magnon a <-> magnon b + phonon p
+#                  the vertex is V(K=a, Q=a-b); path magnon rates include the phonon-absorption term; phonon energy gradients enter
+#                  the adaptive width. True (--legacy_bare): the old kernels (V(K=a, Q=b-a), emission term only, zero phonon gradients).
+BARE_LEGACY = False
+
 
 @cuda.jit(device=True)
 def fill_hybrid_vertex_cache(
@@ -2715,16 +2767,16 @@ def phase_1_scan(mesh, q_grid, q_grid_cart, grid_map, w_phon, w_mag, eig_phon,
                     
                     V = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_qmink_cart, y_qmink_cart, z_qmink_cart, idx_qmink, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
 
-                    V_Gmp = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_kminq_cart, y_kminq_cart, z_kminq_cart, idx_kminq, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
-                    V_sq_Gmp = V_Gmp.real**2 + V_Gmp.imag**2
-
                     V_sq = V.real**2 + V.imag**2
+                    if BARE_LEGACY:
+                        V_Gmp = calc_vertex_V(kpx_cart, kpy_cart, kpz_cart, x_kminq_cart, y_kminq_cart, z_kminq_cart, idx_kminq, lam, n, m, grid_map, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon, w_phon, atom_masses, mag_moments)
+                        V_sq = V_Gmp.real**2 + V_Gmp.imag**2
 
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
                         chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = q_idx; chan_indices[2, c_idx] = k_idx
                         chan_indices[3, c_idx] = idx_qmink; chan_indices[4, c_idx] = n; chan_indices[5, c_idx] = m; chan_indices[6, c_idx] = lam
-                        chan_weights[c_idx] = V_sq_Gmp * delta_weight
+                        chan_weights[c_idx] = V_sq * delta_weight
                 
                 """
                 # Process 1
@@ -3598,6 +3650,13 @@ def phase_lifetime_path(chan_indices, chan_weights, num_channels, n_mag_grid, n_
         rate = fgr_prefactor * V_sq * (1.0 + n_ph + nk_mag)
         cuda.atomic.add(gamma_mag_path, path_idx * num_mag_branches + n, rate)
         
+    elif c_type == 1:
+        # Magnon absorption M(path,n) + Ph(p=k-path,lam) -> M(k,m), tex 2.1 second term:  n_ph - n_k
+        nk_mag = n_mag_grid[k_idx, m]
+        n_ph = n_phon_grid[p_idx, lam]
+        rate = fgr_prefactor * V_sq * (n_ph - nk_mag)
+        cuda.atomic.add(gamma_mag_path, path_idx * num_mag_branches + n, rate)
+
     elif c_type == 2:
         # Unified phonon channel (mirrors the confirmed phonon RTA rate)
         nk_mag = n_mag_grid[k_idx, n]
@@ -5006,6 +5065,9 @@ if __name__ == "__main__":
     parser.add_argument("--snapshots", type=int, default=40,
                         help="Hybrid dynamics: number of full-occupation snapshots (log-spaced in time) written to "
                              "occupation_snapshots.npz for python/plot_occupation.py (0 = none).")
+    parser.add_argument("--legacy_bare", action="store_true",
+                        help="reproduce the bare magnon-phonon kernels of before the audit of theory/bare_vertex_audit.md (old vertex arguments, "
+                             "no magnon absorption term in the path rates, zero phonon gradients in the adaptive width)")
     parser.add_argument("--relativistic", action="store_true",
                         help="Bare basis: add the RELATIVISTIC magnon-number non-conserving channels ph(q) <-> mag(k) + "
                              "mag(q-k) (vertices V^{++}, V^{--} of theory/bare_scattering_rates_plus_relativistic.tex; they "
@@ -5034,6 +5096,7 @@ if __name__ == "__main__":
                              "the bare magnon-phonon channel scan and the time integration.")
 
     args = parser.parse_args()
+    BARE_LEGACY = args.legacy_bare          # module global, read by the kernels at their first compilation
 
     if args.relativistic and args.hybrid_dynamics:
         print("NOTE: --relativistic enters the bare path lifetimes only; the hybrid dynamics does not include V++ / V--.")
