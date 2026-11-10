@@ -5091,6 +5091,9 @@ if __name__ == "__main__":
                              "J^xx += A r, J^yy -= A r, J^xy += B r, J^yx += B r (r = reproducible random 0.5..1.5), i.e. "
                              "J^xx - J^yy = 2A r and J^xy + J^yx = 2B r. Makes the --relativistic channels non-zero for "
                              "tensors that have none (the real CrI3 tensor has J^xx = J^yy, J^xy = -J^yx exactly).")
+    parser.add_argument("--path_buffer_gb", type=float, default=30.0,
+                        help="upper limit (GB, 36 bytes per slot) of the channel buffer of the bare path scan; the path points are processed in "
+                             "chunks that fit into it (also limited by anticipated_fraction)")
     parser.add_argument("--bare_only", action="store_true",
                         help="stop right after the bare path_lifetimes.csv is written (no hybrid scans, no dynamics); a channel-buffer overflow is then "
                              "fatal. For convergence scans (Submit_convergence/).")
@@ -5282,58 +5285,18 @@ if __name__ == "__main__":
         d_grid_q_frac = cuda.to_device(grid_q_frac_cpu)
 
         # 2. Setup Phase 1 memory for path scanning
+        #    The path points are processed in chunks: every chunk is scanned into the channel buffer and immediately summed into the rates
+        #    (phase_lifetime_path), then the buffer is reused. The buffer holds min(anticipated_fraction * loops, --path_buffer_gb) slots of 36 bytes;
+        #    a chunk that does not fit is split, so the run no longer fails (nor truncates) when the number of channels exceeds the GPU memory
+        #    (large grids / large broadening).
         N_path = crystal_data.N_path
         total_path_loops = N_path * N_points * crystal_data.n_mag_branches**2 * crystal_data.phon_branches * (5 if args.relativistic else 3)
-        max_path_channels = int(total_path_loops * anticipated_fraction)
-    
+        max_path_channels = int(min(total_path_loops * anticipated_fraction, args.path_buffer_gb * 1e9 / 36.0))
+        max_path_channels = max(max_path_channels, 1)
+
         d_path_chan_indices = cuda.device_array((7, max_path_channels), dtype=np.int32)
         d_path_chan_weights = cuda.device_array(max_path_channels, dtype=np.float64)
         d_path_channel_count = cuda.to_device(np.zeros(1, dtype=np.int64))   # int64: the counter keeps counting past the buffer
-
-        threads_2d_path = (16, 16)
-        blocks_x_path = math.ceil(N_path / threads_2d_path[0])
-        blocks_y_path = math.ceil(N_points / threads_2d_path[1])
-
-        # 3. Execute Path Scan
-        print(" -> Scanning Phase Space (Path x Grid)...")
-        phase_1_scan_path[(blocks_x_path, blocks_y_path), threads_2d_path](
-            gpu_data["mesh"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
-            d_path_q_frac, d_path_q_cart, d_path_w_phon, d_path_w_mag, d_path_eig_phon,
-            gpu_data["w_phon"], gpu_data["w_mag"], gpu_data["eig_phon"],
-            gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
-            gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"], 
-            smearing, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
-            gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
-        )
-        if args.relativistic:
-            # relativistic processes (c_type 3/4) in their own kernel, appended to the same channel buffers
-            phase_1_scan_path_rel[(blocks_x_path, blocks_y_path), threads_2d_path](
-                gpu_data["mesh"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
-                d_path_q_frac, d_path_q_cart, d_path_w_phon, d_path_w_mag, d_path_eig_phon,
-                gpu_data["w_phon"], gpu_data["w_mag"], gpu_data["eig_phon"],
-                gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
-                gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
-                smearing, min_sigma, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
-                gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
-            )
-    
-        cuda.synchronize()
-    
-        path_num_channels = d_path_channel_count.copy_to_host()[0]
-        print(f" -> Path Channels found: {path_num_channels:,}")
-        if path_num_channels > max_path_channels:
-            msg = (f"path channel buffer overflow: found {path_num_channels:,} > max {max_path_channels:,}; the event list is "
-                   f"truncated and the lifetimes are too small. Increase anticipated_fraction to >= "
-                   f"{1.05 * path_num_channels / total_path_loops:.4f}.")
-            if args.relativistic:
-                raise SystemExit("Relativistic run: " + msg)
-            if args.bare_only:
-                raise SystemExit("OVERFLOW: " + msg)
-            print(" WARNING: " + msg)
-
-        # Slice active channels
-        d_path_chan_indices_active = d_path_chan_indices[:, :path_num_channels]
-        d_path_chan_weights_active = d_path_chan_weights[:path_num_channels]
 
         # 4. Allocate Path Scattering Rate Arrays
         d_gamma_mag_path = cuda.to_device(np.zeros(N_path * crystal_data.n_mag_branches, dtype=np.float64))
@@ -5341,24 +5304,68 @@ if __name__ == "__main__":
         # relativistic (number non-conserving) contributions, accumulated separately (all zero without --relativistic)
         d_gamma_mag_rel_path = cuda.to_device(np.zeros(N_path * crystal_data.n_mag_branches, dtype=np.float64))
         d_gamma_phon_rel_path = cuda.to_device(np.zeros(N_path * crystal_data.phon_branches, dtype=np.float64))
+        nmb_, npb_ = crystal_data.n_mag_branches, crystal_data.phon_branches
 
-        # 5. Execute Path Lifetimes (using evaluated d_n_mag and d_n_phon from the grid)
-        print(" -> Calculating explicit path lifetimes...")
-        blocks_eval_path = math.ceil(path_num_channels / threads_per_block)
-    
-        phase_lifetime_path[blocks_eval_path, threads_per_block](
-            d_path_chan_indices_active,
-            d_path_chan_weights_active,
-            d_path_channel_count, 
-            d_n_mag, 
-            d_n_phon, 
-            d_gamma_mag_path, 
-            d_gamma_phon_path, 
-            d_gamma_mag_rel_path,
-            d_gamma_phon_rel_path,
-            N_points  # Density of states normalization relies on BZ grid resolution
-        )
-        cuda.synchronize()
+        threads_2d_path = (16, 16)
+        blocks_y_path = math.ceil(N_points / threads_2d_path[1])
+
+        # 3. + 5. Chunked path scan and path lifetimes (thermal distributions d_n_mag, d_n_phon of the grid)
+        print(" -> Scanning Phase Space (Path x Grid)...")
+        zero_count = np.zeros(1, dtype=np.int64)
+        path_num_channels = 0
+        chunk, i0, n_scans = N_path, 0, 0
+        while i0 < N_path:
+            i1 = min(N_path, i0 + chunk)
+            d_path_channel_count.copy_to_device(zero_count)
+            blocks_x_path = math.ceil((i1 - i0) / threads_2d_path[0])
+            phase_1_scan_path[(blocks_x_path, blocks_y_path), threads_2d_path](
+                gpu_data["mesh"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
+                d_path_q_frac[i0:i1], d_path_q_cart[i0:i1], d_path_w_phon[i0:i1], d_path_w_mag[i0:i1], d_path_eig_phon[i0:i1],
+                gpu_data["w_phon"], gpu_data["w_mag"], gpu_data["eig_phon"],
+                gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
+                gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
+                smearing, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
+                gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
+            )
+            if args.relativistic:
+                # relativistic processes (c_type 3/4) in their own kernel, appended to the same channel buffers
+                phase_1_scan_path_rel[(blocks_x_path, blocks_y_path), threads_2d_path](
+                    gpu_data["mesh"], d_grid_q_frac, gpu_data["q_grid_cart"], gpu_data["grid_map"],
+                    d_path_q_frac[i0:i1], d_path_q_cart[i0:i1], d_path_w_phon[i0:i1], d_path_w_mag[i0:i1], d_path_eig_phon[i0:i1],
+                    gpu_data["w_phon"], gpu_data["w_mag"], gpu_data["eig_phon"],
+                    gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
+                    gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
+                    smearing, min_sigma, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
+                    gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
+                )
+            cuda.synchronize()
+            n_scans += 1
+            found = int(d_path_channel_count.copy_to_host()[0])
+            if found > max_path_channels:
+                if i1 - i0 == 1:
+                    raise SystemExit(f"OVERFLOW: a single path point needs {found:,} channels > buffer {max_path_channels:,}; raise --path_buffer_gb.")
+                new_chunk = max(1, int((i1 - i0) * max_path_channels / (1.3 * found)))
+                chunk = new_chunk if new_chunk < (i1 - i0) else max(1, (i1 - i0) // 2)
+                print(f"    path chunk [{i0}, {i1}) has {found:,} channels > buffer {max_path_channels:,}: splitting, chunk size {chunk:,} points", flush=True)
+                continue
+            path_num_channels += found
+            blocks_eval_path = max(1, math.ceil(found / threads_per_block))
+            phase_lifetime_path[blocks_eval_path, threads_per_block](
+                d_path_chan_indices[:, :found],
+                d_path_chan_weights[:found],
+                d_path_channel_count,
+                d_n_mag,
+                d_n_phon,
+                d_gamma_mag_path[i0 * nmb_:i1 * nmb_],
+                d_gamma_phon_path[i0 * npb_:i1 * npb_],
+                d_gamma_mag_rel_path[i0 * nmb_:i1 * nmb_],
+                d_gamma_phon_rel_path[i0 * npb_:i1 * npb_],
+                N_points  # Density of states normalization relies on BZ grid resolution
+            )
+            cuda.synchronize()
+            i0 = i1
+        print(f" -> Path Channels found: {path_num_channels:,}  (buffer {max_path_channels:,} slots, {n_scans} scan pass(es))")
+        print(" -> Calculating explicit path lifetimes... done")
 
         # 6. Extract and Save
         gamma_mag_path_cpu = d_gamma_mag_path.copy_to_host().reshape((N_path, crystal_data.n_mag_branches))
