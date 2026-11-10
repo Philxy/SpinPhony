@@ -5091,6 +5091,9 @@ if __name__ == "__main__":
                              "J^xx += A r, J^yy -= A r, J^xy += B r, J^yx += B r (r = reproducible random 0.5..1.5), i.e. "
                              "J^xx - J^yy = 2A r and J^xy + J^yx = 2B r. Makes the --relativistic channels non-zero for "
                              "tensors that have none (the real CrI3 tensor has J^xx = J^yy, J^xy = -J^yx exactly).")
+    parser.add_argument("--bare_only", action="store_true",
+                        help="stop right after the bare path_lifetimes.csv is written (no hybrid scans, no dynamics); a channel-buffer overflow is then "
+                             "fatal. For convergence scans (Submit_convergence/).")
     parser.add_argument("--dynamics_only", action="store_true",
                         help="Skip all path / hybrid-path lifetime work and the G_mp grid; run only "
                              "the bare magnon-phonon channel scan and the time integration.")
@@ -5324,6 +5327,8 @@ if __name__ == "__main__":
                    f"{1.05 * path_num_channels / total_path_loops:.4f}.")
             if args.relativistic:
                 raise SystemExit("Relativistic run: " + msg)
+            if args.bare_only:
+                raise SystemExit("OVERFLOW: " + msg)
             print(" WARNING: " + msg)
 
         # Slice active channels
@@ -5455,6 +5460,9 @@ if __name__ == "__main__":
                             f"{1.0:.6f},{0.0:.6f},{phon_AM:.6e},{0.0:.6e},{path_dist[i]:.6f}{extra}\n")
 
         print(f"-> Saved true path lifetimes to {out_dir}/path_lifetimes.csv")
+        if args.bare_only:
+            print("--bare_only: done.")
+            raise SystemExit(0)
 
 
         # ========================== Hybrid Path Lifetime Evaluation ==========================
