@@ -5063,8 +5063,11 @@ if __name__ == "__main__":
                         help="Print the catalogue of named hybrid modes at k-point K (default G = Gamma; same syntax "
                              "as the k part of --pump) and exit. Needs no GPU and no scan.")
     parser.add_argument("--snapshots", type=int, default=40,
-                        help="Hybrid dynamics: number of full-occupation snapshots (log-spaced in time) written to "
-                             "occupation_snapshots.npz for python/plot_occupation.py (0 = none).")
+                        help="Number of full-occupation snapshots (log-spaced in time, plus t = 0 and the final state). Hybrid dynamics: "
+                             "occupation_snapshots.npz for python/plot_occupation.py; bare dynamics: occupation_snapshots_bare.npz "
+                             "(float32 mode occupations, for python/plot_mode_temperatures.py). 0 = none.")
+    parser.add_argument("--snapshot_times", type=str, default=None, metavar="T1,T2,...",
+                        help="Bare dynamics: snapshot times in ps (nearest observation step) instead of the log-spaced default.")
     parser.add_argument("--legacy_bare", action="store_true",
                         help="reproduce the bare magnon-phonon kernels of before the audit of theory/bare_vertex_audit.md (old vertex arguments, "
                              "no magnon absorption term in the path rates, zero phonon gradients in the adaptive width)")
@@ -5895,6 +5898,24 @@ if __name__ == "__main__":
                                spec_every=args.spec_every, exclude_idx=gamma_idx)
     n_phon_branches = crystal_data.phon_branches
 
+    # --- full-occupation snapshots of the bare dynamics (mode-resolved temperatures, coloured dispersions, histograms in post-processing)
+    snap_steps = set()
+    if args.snapshot_times:
+        for t_s in args.snapshot_times.split(","):
+            snap_steps.add(int(round(float(t_s) / dt / args.obs_every)) * args.obs_every)
+    elif args.snapshots > 0:
+        n_rec = max(1, steps // max(1, args.obs_every))
+        snap_steps = {int(k) * args.obs_every for k in np.unique(np.round(np.geomspace(1, n_rec, args.snapshots)).astype(np.int64))}
+    if snap_steps:
+        snap_steps.add(0)
+    snap_steps = {x for x in snap_steps if 0 <= x <= steps}
+    snap_store = {"time_ps": [], "n_mag": [], "n_phon": []}
+
+    def take_snapshot(step, t):
+        snap_store["time_ps"].append(t)
+        snap_store["n_mag"].append(d_n_mag.copy_to_host().astype(np.float32))
+        snap_store["n_phon"].append(d_n_phon.copy_to_host().astype(np.float32))
+
     def run_diagnostics(step, t):
         """Copy populations, run the flux kernel on the current state, append all diagnostics."""
         d_acc = cuda.to_device(np.zeros(4, dtype=np.float64))
@@ -5944,6 +5965,8 @@ if __name__ == "__main__":
             
         if step % args.obs_every == 0:
             run_diagnostics(step, current_time)
+            if step in snap_steps:
+                take_snapshot(step, current_time)
 
         # 4. Apply the safe_dt globally using the pure Euler kernel
         apply_euler_and_reset[blocks_euler, threads_per_block](
@@ -5956,6 +5979,15 @@ if __name__ == "__main__":
     diag.close()
     np.savez(f"{out_dir}/final_populations.npz", n_mag=d_n_mag.copy_to_host(), n_phon=d_n_phon.copy_to_host(),
              w_mag=crystal_data.w_mag, w_phon=crystal_data.w_phon, time_ps=current_time)
+    if snap_steps:
+        if not snap_store["time_ps"] or snap_store["time_ps"][-1] < current_time - 0.5 * dt:      # the loop never reaches step == steps
+            take_snapshot(steps, current_time)
+        np.savez_compressed(f"{out_dir}/occupation_snapshots_bare.npz", time_ps=np.array(snap_store["time_ps"]),
+                            n_mag=np.stack(snap_store["n_mag"]), n_phon=np.stack(snap_store["n_phon"]),
+                            w_mag=crystal_data.w_mag, w_phon=crystal_data.w_phon, q_grid=crystal_data.q_grid, mesh=crystal_data.mesh,
+                            reciprocal_lattice=crystal_data.reciprocal_lattice, gamma_idx=gamma_idx,
+                            T_mag_init=T_mag_init, T_phon_init=T_phon_init, phph=bool(args.phph))
+        print(f" -> {len(snap_store['time_ps'])} occupation snapshots in {out_dir}/occupation_snapshots_bare.npz")
     print("Simulation Complete.")
 
 
