@@ -30,6 +30,9 @@ ap.add_argument("--materials", nargs="+", default=["bccFe", "fccNi"])
 ap.add_argument("--smearings", nargs="+", type=float, default=[0.05, 0.1, 0.2, 0.3, 0.5])
 ap.add_argument("--grids", nargs="*", default=[], help="override per material, e.g. bccFe=12,20,40 fccNi=20,32")
 ap.add_argument("--T", type=float, default=300.0, help="magnon = phonon temperature (K)")
+ap.add_argument("--temps", nargs="+", type=float, default=None,
+                help="temperature scan: one run per temperature (overrides --T); run names get a _T<T>K suffix. Use with a fixed grid and broadening, "
+                     "e.g. --grids bccFe=20 fccNi=32 --smearings 0.2 --temps 100 200 300 400 500 600 800 1000")
 ap.add_argument("--no_phph", action="store_true", help="no three-phonon scattering for bccFe (it is always off for fccNi)")
 ap.add_argument("--max_parallel", type=int, default=6)
 ap.add_argument("--root", default="Outputs/convergence")
@@ -40,13 +43,15 @@ for g in a.grids:
     m, v = g.split("=")
     grids[m] = [int(x) for x in v.split(",")]
 
+temps = a.temps if a.temps else [a.T]
 rows = []
 for m in a.materials:
-    for n in grids[m]:
-        for s in a.smearings:
+  for n in grids[m]:
+    for s in a.smearings:
+      for T in temps:
             frac = min(1.0, MEM_BUDGET_GB * 1e9 / (36.0 * 9.0 * float(n) ** 6), FRAC0.get(n, 0.03) * max(1.0, s / 0.1))
-            rows.append(dict(id=len(rows), run=f"{m}_N{n}_s{s:g}", material=m, N=n, mesh=MESHES[m][n], smearing=s, frac0=round(frac, 5),
-                             phph=int(m == "bccFe" and not a.no_phph), fc3=PH3_FC3 if m == "bccFe" else "", T=a.T))
+            rows.append(dict(id=len(rows), run=f"{m}_N{n}_s{s:g}" + (f"_T{T:g}K" if len(temps) > 1 else ""), material=m, N=n, mesh=MESHES[m][n],
+                             smearing=s, frac0=round(frac, 5), phph=int(m == "bccFe" and not a.no_phph), fc3=PH3_FC3 if m == "bccFe" else "", T=T))
 root = os.path.join(a.root, a.tag)
 os.makedirs(root, exist_ok=True)
 with open(os.path.join(root, "runs.csv"), "w", newline="") as f:

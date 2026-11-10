@@ -46,6 +46,10 @@ write_config() {   # $1 = anticipated_fraction ; mesh set only inside the [mater
 }
 cat > $RD/params.txt <<PARAMS
 material=$MATERIAL
+mode=fullbz
+scan=$TAG
+T_mag=$T
+T_phon=$T
 N=$N
 mesh=$MESH
 smearing=$SMEAR

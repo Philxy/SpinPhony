@@ -25,3 +25,20 @@ Post-processing (local):
 
 Literature: bccFe from `python/plot-hybrid-lifetimesbccFe.py`; fccNi only if `Inputs/fccNi/lit_magnon_rates.csv` / `lit_phonon_rates.csv`
 (two columns: energy meV, rate 1/ps) exist.
+
+## Temperature scan (fixed grid and broadening)
+
+Same scripts, one run per temperature (choose N and the broadening from the convergence scan):
+
+    python3 Submit_convergence/make_runs.py --tag Tscan_20261110 --grids bccFe=20 fccNi=32 --smearings 0.2 \
+        --temps 100 200 300 400 500 600 800 1000
+    mkdir -p Outputs/convergence/logs
+    sbatch --array=0-15%8 Submit_convergence/submit.sh Tscan_20261110            # use the array range printed by make_runs.py
+
+Runs are named `<material>_N<N>_s<smearing>_T<T>K` and carry `params.txt` with `mode=fullbz`, `T_mag`, `scan`, so that
+`python/plot_Gmp_vs_T.py` (all materials in one plot) reads them directly:
+
+    python python/plot_Gmp_vs_T.py Outputs/convergence/Tscan_20261110 --source bare              # G_mp vs T/T_C, bccFe and fccNi in one figure
+    python python/plot_Gmp_vs_T.py Outputs/convergence/Tscan_20261110 --source bare --absolute_T  # vs T in K
+
+For bccFe runs with phph the bare file holds the channels separately; G_mp uses the magnon-phonon (`gamma_exch_ps-1`) channel only.
