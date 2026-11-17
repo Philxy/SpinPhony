@@ -72,8 +72,10 @@ def gmp_of_run(csv, T, V_A3):
     df = pd.read_csv(csv, comment='#')
     df = df.rename(columns={o: n for o, n in COLUMN_ALIASES.items() if o in df.columns})
     E = df['energy_meV'].to_numpy(float)
-    g = np.where(np.isfinite(pd.to_numeric(df['gamma_ps-1'], errors='coerce')),
-                 pd.to_numeric(df['gamma_ps-1'], errors='coerce'), 0.0)
+    # bare files written with --phph / --relativistic carry the channels separately: G_mp is the magnon-phonon (exchange) channel only
+    gcol = 'gamma_exch_ps-1' if 'gamma_exch_ps-1' in df.columns else 'gamma_ps-1'
+    g = np.where(np.isfinite(pd.to_numeric(df[gcol], errors='coerce')),
+                 pd.to_numeric(df[gcol], errors='coerce'), 0.0)
     w = np.clip(df['phon_character'].to_numpy(float), 0.0, 1.0)
     N = df['q_idx'].nunique()
     keep = E > 0
