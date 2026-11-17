@@ -601,6 +601,90 @@ class CrystalDataSoA:
                 self.w_mag[q_idx] = np.zeros(self.n_mag_branches)
     
 
+    def _mag_bonds(self, lattice_constant):
+        """Magnetic Jij bonds as arrays (sublattice i, sublattice j, r_ij in cartesian length units, J), same selection as the magnon builders."""
+        atom_to_mag = np.full(self.l_atoms, -1, dtype=np.int32)
+        for i, m_idx in enumerate(self.mag_indices):
+            atom_to_mag[m_idx] = i
+        bi, bj, br, bJ = [], [], [], []
+        for row in self.jij_interactions:
+            i, j = int(row[4]) - 1, int(row[5]) - 1
+            mi, mj = atom_to_mag[i], atom_to_mag[j]
+            if mi != -1 and mj != -1:
+                bi.append(mi); bj.append(mj); br.append(row[0:3] * lattice_constant); bJ.append(row[3])
+        return np.array(bi, dtype=int), np.array(bj, dtype=int), np.array(br, dtype=float).reshape(-1, 3), np.array(bJ, dtype=float)
+
+    def compute_mag_tau(self, lattice_constant):
+        """Positions tau_n (cartesian, tau_0 = 0, up to lattice vectors) of the magnetic sublattices from the Jij bond vectors r_ij = tau_j - tau_i + R.
+        They give the umklapp gauge U(k+G) = exp(-i G.tau) U(k) of the magnon eigenvectors (SpinPhony: mag_gauge_phase). Returns tau and the largest
+        deviation of any bond from 'tau_j - tau_i + lattice vector' in fractional coordinates (0.01 expected from the rounded bond vectors)."""
+        nb = self.n_mag_branches
+        tau = np.zeros((nb, 3))
+        if nb == 1:
+            return tau, 0.0
+        bi, bj, br, _ = self._mag_bonds(lattice_constant)
+        known = np.zeros(nb, dtype=bool); known[0] = True
+        for _ in range(nb + 1):
+            for i, j, r in zip(bi, bj, br):
+                if known[i] and not known[j]:
+                    tau[j] = tau[i] + r; known[j] = True
+                elif known[j] and not known[i]:
+                    tau[i] = tau[j] - r; known[i] = True
+        if not known.all():
+            raise SystemExit("compute_mag_tau: the magnetic sublattices are not connected by Jij bonds; cannot fix the umklapp gauge.")
+        dev = 0.0
+        for i, j, r in zip(bi, bj, br):
+            f = self.reciprocal_lattice @ (r - (tau[j] - tau[i]))
+            dev = max(dev, float(np.max(np.abs(f - np.round(f)))))
+        return tau, dev
+
+    def compute_bare_magnon_U(self, q_cart_array, w_ref, K_anisotropy=0.0, lattice_constant=1.0):
+        """Eigenvectors U_{n nu}(k) of the BARE magnon Hamiltonian at the cartesian momenta q_cart_array (theory/bare_lifetimes.tex, 'Multi-Sublattice
+        Eigenmode Basis': b_{k n} = sum_nu U_{n nu}(k) beta_{k nu}); the top-left block of the para-unitary matrix of the BdG diagonalisation.
+        The columns are ordered like w_ref (the band energies the scans use): both energy sets are ranked and matched, so band nu of the table
+        is band nu of w_ref. One sublattice: U = 1.
+        Returns U (Nq, nb, nb) and a dict(max_anomalous, max_energy_mismatch): the lower-left block of the para-unitary matrix (anomalous
+        Bogoliubov mixing, 0 for a Heisenberg model without anisotropy/DMI; the tex assumes it vanishes) and the largest difference of the
+        recomputed band energies to w_ref (differs from 0 only because w_mag is evaluated at the uncentred momentum, see use_full_bz_as_path)."""
+        nb = self.n_mag_branches
+        Nq = q_cart_array.shape[0]
+        U = np.zeros((Nq, nb, nb), dtype=np.complex128)
+        if nb == 1:
+            U[:] = 1.0
+            return U, dict(max_anomalous=0.0, max_energy_mismatch=0.0)
+        bi, bj, br, bJ = self._mag_bonds(lattice_constant)
+        moments = self.mag_moments[self.mag_indices]
+        S_val = (np.abs(moments) / 2.0)[0]
+        aniso = S_val * 2.0 * K_anisotropy
+        J0 = np.zeros((nb, nb))
+        for i, j, J in zip(bi, bj, bJ):
+            J0[i, j] += J
+        sumJ0 = J0.sum(axis=1)
+        ph = np.dot(q_cart_array, br.T)
+        ek = np.exp(1j * ph) * bJ
+        emk = np.exp(-1j * ph) * bJ
+        max_anom, max_dE = 0.0, 0.0
+        for q in range(Nq):
+            Jk = np.zeros((nb, nb), dtype=np.complex128); Jmk = np.zeros((nb, nb), dtype=np.complex128)
+            for b in range(len(bi)):
+                Jk[bi[b], bj[b]] += ek[q, b]; Jmk[bi[b], bj[b]] += emk[q, b]
+            Om = S_val * (Jk - np.diag(sumJ0)); Omm = S_val * (Jmk - np.diag(sumJ0))
+            H = np.zeros((2 * nb, 2 * nb), dtype=np.complex128)
+            H[:nb, :nb] = -Om + aniso * np.eye(nb)
+            H[nb:, nb:] = -Omm.T + aniso * np.eye(nb)
+            min_eig = np.min(np.linalg.eigvalsh(H))
+            if min_eig <= 1e-8:
+                np.fill_diagonal(H, H.diagonal() + np.abs(min_eig) + 1e-5)
+            w, T = diagonalize_bosonic_hamiltonian(H)
+            order_mine = np.argsort(w)
+            order_ref = np.argsort(w_ref[q])
+            Uq = T[:nb, :nb]
+            for r in range(nb):                       # rank matching: band order_ref[r] of w_ref <- band order_mine[r]
+                U[q, :, order_ref[r]] = Uq[:, order_mine[r]]
+            max_anom = max(max_anom, float(np.max(np.abs(T[nb:, :nb]))))
+            max_dE = max(max_dE, float(np.max(np.abs(np.sort(w) - np.sort(w_ref[q])))))
+        return U, dict(max_anomalous=max_anom, max_energy_mismatch=max_dE)
+
     def _calculate_coupled_hamiltonian(self, q_cart_array, dyn_mat, K_anisotropy, lattice_constant, ref_omega=5.0, is_FM=True, return_full_matrices=False):
         print(f" -> Constructing Joint Magnon-Phonon BdG Matrix (Strict C++ Mapping)...")
         N_pts = q_cart_array.shape[0]
@@ -1720,13 +1804,15 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                     grad_f_phon, grad_f_mag,
                     slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
                     smearing, chan_indices, chan_weights, channel_count, 
-                    atom_masses, mag_moments, gamma_idx):
+                    atom_masses, mag_moments, gamma_idx, mag_U_path, mag_U_grid, mag_tau):
     """Scans phase space integrating exact path points against the BZ grid using Adaptive Broadening.
 
     c_type 0  M(path,n) -> M(k,m) + Ph(path-k,lam)              V^{+-}_{q,q-k}   (tex 2.1, emission term)
     c_type 1  M(path,n) + Ph(k-path,lam) -> M(k,m)              V^{+-}_{q,q-k}   (tex 2.1, absorption term; not with --legacy_bare)
     c_type 2  Ph(path,lam) + M(k-path,m) -> M(k,n)              V^{+-}_{k,+q}    (absorption of the phonon; tex 1.2 with the first label k-q)
     Vertex bookkeeping and audit: theory/bare_vertex_audit.md; --legacy_bare restores the old arguments.
+    Several magnetic sublattices (CrI3): n, m are magnon BAND indices; the sublattice vertex is rotated into the eigenmode basis with the
+    tables mag_U_path / mag_U_grid (calc_vertex_V_path_band, tex 'Multi-Sublattice Eigenmode Basis'). One sublattice: U = 1, old code path.
     The relativistic (V^{++}, V^{--}) processes c_type 3/4 are scanned by phase_1_scan_path_rel (--relativistic): a
     separate kernel, so that this one is untouched (the extra branch cost +69 % runtime through register pressure).
     """
@@ -1785,7 +1871,13 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                         qx = path_q_cart[path_idx, 0] - grid_q_cart[k_idx, 0]
                         qy = path_q_cart[path_idx, 1] - grid_q_cart[k_idx, 1]
                         qz = path_q_cart[path_idx, 2] - grid_q_cart[k_idx, 2]
-                        V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_qmink], w_phon_grid[idx_qmink, lam], atom_masses, mag_moments)
+                        if n_mag == 1:
+                            V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_qmink], w_phon_grid[idx_qmink, lam], atom_masses, mag_moments)
+                        else:
+                            V_sq = calc_vertex_V_path_band(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m,
+                                                           mag_U_path, path_idx, path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2],
+                                                           mag_U_grid, k_idx, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2], mag_tau,
+                                                           slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_qmink], w_phon_grid[idx_qmink, lam], atom_masses, mag_moments)
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
                         chan_indices[0, c_idx] = 0; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
@@ -1813,7 +1905,13 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                         qx = path_q_cart[path_idx, 0] - grid_q_cart[k_idx, 0]
                         qy = path_q_cart[path_idx, 1] - grid_q_cart[k_idx, 1]
                         qz = path_q_cart[path_idx, 2] - grid_q_cart[k_idx, 2]
-                        V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
+                        if n_mag == 1:
+                            V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
+                        else:
+                            V_sq = calc_vertex_V_path_band(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m,
+                                                           mag_U_path, path_idx, path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2],
+                                                           mag_U_grid, k_idx, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2], mag_tau,
+                                                           slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_grid[idx_kminq], w_phon_grid[idx_kminq, lam], atom_masses, mag_moments)
                         c_idx = cuda.atomic.add(channel_count, 0, 1)
                         if c_idx < chan_indices.shape[1]:
                             chan_indices[0, c_idx] = 1; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
@@ -1845,7 +1943,14 @@ def phase_1_scan_path(mesh, grid_q_frac, grid_q_cart, grid_map,
                         # phonon q absorbed by the magnon k-q -> k: amplitude V_{k, +q} = V_{k-q, -q}^*, J~(k-q, q)  (tex 1.2 writes V_{k,-q}: the
                         # first label should be k-q for the low magnon of the pair, see theory/bare_vertex_audit.md)
                         qx, qy, qz = path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2]
-                    V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, path_eig_phon[path_idx], path_w_phon[path_idx, lam], atom_masses, mag_moments)
+                    if n_mag == 1 or BARE_LEGACY:
+                        V_sq = calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m, slc_axis, slc_rij, slc_rik, slc_J, slc_types, path_eig_phon[path_idx], path_w_phon[path_idx, lam], atom_masses, mag_moments)
+                    else:
+                        # first magnon k (grid, band n), second k - path (grid point idx_kminq, band m)
+                        V_sq = calc_vertex_V_path_band(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lam, n, m,
+                                                       mag_U_grid, k_idx, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
+                                                       mag_U_grid, idx_kminq, grid_q_cart[idx_kminq, 0], grid_q_cart[idx_kminq, 1], grid_q_cart[idx_kminq, 2], mag_tau,
+                                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, path_eig_phon[path_idx], path_w_phon[path_idx, lam], atom_masses, mag_moments)
                     c_idx = cuda.atomic.add(channel_count, 0, 1)
                     if c_idx < chan_indices.shape[1]:
                         chan_indices[0, c_idx] = 2; chan_indices[1, c_idx] = path_idx; chan_indices[2, c_idx] = k_idx
@@ -2076,12 +2181,13 @@ def calc_fourier_transform_vec(kpx, kpy, kpz, qx, qy, qz, slc_axis, slc_rij, slc
                 J_tilde_out[a, b] += (slc_J[i, a, b] * phase_factor) * match_mask
 
 @cuda.jit(device=True)
-def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m, 
+def calc_vertex_V_path_c(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m, 
                     slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
                     eig_phon_q, omega, atom_masses, mag_moments):
-    """Calculates the scattering vertex specifically for explicitly projected wavevectors."""
+    """Complex SUBLATTICE vertex  V~^{+-}_{kq lam, nm}  (n, m = sublattice indices, tex "Final Compact Form", without 1/sqrt(N))
+    for explicitly projected wavevectors; calc_vertex_V_path returns its modulus squared."""
     if omega < 1E-1:
-        return 0.0
+        return 0.0 + 0.0j
     
     hbar = 0.6582119569 # meV * ps
     DALTON_TO_meV_PS2_PER_A2 = 0.10364269
@@ -2116,7 +2222,58 @@ def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda
                         
             V_complex += disp_amp * e_mu * (W_dynamic - W_static)
             
+    return V_complex
+
+
+@cuda.jit(device=True)
+def calc_vertex_V_path(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m, 
+                    slc_axis, slc_rij, slc_rik, slc_J, slc_types, 
+                    eig_phon_q, omega, atom_masses, mag_moments):
+    """|V~^{+-}_{kq lam, nm}|^2 of the sublattice vertex (n, m sublattices). For one magnetic sublattice this is the band vertex."""
+    if omega < 1E-1:
+        return 0.0
+    V_complex = calc_vertex_V_path_c(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m,
+                                     slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_q, omega, atom_masses, mag_moments)
     return (V_complex.real**2 + V_complex.imag**2)
+
+
+@cuda.jit(device=True)
+def mag_gauge_phase(dx, dy, dz, mag_tau, n):
+    """exp(-i d . tau_n): the sublattice phase that carries the magnon eigenvector U(k) of the TABLE momentum to the literal momentum
+    k + d (d a reciprocal-lattice vector): U_{n nu}(k + G) = exp(-i G.tau_n) U_{n nu}(k) in the atom-position gauge of the spin-lattice
+    tensor (r_ij, r_ik are inter-atomic vectors, so the vertex J~(p,q) is not periodic in p)."""
+    ph = -(dx * mag_tau[n, 0] + dy * mag_tau[n, 1] + dz * mag_tau[n, 2])
+    return math.cos(ph) + 1j * math.sin(ph)
+
+
+@cuda.jit(device=True)
+def calc_vertex_V_path_band(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, nu, nup,
+                            mag_U1, row1, c1x, c1y, c1z, mag_U2, row2, c2x, c2y, c2z, mag_tau,
+                            slc_axis, slc_rij, slc_rik, slc_J, slc_types,
+                            eig_phon_q, omega, atom_masses, mag_moments):
+    """|V^{+-}_{kq lam, nu nu'}|^2 in the magnon EIGENMODE basis (tex "Multi-Sublattice Eigenmode Basis"):
+          V_{nu nu'} = sum_{nm} V~_{nm}(k,q) U*_{n nu}(k) U_{m nu'}(k-q).
+    The first magnon (label k = (kp), band nu) uses the table row mag_U1[row1] computed at the cartesian momentum (c1); the second (label
+    k - q, band nu') the row mag_U2[row2] computed at c2; labels that differ from their table momentum by a reciprocal-lattice vector
+    are carried over with mag_gauge_phase. Only used with several magnetic sublattices (for one sublattice U = 1)."""
+    if omega < 1E-1:
+        return 0.0
+    nb = mag_U1.shape[1]
+    d1x = kpx - c1x
+    d1y = kpy - c1y
+    d1z = kpz - c1z
+    d2x = (kpx - qx) - c2x
+    d2y = (kpy - qy) - c2y
+    d2z = (kpz - qz) - c2z
+    V = 0.0 + 0.0j
+    for n in range(nb):
+        a_n = mag_U1[row1, n, nu].conjugate() * mag_gauge_phase(d1x, d1y, d1z, mag_tau, n).conjugate()
+        for m in range(nb):
+            b_m = mag_U2[row2, m, nup] * mag_gauge_phase(d2x, d2y, d2z, mag_tau, m)
+            Vnm = calc_vertex_V_path_c(kpx, kpy, kpz, qx, qy, qz, gammax, gammay, gammaz, lambda_phon, n, m,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, eig_phon_q, omega, atom_masses, mag_moments)
+            V += Vnm * a_n * b_m
+    return (V.real**2 + V.imag**2)
 
 
 @cuda.jit(device=True)
@@ -2287,6 +2444,45 @@ def calc_pair_amplitude_nc(kind, k1x, k1y, k1z, k2x, k2y, k2z, qx, qy, qz, conj_
     V2 = calc_vertex_nc(kind, k2x, k2y, k2z, qx, qy, qz, conj_e, eig_phon_q, lambda_phon, omega, m, n,
                         slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments, min_omega)
     return V1 + V2
+
+
+@cuda.jit(device=True)
+def mag_coef(mag_U, row, n, band, dx, dy, dz, mag_tau, kind):
+    """Coefficient of the sublattice operator n in the band operator of the table row `row`, carried to the literal momentum
+    (table momentum + d): kind 0 (V^{++}, creation operators) U*_{n,band}, kind 1 (V^{--}, annihilation operators) U_{n,band}."""
+    u = mag_U[row, n, band] * mag_gauge_phase(dx, dy, dz, mag_tau, n)
+    if kind == 0:
+        return u.conjugate()
+    return u
+
+
+@cuda.jit(device=True)
+def calc_pair_amplitude_nc_band(kind, k1x, k1y, k1z, k2x, k2y, k2z, qx, qy, qz, conj_e, eig_phon_q, lambda_phon, omega, nu, nup,
+                                mag_U1, row1, c1x, c1y, c1z, mag_U2, row2, c2x, c2y, c2z, mag_tau,
+                                slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments, min_omega):
+    """Magnon EIGENMODE-basis version of calc_pair_amplitude_nc (tex "Multi-Sublattice Eigenmode Basis"):
+        A_{nu nu'} = V_{k1,q,nu nu'} + V_{k2,q,nu' nu}
+        V^{++}_{k,q,nu nu'} = sum_{nm} V~^{++}_{k q, nm} U*_{n nu}(k) U*_{m nu'}(q-k),   V^{--}: U_{n nu}(k) U_{m nu'}(-k-q)
+    first magnon (label k1, band nu): table row mag_U1[row1] computed at the cartesian momentum c1; second magnon (label k2, band nu'):
+    mag_U2[row2] at c2. A label that differs from its table momentum by a reciprocal-lattice vector gets the sublattice phase of
+    mag_gauge_phase. Used only with several magnetic sublattices (one sublattice: U = 1, the old amplitude)."""
+    nb = mag_U1.shape[1]
+    d1x = k1x - c1x
+    d1y = k1y - c1y
+    d1z = k1z - c1z
+    d2x = k2x - c2x
+    d2y = k2y - c2y
+    d2z = k2z - c2z
+    A = 0.0 + 0.0j
+    for n in range(nb):
+        for m in range(nb):
+            V1 = calc_vertex_nc(kind, k1x, k1y, k1z, qx, qy, qz, conj_e, eig_phon_q, lambda_phon, omega, n, m,
+                                slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments, min_omega)
+            V2 = calc_vertex_nc(kind, k2x, k2y, k2z, qx, qy, qz, conj_e, eig_phon_q, lambda_phon, omega, n, m,
+                                slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments, min_omega)
+            A += V1 * mag_coef(mag_U1, row1, n, nu, d1x, d1y, d1z, mag_tau, kind) * mag_coef(mag_U2, row2, m, nup, d2x, d2y, d2z, mag_tau, kind)
+            A += V2 * mag_coef(mag_U2, row2, n, nup, d2x, d2y, d2z, mag_tau, kind) * mag_coef(mag_U1, row1, m, nu, d1x, d1y, d1z, mag_tau, kind)
+    return A
 
 
 # ==========================================
@@ -3724,7 +3920,7 @@ def phase_1_scan_path_rel(mesh, grid_q_frac, grid_q_cart, grid_map,
                           grad_f_phon, grad_f_mag,
                           slc_axis, slc_rij, slc_rik, slc_J, slc_types,
                           smearing, min_sigma, chan_indices, chan_weights, channel_count,
-                          atom_masses, mag_moments, gamma_idx):
+                          atom_masses, mag_moments, gamma_idx, mag_U_path, mag_U_grid, mag_tau):
     """
     Relativistic (magnon-number non-conserving) processes of the path scan (--relativistic); appends to the channel
     buffers that phase_1_scan_path filled (same layout; run it AFTER that kernel, same channel_count).
@@ -3732,6 +3928,7 @@ def phase_1_scan_path_rel(mesh, grid_q_frac, grid_q_cart, grid_map,
     c_type 4  M(path,n) + M(k,m) <-> Ph(path+k,lam)    chan_weights = |A^{++}|^2 delta,  A = V^{++}_{path,s,nm}  + V^{++}_{s-path,s,mn}
     Gaussian width max(adaptive, min_sigma); partner magnons/phonons at Gamma and zero-weight events are not stored.
     (Separate kernel: the extra branch in phase_1_scan_path cost +69 % runtime of the default scan.)
+    Several magnetic sublattices: n, m are BAND indices, the pair amplitudes are rotated into the eigenmode basis (calc_pair_amplitude_nc_band).
     """
     path_idx, k_idx = cuda.grid(2)
     if path_idx >= path_q_frac.shape[0] or k_idx >= grid_q_frac.shape[0]:
@@ -3790,7 +3987,8 @@ def phase_1_scan_path_rel(mesh, grid_q_frac, grid_q_cart, grid_map,
                     weight = (0.4179 / sigma_3) * math.exp(-0.5 * (dE_3 * dE_3) / (sigma_3 * sigma_3))
                     # canonical label pair (lower grid index first, ties by band), see phase_1_scan_nc
                     if k_idx < idx_qmink or (k_idx == idx_qmink and n <= m):
-                        V = calc_pair_amplitude_nc(1, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
+                        if n_mag == 1:
+                            V = calc_pair_amplitude_nc(1, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
                                        path_q_cart[path_idx, 0] - grid_q_cart[k_idx, 0],
                                        path_q_cart[path_idx, 1] - grid_q_cart[k_idx, 1],
                                        path_q_cart[path_idx, 2] - grid_q_cart[k_idx, 2],
@@ -3798,13 +3996,36 @@ def phase_1_scan_path_rel(mesh, grid_q_frac, grid_q_cart, grid_map,
                                        1, path_eig_phon[path_idx], lam, path_w_phon[path_idx, lam], n, m,
                                        slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
                                        PHONON_COUPLING_CUTOFF)
+                        else:
+                            V = calc_pair_amplitude_nc_band(1, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
+                                       path_q_cart[path_idx, 0] - grid_q_cart[k_idx, 0],
+                                       path_q_cart[path_idx, 1] - grid_q_cart[k_idx, 1],
+                                       path_q_cart[path_idx, 2] - grid_q_cart[k_idx, 2],
+                                       -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2],
+                                       1, path_eig_phon[path_idx], lam, path_w_phon[path_idx, lam], n, m,
+                                       mag_U_grid, k_idx, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
+                                       mag_U_grid, idx_qmink, grid_q_cart[idx_qmink, 0], grid_q_cart[idx_qmink, 1], grid_q_cart[idx_qmink, 2], mag_tau,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
+                                       PHONON_COUPLING_CUTOFF)
                     else:
-                        V = calc_pair_amplitude_nc(1, grid_q_cart[idx_qmink, 0], grid_q_cart[idx_qmink, 1], grid_q_cart[idx_qmink, 2],
+                        if n_mag == 1:
+                            V = calc_pair_amplitude_nc(1, grid_q_cart[idx_qmink, 0], grid_q_cart[idx_qmink, 1], grid_q_cart[idx_qmink, 2],
                                        path_q_cart[path_idx, 0] - grid_q_cart[idx_qmink, 0],
                                        path_q_cart[path_idx, 1] - grid_q_cart[idx_qmink, 1],
                                        path_q_cart[path_idx, 2] - grid_q_cart[idx_qmink, 2],
                                        -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2],
                                        1, path_eig_phon[path_idx], lam, path_w_phon[path_idx, lam], m, n,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
+                                       PHONON_COUPLING_CUTOFF)
+                        else:
+                            V = calc_pair_amplitude_nc_band(1, grid_q_cart[idx_qmink, 0], grid_q_cart[idx_qmink, 1], grid_q_cart[idx_qmink, 2],
+                                       path_q_cart[path_idx, 0] - grid_q_cart[idx_qmink, 0],
+                                       path_q_cart[path_idx, 1] - grid_q_cart[idx_qmink, 1],
+                                       path_q_cart[path_idx, 2] - grid_q_cart[idx_qmink, 2],
+                                       -path_q_cart[path_idx, 0], -path_q_cart[path_idx, 1], -path_q_cart[path_idx, 2],
+                                       1, path_eig_phon[path_idx], lam, path_w_phon[path_idx, lam], m, n,
+                                       mag_U_grid, idx_qmink, grid_q_cart[idx_qmink, 0], grid_q_cart[idx_qmink, 1], grid_q_cart[idx_qmink, 2],
+                                       mag_U_grid, k_idx, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2], mag_tau,
                                        slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
                                        PHONON_COUPLING_CUTOFF)
                     V_sq = V.real * V.real + V.imag * V.imag
@@ -3835,19 +4056,42 @@ def phase_1_scan_path_rel(mesh, grid_q_frac, grid_q_cart, grid_map,
                     weight = (0.4179 / sigma_4) * math.exp(-0.5 * (dE_4 * dE_4) / (sigma_4 * sigma_4))
                     # canonical label pair (lower grid index first, ties by band) when the path point is itself a grid point
                     if P_grid_idx >= 0 and (k_idx < P_grid_idx or (k_idx == P_grid_idx and m < n)):
-                        V = calc_pair_amplitude_nc(0, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
+                        if n_mag == 1:
+                            V = calc_pair_amplitude_nc(0, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
                                        s_lab_x - grid_q_cart[k_idx, 0], s_lab_y - grid_q_cart[k_idx, 1],
                                        s_lab_z - grid_q_cart[k_idx, 2],
                                        s_lab_x, s_lab_y, s_lab_z,
                                        0, eig_phon_grid[idx_pplusk], lam, w_phon_grid[idx_pplusk, lam], m, n,
                                        slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
                                        PHONON_COUPLING_CUTOFF)
+                        else:
+                            # first magnon: grid k (band m); second: the path point (band n), its label s - k differs from the table momentum by G
+                            V = calc_pair_amplitude_nc_band(0, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
+                                       s_lab_x - grid_q_cart[k_idx, 0], s_lab_y - grid_q_cart[k_idx, 1],
+                                       s_lab_z - grid_q_cart[k_idx, 2],
+                                       s_lab_x, s_lab_y, s_lab_z,
+                                       0, eig_phon_grid[idx_pplusk], lam, w_phon_grid[idx_pplusk, lam], m, n,
+                                       mag_U_grid, k_idx, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2],
+                                       mag_U_path, path_idx, path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2], mag_tau,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
+                                       PHONON_COUPLING_CUTOFF)
                     else:
-                        V = calc_pair_amplitude_nc(0, path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2],
+                        if n_mag == 1:
+                            V = calc_pair_amplitude_nc(0, path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2],
                                        s_lab_x - path_q_cart[path_idx, 0], s_lab_y - path_q_cart[path_idx, 1],
                                        s_lab_z - path_q_cart[path_idx, 2],
                                        s_lab_x, s_lab_y, s_lab_z,
                                        0, eig_phon_grid[idx_pplusk], lam, w_phon_grid[idx_pplusk, lam], n, m,
+                                       slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
+                                       PHONON_COUPLING_CUTOFF)
+                        else:
+                            V = calc_pair_amplitude_nc_band(0, path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2],
+                                       s_lab_x - path_q_cart[path_idx, 0], s_lab_y - path_q_cart[path_idx, 1],
+                                       s_lab_z - path_q_cart[path_idx, 2],
+                                       s_lab_x, s_lab_y, s_lab_z,
+                                       0, eig_phon_grid[idx_pplusk], lam, w_phon_grid[idx_pplusk, lam], n, m,
+                                       mag_U_path, path_idx, path_q_cart[path_idx, 0], path_q_cart[path_idx, 1], path_q_cart[path_idx, 2],
+                                       mag_U_grid, k_idx, grid_q_cart[k_idx, 0], grid_q_cart[k_idx, 1], grid_q_cart[k_idx, 2], mag_tau,
                                        slc_axis, slc_rij, slc_rik, slc_J, slc_types, atom_masses, mag_moments,
                                        PHONON_COUPLING_CUTOFF)
                     V_sq = V.real * V.real + V.imag * V.imag
@@ -5097,6 +5341,10 @@ if __name__ == "__main__":
     parser.add_argument("--path_buffer_gb", type=float, default=30.0,
                         help="upper limit (GB, 36 bytes per slot) of the channel buffer of the bare path scan; the path points are processed in "
                              "chunks that fit into it (also limited by anticipated_fraction)")
+    parser.add_argument("--partner_diag", action="store_true",
+                        help="Diagnostic (does not touch the rates): which magnons take part in the events behind every bare path lifetime. Writes "
+                             "path_partner_magnons.csv (per lifetime row: rate-weighted energies of the contributing magnons) and "
+                             "magnon_Gmp_contrib.csv (share of G_mp per BZ-grid magnon mode; full-BZ runs). See python/partner_diag.py.")
     parser.add_argument("--bare_only", action="store_true",
                         help="stop right after the bare path_lifetimes.csv is written (no hybrid scans, no dynamics); a channel-buffer overflow is then "
                              "fatal. For convergence scans (Submit_convergence/).")
@@ -5261,6 +5509,29 @@ if __name__ == "__main__":
         d_path_eig_hyb = cuda.to_device(crystal_data.path_eig_hyb)
         d_path_w_hyb = cuda.to_device(crystal_data.path_w_hyb)
 
+        # Magnon eigenmode-basis tables of the bare vertices (theory/bare_lifetimes.tex, 'Multi-Sublattice Eigenmode Basis'): U(k) at the cartesian
+        # momenta the vertices use (grid: centred, path: path_q_cart), and the sublattice positions for the umklapp gauge. One magnetic sublattice
+        # (bcc Fe, fcc Ni): U = 1 and the kernels take their old code path unchanged.
+        nb_mag = crystal_data.n_mag_branches
+        if nb_mag > 1:
+            if args.legacy_bare:
+                raise SystemExit("--legacy_bare is not available for several magnetic sublattices (bare vertices in the eigenmode basis follow the audited bookkeeping).")
+            print(f"\nBare magnon eigenmode basis for {nb_mag} magnetic sublattices (U table)...")
+        mag_U_grid_cpu, _uinf = crystal_data.compute_bare_magnon_U(crystal_data.q_grid_cart, crystal_data.w_mag, anisotropy, lattice_constant)
+        if args.full_bz:
+            mag_U_path_cpu = mag_U_grid_cpu
+        else:
+            mag_U_path_cpu, _uinf_p = crystal_data.compute_bare_magnon_U(crystal_data.path_q_cart, crystal_data.path_w_mag, anisotropy, lattice_constant)
+        mag_tau_cpu, _tau_dev = crystal_data.compute_mag_tau(lattice_constant)
+        if nb_mag > 1:
+            print(f" -> U: anomalous (Bogoliubov) block max {_uinf['max_anomalous']:.2e}, band energies vs w_mag max diff {_uinf['max_energy_mismatch']:.2e} meV; "
+                  f"sublattice positions tau (A): {np.round(mag_tau_cpu, 4).tolist()}, bond deviation from tau_j - tau_i + R: {_tau_dev:.3f} (fractional)")
+            if _uinf["max_anomalous"] > 1e-6:
+                print(" WARNING: the magnon Hamiltonian has anomalous (b b) terms: U alone is not the full Bogoliubov transformation (the tex assumes none).")
+        d_mag_U_grid = cuda.to_device(mag_U_grid_cpu)
+        d_mag_U_path = d_mag_U_grid if args.full_bz else cuda.to_device(mag_U_path_cpu)
+        d_mag_tau = cuda.to_device(mag_tau_cpu)
+
     # 2. Setup Phase 1 memory
     N_points = crystal_data.N
 
@@ -5308,6 +5579,12 @@ if __name__ == "__main__":
         d_gamma_mag_rel_path = cuda.to_device(np.zeros(N_path * crystal_data.n_mag_branches, dtype=np.float64))
         d_gamma_phon_rel_path = cuda.to_device(np.zeros(N_path * crystal_data.phon_branches, dtype=np.float64))
         nmb_, npb_ = crystal_data.n_mag_branches, crystal_data.phon_branches
+        _pacc = None
+        if args.partner_diag:                     # read-only diagnostic on the event list of every chunk (python/partner_diag.py)
+            import partner_diag
+            if not args.full_bz:
+                print(" WARNING --partner_diag: magnon_Gmp_contrib.csv is only a G_mp decomposition for a full-BZ run (--full_bz).")
+            _pacc = partner_diag.PartnerAccumulator(N_path, N_points, nmb_, npb_, crystal_data.path_w_phon, T_phon_init, threads_per_block)
 
         threads_2d_path = (16, 16)
         blocks_y_path = math.ceil(N_points / threads_2d_path[1])
@@ -5328,7 +5605,8 @@ if __name__ == "__main__":
                 gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
                 gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
                 smearing, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
-                gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
+                gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx,
+                d_mag_U_path[i0:i1], d_mag_U_grid, d_mag_tau
             )
             if args.relativistic:
                 # relativistic processes (c_type 3/4) in their own kernel, appended to the same channel buffers
@@ -5339,7 +5617,8 @@ if __name__ == "__main__":
                     gpu_data["grad_f_phon"], gpu_data["grad_f_mag"],
                     gpu_data["slc_axis"], gpu_data["slc_rij"], gpu_data["slc_rik"], gpu_data["slc_J"], gpu_data["slc_types"],
                     smearing, min_sigma, d_path_chan_indices, d_path_chan_weights, d_path_channel_count,
-                    gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx
+                    gpu_data["atom_masses"], gpu_data["mag_moments"], gamma_idx,
+                    d_mag_U_path[i0:i1], d_mag_U_grid, d_mag_tau
                 )
             cuda.synchronize()
             n_scans += 1
@@ -5366,6 +5645,9 @@ if __name__ == "__main__":
                 N_points  # Density of states normalization relies on BZ grid resolution
             )
             cuda.synchronize()
+            if _pacc is not None:
+                _pacc.add(i0, i1, d_path_chan_indices[:, :found], d_path_chan_weights[:found], d_path_channel_count,
+                          d_n_mag, d_n_phon, gpu_data["w_mag"], d_path_w_mag[i0:i1])
             i0 = i1
         print(f" -> Path Channels found: {path_num_channels:,}  (buffer {max_path_channels:,} slots, {n_scans} scan pass(es))")
         print(" -> Calculating explicit path lifetimes... done")
@@ -5383,6 +5665,14 @@ if __name__ == "__main__":
             print(f" -> relativistic channels: sum gamma_rel / sum gamma_exch = magnons "
                   f"{gamma_mag_rel_cpu.sum() / max(gamma_mag_exch_cpu.sum(), 1e-300):.3e}, phonons "
                   f"{gamma_phon_rel_cpu.sum() / max(gamma_phon_exch_cpu.sum(), 1e-300):.3e}")
+
+        if _pacc is not None:
+            _pd = _pacc.finish(gamma_mag_exch_cpu, gamma_mag_rel_cpu, gamma_phon_exch_cpu, gamma_phon_rel_cpu)
+            print(" -> partner diagnostic, max relative deviation of the event sums from the lifetime-kernel rates: "
+                  + ", ".join(f"{k} {v:.1e}" for k, v in _pd["check"].items()))
+            partner_diag.write_files(_pd, out_dir, crystal_data.path_q_frac, crystal_data.path_w_mag, crystal_data.path_w_phon,
+                                     crystal_data.q_grid.astype(np.float64) / crystal_data.mesh, crystal_data.w_mag)
+            print(f"-> Saved partner-magnon diagnostics to {out_dir}/path_partner_magnons.csv and {out_dir}/magnon_Gmp_contrib.csv")
 
         # three-phonon rates (--phph): phonons only
         gamma_phph_cpu = np.zeros((N_path, crystal_data.phon_branches))
@@ -5661,6 +5951,11 @@ if __name__ == "__main__":
         )
         print("Hybrid dynamics complete; the bare-basis scan and dynamics are skipped.")
         sys.exit(0)
+
+    if crystal_data.n_mag_branches > 1:
+        print("\n" + "!" * 100 + "\n WARNING: the BARE magnon-phonon DYNAMICS (phase_1_scan / phase_1_scan_nc) below treat the magnon band index as the sublattice index (valid for ONE "
+              "magnetic sublattice only);\n for several sublattices its vertices lack the eigenmode-basis rotation U and its results are NOT valid. Only the bare path "
+              "LIFETIMES (--bare_only) and\n the hybrid dynamics (--hybrid_dynamics --full_bz) are.\n" + "!" * 100 + "\n")
 
     # 3. Execute Phase 1
     print("\nStarting Phase 1: Scanning Phase Space and computing FT Vertices...")

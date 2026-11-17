@@ -62,6 +62,12 @@ def _partner_kernel(chan_indices, chan_weights, num_channels, n_mag_grid, n_phon
         e2 = w_mag_grid[k_idx, m]
         row = path_idx * nbm + n
         c0 = 0
+    elif c_type == 1:                    # magnon absorption row: M(path,n) + Ph(p,lam) -> M(k,m)   (production: n_ph - n_k)
+        rate = pref * V_sq * (n_phon_grid[p_idx, lam] - n_mag_grid[k_idx, m])
+        e1 = path_w_mag[path_idx, n]
+        e2 = w_mag_grid[k_idx, m]
+        row = path_idx * nbm + n
+        c0 = 0
     elif c_type == 4:                    # relativistic magnon row
         rate = pref * V_sq * (n_mag_grid[k_idx, m] - n_phon_grid[p_idx, lam])
         e1 = path_w_mag[path_idx, n]
@@ -85,7 +91,7 @@ def _partner_kernel(chan_indices, chan_weights, num_channels, n_mag_grid, n_phon
 
     e_hi = e1 if e1 >= e2 else e2
     e_lo = e2 if e1 >= e2 else e1
-    if c_type == 0 or c_type == 4:
+    if c_type == 0 or c_type == 1 or c_type == 4:
         acc = acc_mag
     else:
         acc = acc_phon
@@ -100,6 +106,13 @@ def _partner_kernel(chan_indices, chan_weights, num_channels, n_mag_grid, n_phon
         ch = 0 if c_type == 2 else 1
         cuda.atomic.add(g_mag, (ch, k_idx, n), c)
         cuda.atomic.add(g_mag, (ch, p_idx, m), c)
+        # attribution conventions: whole share to the higher- (2+ch) or lower-energy (4+ch) magnon of the event
+        e_k = w_mag_grid[k_idx, n]
+        e_p = w_mag_grid[p_idx, m]
+        k_hi = e_k >= e_p
+        cf = 2.0 * c
+        cuda.atomic.add(g_mag, (2 + ch, k_idx if k_hi else p_idx, n if k_hi else m), cf)
+        cuda.atomic.add(g_mag, (4 + ch, p_idx if k_hi else k_idx, m if k_hi else n), cf)
 
 
 def dn_dT(E, T):
@@ -110,37 +123,46 @@ def dn_dT(E, T):
     return out
 
 
-def run(chan_indices_active, chan_weights_active, channel_count, d_n_mag, d_n_phon, d_w_mag_grid, d_path_w_mag, path_w_phon, N_points, N_path,
-        T_phon, gamma_mag_exch, gamma_mag_rel, gamma_phon_exch, gamma_phon_rel, threads_per_block=256):
-    """Evaluate the diagnostic from the (device) channel list. gamma_* are the host arrays (N_path, branches) of the lifetime kernel,
-    used only for the consistency check. Returns a dict with the accumulators and the checks."""
-    nbm = d_n_mag.shape[1]
-    nbp = d_n_phon.shape[1]
-    gw = path_w_phon * dn_dT(path_w_phon, T_phon) / float(N_path)          # meV / K  per path phonon, weight of 1/N_q
-    d_gw = cuda.to_device(np.ascontiguousarray(gw))
-    d_acc_mag = cuda.to_device(np.zeros((N_path * nbm, NCOL)))
-    d_acc_phon = cuda.to_device(np.zeros((N_path * nbp, NCOL)))
-    d_g_mag = cuda.to_device(np.zeros((2, d_n_mag.shape[0], nbm)))
-    n_ch = int(channel_count.copy_to_host()[0]) if hasattr(channel_count, "copy_to_host") else int(channel_count[0])
-    n_ch = min(n_ch, chan_weights_active.shape[0])
-    blocks = max(1, math.ceil(n_ch / threads_per_block))
-    _partner_kernel[blocks, threads_per_block](chan_indices_active, chan_weights_active, channel_count, d_n_mag, d_n_phon, d_w_mag_grid,
-                                               d_path_w_mag, N_points, d_acc_mag, d_acc_phon, d_gw, d_g_mag)
-    cuda.synchronize()
-    acc_mag = d_acc_mag.copy_to_host().reshape(N_path, nbm, NCOL)
-    acc_phon = d_acc_phon.copy_to_host().reshape(N_path, nbp, NCOL)
-    g_mag = d_g_mag.copy_to_host()
+class PartnerAccumulator:
+    """Accumulates the diagnostic over the chunks of the path scan (the channel buffer is reused per chunk, path_idx is local to the chunk).
+        acc = PartnerAccumulator(N_path, N_points, n_mag_branches, n_phon_branches, path_w_phon_host, T_phon)
+        for every chunk [i0, i1) AFTER phase_lifetime_path:  acc.add(i0, i1, chan_idx[:, :found], chan_w[:found], count, d_n_mag, d_n_phon, d_w_mag_grid, d_path_w_mag[i0:i1])
+        res = acc.finish(gamma_mag_exch, gamma_mag_rel, gamma_phon_exch, gamma_phon_rel)     # host arrays (N_path, branches), only for the check
+    """
 
-    def rel_dev(a, b):
-        scale = np.maximum(np.abs(b), 1e-30)
-        m = np.abs(b) > 1e-12
-        return float(np.max(np.abs(a - b)[m] / scale[m])) if m.any() else 0.0
+    def __init__(self, N_path, N_points, nbm, nbp, path_w_phon, T_phon, threads_per_block=256):
+        self.N_path, self.N_points, self.nbm, self.nbp, self.tpb = N_path, N_points, nbm, nbp, threads_per_block
+        self.gw = np.ascontiguousarray(path_w_phon * dn_dT(path_w_phon, T_phon) / float(N_path))     # meV/K, weight of the 1/N_q
+        self.d_gw = cuda.to_device(self.gw)
+        self.d_acc_mag = cuda.to_device(np.zeros((N_path * nbm, NCOL)))
+        self.d_acc_phon = cuda.to_device(np.zeros((N_path * nbp, NCOL)))
+        self.d_g_mag = cuda.to_device(np.zeros((6, N_points, nbm)))   # 0/1 half-split exch/rel, 2/3 all to the higher-energy magnon, 4/5 all to the lower-energy magnon
 
-    chk = dict(mag_exch=rel_dev(acc_mag[..., 0], gamma_mag_exch), phon_exch=rel_dev(acc_phon[..., 0], gamma_phon_exch),
-               mag_rel=rel_dev(acc_mag[..., 5], gamma_mag_rel), phon_rel=rel_dev(acc_phon[..., 5], gamma_phon_rel))
-    chk["G_modes_vs_rows_exch"] = float(abs(g_mag[0].sum() - (gw * gamma_phon_exch).sum()) / max((gw * gamma_phon_exch).sum(), 1e-300))
-    chk["G_modes_vs_rows_rel"] = float(abs(g_mag[1].sum() - (gw * gamma_phon_rel).sum()) / max((gw * gamma_phon_rel).sum(), 1e-300))
-    return dict(acc_mag=acc_mag, acc_phon=acc_phon, g_mag=g_mag, gw=gw, check=chk, n_channels=n_ch)
+    def add(self, i0, i1, chan_indices, chan_weights, channel_count, d_n_mag, d_n_phon, d_w_mag_grid, d_path_w_mag_chunk):
+        n_ch = int(chan_weights.shape[0])
+        if n_ch == 0:
+            return
+        _partner_kernel[max(1, math.ceil(n_ch / self.tpb)), self.tpb](
+            chan_indices, chan_weights, channel_count, d_n_mag, d_n_phon, d_w_mag_grid, d_path_w_mag_chunk, self.N_points,
+            self.d_acc_mag[i0 * self.nbm:i1 * self.nbm], self.d_acc_phon[i0 * self.nbp:i1 * self.nbp], self.d_gw[i0:i1], self.d_g_mag)
+        cuda.synchronize()
+
+    def finish(self, gamma_mag_exch, gamma_mag_rel, gamma_phon_exch, gamma_phon_rel):
+        acc_mag = self.d_acc_mag.copy_to_host().reshape(self.N_path, self.nbm, NCOL)
+        acc_phon = self.d_acc_phon.copy_to_host().reshape(self.N_path, self.nbp, NCOL)
+        g_mag = self.d_g_mag.copy_to_host()
+        gw = self.gw
+
+        def rel_dev(a, b):
+            m = np.abs(b) > 1e-12
+            return float(np.max(np.abs(a - b)[m] / np.abs(b)[m])) if m.any() else 0.0
+
+        chk = dict(mag_exch=rel_dev(acc_mag[..., 0], gamma_mag_exch), phon_exch=rel_dev(acc_phon[..., 0], gamma_phon_exch),
+                   mag_rel=rel_dev(acc_mag[..., 5], gamma_mag_rel), phon_rel=rel_dev(acc_phon[..., 5], gamma_phon_rel))
+        for ch, g in ((0, gamma_phon_exch), (1, gamma_phon_rel)):
+            tot = (gw * g).sum()
+            chk["G_modes_vs_rows_" + ("exch", "rel")[ch]] = float(abs(g_mag[ch].sum() - tot) / max(tot, 1e-300))
+        return dict(acc_mag=acc_mag, acc_phon=acc_phon, g_mag=g_mag, gw=gw, check=chk)
 
 
 def _moments(acc, c0, with_std):
@@ -174,8 +196,9 @@ def write_files(res, out_dir, path_q_frac, w_mag_path, w_phon_path, grid_q_frac,
                     f.write(f"{i},{part},{b},{wpath[i, b]:.6f},{fmt(R[i, b])},{fmt(hi[i, b])},{fmt(lo[i, b])},{fmt(shi[i, b])},{fmt(slo[i, b])},"
                             f"{fmt(Rr[i, b])},{fmt(hir[i, b])},{fmt(lor[i, b])},{grow:.6e}\n")
     with open(f"{out_dir}/magnon_Gmp_contrib.csv", "w") as f:
-        f.write("grid_idx,qx_frac,qy_frac,qz_frac,branch,energy_meV,G_exch_meV_ps-1_K-1_per_cell,G_rel_meV_ps-1_K-1_per_cell\n")
+        f.write("grid_idx,qx_frac,qy_frac,qz_frac,branch,energy_meV,G_exch_meV_ps-1_K-1_per_cell,G_rel_meV_ps-1_K-1_per_cell,G_exch_hi_meV_ps-1_K-1_per_cell,G_rel_hi_meV_ps-1_K-1_per_cell,G_exch_lo_meV_ps-1_K-1_per_cell,G_rel_lo_meV_ps-1_K-1_per_cell\n")
         for k in range(w_mag_grid.shape[0]):
             for b in range(w_mag_grid.shape[1]):
                 f.write(f"{k},{grid_q_frac[k, 0]:.6f},{grid_q_frac[k, 1]:.6f},{grid_q_frac[k, 2]:.6f},{b},{w_mag_grid[k, b]:.6f},"
-                        f"{res['g_mag'][0, k, b]:.6e},{res['g_mag'][1, k, b]:.6e}\n")
+                        f"{res['g_mag'][0, k, b]:.6e},{res['g_mag'][1, k, b]:.6e},"
+                        f"{res['g_mag'][2, k, b]:.6e},{res['g_mag'][3, k, b]:.6e},{res['g_mag'][4, k, b]:.6e},{res['g_mag'][5, k, b]:.6e}\n")
