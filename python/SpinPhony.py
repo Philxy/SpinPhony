@@ -5014,6 +5014,10 @@ if __name__ == "__main__":
                              "gamma_exch / gamma_rel columns and gamma_ps-1 becomes the total) and to the bare dynamics. Not used by "
                              "--hybrid_dynamics. Gaussian width of these channels: max(adaptive, --min_sigma), whereas the "
                              "number-conserving path channels floor it at 1e-5 meV. Partner modes at Gamma are excluded.")
+    parser.add_argument("--partner_diag", action="store_true",
+                        help="Diagnostic (does not touch the rates): which magnons take part in the events behind every bare path lifetime. Writes "
+                             "path_partner_magnons.csv (per lifetime row: rate-weighted energies of the contributing magnons) and "
+                             "magnon_Gmp_contrib.csv (share of G_mp per BZ-grid magnon mode; full-BZ runs). See python/partner_diag.py.")
     parser.add_argument("--test_slc_aniso", type=str, default=None, metavar="A,B",
                         help="TEST ONLY: add a synthetic anisotropic part to every spin-lattice row between magnetic atoms: "
                              "J^xx += A r, J^yy -= A r, J^xy += B r, J^yx += B r (r = reproducible random 0.5..1.5), i.e. "
@@ -5269,6 +5273,20 @@ if __name__ == "__main__":
             print(f" -> relativistic channels: sum gamma_rel / sum gamma_exch = magnons "
                   f"{gamma_mag_rel_cpu.sum() / max(gamma_mag_exch_cpu.sum(), 1e-300):.3e}, phonons "
                   f"{gamma_phon_rel_cpu.sum() / max(gamma_phon_exch_cpu.sum(), 1e-300):.3e}")
+
+        if args.partner_diag:
+            # read-only diagnostic on the channel list the rate kernel has just used (python/partner_diag.py); rates are not modified
+            import partner_diag
+            if not args.full_bz:
+                print(" WARNING --partner_diag: magnon_Gmp_contrib.csv is only a G_mp decomposition for a full-BZ run (--full_bz).")
+            _pd = partner_diag.run(d_path_chan_indices_active, d_path_chan_weights_active, d_path_channel_count, d_n_mag, d_n_phon,
+                                   gpu_data["w_mag"], d_path_w_mag, crystal_data.path_w_phon, N_points, N_path, T_phon_init,
+                                   gamma_mag_exch_cpu, gamma_mag_rel_cpu, gamma_phon_exch_cpu, gamma_phon_rel_cpu, threads_per_block)
+            print(" -> partner diagnostic, max relative deviation of the event sums from the lifetime-kernel rates: "
+                  + ", ".join(f"{k} {v:.1e}" for k, v in _pd["check"].items()))
+            partner_diag.write_files(_pd, out_dir, crystal_data.path_q_frac, crystal_data.path_w_mag, crystal_data.path_w_phon,
+                                     crystal_data.q_grid.astype(np.float64) / crystal_data.mesh, crystal_data.w_mag)
+            print(f"-> Saved partner-magnon diagnostics to {out_dir}/path_partner_magnons.csv and {out_dir}/magnon_Gmp_contrib.csv")
 
         path_dist, label_comment = crystal_data.get_path_distance_info()
 
